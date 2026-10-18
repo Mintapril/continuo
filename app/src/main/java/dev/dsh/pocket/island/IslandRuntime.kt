@@ -38,6 +38,7 @@ object IslandRuntime {
         scope.launch {
             store.snapshots.collect { save(prefs, it.preferences) }
         }
+        IslandLayerKeeper.start(context)
     }
     private fun save(prefs: android.content.SharedPreferences, p: IslandPreferences) {
         prefs.edit().putBoolean("enabled", p.enabled).putBoolean("overlayEnabled", p.overlayEnabled)

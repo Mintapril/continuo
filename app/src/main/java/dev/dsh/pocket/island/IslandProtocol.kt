@@ -145,3 +145,26 @@ object IslandPolicy {
         IslandAction.OPEN_TASK -> task != null
     }
 }
+
+/** Pure editing of Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES ("pkg/cls:pkg/.cls"), used by IslandLayerKeeper. */
+object IslandAccessibilityList {
+    private val safe = Regex("[A-Za-z0-9._/:$]+")
+
+    /** The value with [component] appended, keeping every other service; null when it is already listed. */
+    fun withComponent(current: String?, component: String): String? {
+        val entries = current.orEmpty().split(':').map { it.trim() }.filter { it.isNotEmpty() && it != "null" }
+        if (entries.any { expand(it) == expand(component) }) return null
+        return (entries + component).joinToString(":")
+    }
+
+    /** Only plain component names are passed to the root shell, inside single quotes. */
+    fun shellSafe(value: String): Boolean = safe.matches(value)
+
+    private fun expand(entry: String): String {
+        val slash = entry.indexOf('/')
+        if (slash <= 0) return entry
+        val pkg = entry.substring(0, slash)
+        val cls = entry.substring(slash + 1)
+        return if (cls.startsWith('.')) "$pkg/$pkg$cls" else entry
+    }
+}

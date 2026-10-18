@@ -270,10 +270,7 @@ class IslandOverlayService : Service() {
         view.setExpanded(expanded)
     }
 
-    /**
-     * Pixel geometry of the camera band, measured from the real insets so the pill sits on the cutout.
-     * Without the accessibility layer the pill moves just below the status bar (see IslandPolicy.pillCenterY).
-     */
+    /** Pixel geometry of the camera band, measured from the real insets so the pill sits on the cutout. */
     private fun geometry(): IslandPillView.Geometry {
         val wm = requireNotNull(windowManager)
         val density = requireNotNull(overlayContext).resources.displayMetrics.density
@@ -301,7 +298,6 @@ class IslandOverlayService : Service() {
         }
         if (centerY <= 0) centerY = bandBottom / 2
         val collapsedH = minOf((30 * density).toInt(), (bandBottom - 4 * density).toInt().coerceAtLeast((22 * density).toInt()))
-        centerY = IslandPolicy.pillCenterY(centerY, bandBottom, collapsedH, (6 * density).toInt(), accessibilityLayer)
         val hole = maxOf(holeW, (26 * density).toInt())
         val collapsedW = hole + (2 * (10 + 40) * density).toInt()
         val margin = (18 * density).toInt()

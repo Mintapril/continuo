@@ -230,7 +230,7 @@ private fun reasonText(value: dev.dsh.pocket.island.IslandSuppression) = when (v
             GroupRow("悬浮窗权限", icon = Glyph.Shield, subtitle = "显示在其他应用上层所必需", value = if (overlayGranted) "已允许" else "未允许",
                 onClick = { if (overlayGranted) context.startActivity(IslandRuntime.overlaySettingsIntent(context)) else overlayDialog = true })
             GroupDivider()
-            GroupRow("显示在状态栏上层", icon = Glyph.ArrowUp, subtitle = if (aboveStatusBar) "任务岛盖在摄像头和状态栏上" else "未开启：任务岛显示在状态栏下方",
+            GroupRow("显示在状态栏上层", icon = Glyph.ArrowUp, subtitle = if (aboveStatusBar) "任务岛盖在摄像头和状态栏上" else "未开启：任务岛会被状态栏的时间和图标挡住",
                 value = if (aboveStatusBar) "已开启" else "未开启",
                 onClick = { if (aboveStatusBar) context.startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS)) else layerDialog = true })
             GroupDivider()
@@ -258,7 +258,7 @@ private fun reasonText(value: dev.dsh.pocket.island.IslandSuppression) = when (v
         overlayDialog = false; context.startActivity(IslandRuntime.overlaySettingsIntent(context))
     }
     if (layerDialog) ConfirmDialog("显示在状态栏上层",
-        "普通悬浮窗位于状态栏下层，会被时间和图标挡住，所以任务岛目前显示在状态栏下方。在系统无障碍设置里开启“Continuo 任务岛层级”后，任务岛才能回到摄像头位置；这项服务不读取任何屏幕内容，只用于提升窗口层级。\n\n" +
+        "普通悬浮窗位于状态栏下层，任务岛会被时间和图标挡住。在系统无障碍设置里开启“Continuo 任务岛层级”后，任务岛才能盖在状态栏上；这项服务不读取任何屏幕内容，只用于提升窗口层级。\n\n" +
             "如果开关是灰色或提示“受限设置”，先到 设置 → 应用 → Continuo（应用信息）→ 右上角 ⋮ → 允许受限设置，再回来开启。应用被强行停止（例如清理后台）后，这项服务可能被系统关闭，需要重新开启。",
         "前往设置", dismiss = { layerDialog = false }) {
         layerDialog = false; context.startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS))

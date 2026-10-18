@@ -36,6 +36,7 @@ import dev.dsh.pocket.cowork.CoworkConnection
 import dev.dsh.pocket.cowork.CoworkControllerService
 import dev.dsh.pocket.cowork.CoworkLinkState
 import dev.dsh.pocket.data.TaskMode
+import dev.dsh.pocket.island.IslandAccessibilityService
 import dev.dsh.pocket.island.IslandRuntime
 import kotlinx.coroutines.launch
 
@@ -186,6 +187,8 @@ private fun reasonText(value: dev.dsh.pocket.island.IslandSuppression) = when (v
         owner.lifecycle.addObserver(observer); onDispose { owner.lifecycle.removeObserver(observer) }
     }
     val overlayGranted = remember(refresh) { AndroidSettings.canDrawOverlays(context) }
+    val aboveStatusBar = remember(refresh) { IslandAccessibilityService.available }
+    var layerDialog by remember { mutableStateOf(false) }
     val notificationsGranted = remember(refresh) {
         Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
     }
@@ -227,6 +230,10 @@ private fun reasonText(value: dev.dsh.pocket.island.IslandSuppression) = when (v
             GroupRow("悬浮窗权限", icon = Glyph.Shield, subtitle = "显示在其他应用上层所必需", value = if (overlayGranted) "已允许" else "未允许",
                 onClick = { if (overlayGranted) context.startActivity(IslandRuntime.overlaySettingsIntent(context)) else overlayDialog = true })
             GroupDivider()
+            GroupRow("显示在状态栏上层", icon = Glyph.ArrowUp, subtitle = if (aboveStatusBar) "任务岛盖在摄像头和状态栏上" else "未开启：任务岛显示在状态栏下方",
+                value = if (aboveStatusBar) "已开启" else "未开启",
+                onClick = { if (aboveStatusBar) context.startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS)) else layerDialog = true })
+            GroupDivider()
             GroupRow("通知权限", icon = Glyph.Vibrate, subtitle = "状态提醒与“需要你处理”", value = if (notificationsGranted) "已允许" else "未允许",
                 chevron = !notificationsGranted, onClick = if (notificationsGranted) null else ({ if (Build.VERSION.SDK_INT >= 33) notificationRequest.launch(Manifest.permission.POST_NOTIFICATIONS) }))
             GroupDivider()
@@ -249,6 +256,12 @@ private fun reasonText(value: dev.dsh.pocket.island.IslandSuppression) = when (v
 
     if (overlayDialog) ConfirmDialog("允许显示在其他应用上层", "将打开 Android 系统设置，请手动允许 Continuo。应用不会自行授予任何权限；未授权时只使用通知。", "前往设置", dismiss = { overlayDialog = false }) {
         overlayDialog = false; context.startActivity(IslandRuntime.overlaySettingsIntent(context))
+    }
+    if (layerDialog) ConfirmDialog("显示在状态栏上层",
+        "普通悬浮窗位于状态栏下层，会被时间和图标挡住，所以任务岛目前显示在状态栏下方。在系统无障碍设置里开启“Continuo 任务岛层级”后，任务岛才能回到摄像头位置；这项服务不读取任何屏幕内容，只用于提升窗口层级。\n\n" +
+            "如果开关是灰色或提示“受限设置”，先到 设置 → 应用 → Continuo（应用信息）→ 右上角 ⋮ → 允许受限设置，再回来开启。应用被强行停止（例如清理后台）后，这项服务可能被系统关闭，需要重新开启。",
+        "前往设置", dismiss = { layerDialog = false }) {
+        layerDialog = false; context.startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS))
     }
     if (excludedDialog) InputDialog("免打扰应用", "输入包名，用逗号分隔；留空表示不排除任何应用", prefs.excludedPackages.joinToString(","), { excludedDialog = false }, allowBlank = true) { text ->
         IslandRuntime.store.configure(prefs.copy(excludedPackages = text.split(',', '，', '\n').map { it.trim() }.filter { it.isNotEmpty() }.toSet()))

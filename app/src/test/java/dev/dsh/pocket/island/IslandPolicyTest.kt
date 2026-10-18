@@ -72,4 +72,12 @@ class IslandPolicyTest {
         assertEquals(setOf(IslandAction.PAUSE, IslandAction.STOP, IslandAction.OPEN_TASK), IslandAction.entries.toSet())
         assertFalse(IslandPolicy.allows(null, IslandAction.STOP))
     }
+
+    @Test fun pillStaysOnTheCameraOnlyAboveTheStatusBar() {
+        assertEquals(48, IslandPolicy.pillCenterY(48, 96, 72, 12, aboveStatusBar = true))
+        // Below the bar the pill's top edge starts one gap under the bar, clear of its clock and icons.
+        val center = IslandPolicy.pillCenterY(48, 96, 72, 12, aboveStatusBar = false)
+        assertEquals(96 + 12, center - 72 / 2)
+        assertEquals(96 + 12, IslandPolicy.pillCenterY(48, 96, 73, 12, aboveStatusBar = false) - 73 / 2)
+    }
 }

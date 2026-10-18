@@ -139,6 +139,13 @@ object IslandPolicy {
         return IslandVisibility(IslandSurface.OVERLAY, IslandSuppression.NONE)
     }
 
+    /**
+     * Vertical centre of the collapsed pill. Only the accessibility layer is above the status bar; on any other layer
+     * the bar draws its clock and icons over the pill, so the pill sits just below the bar instead of on the camera.
+     */
+    fun pillCenterY(cameraCenterY: Int, barBottom: Int, pillHeight: Int, gap: Int, aboveStatusBar: Boolean): Int =
+        if (aboveStatusBar) cameraCenterY else barBottom + gap + pillHeight / 2
+
     fun allows(task: IslandTaskUpdate?, action: IslandAction): Boolean = when (action) {
         IslandAction.PAUSE -> task?.state == IslandTaskState.RUNNING
         IslandAction.STOP -> task != null && !task.state.terminal

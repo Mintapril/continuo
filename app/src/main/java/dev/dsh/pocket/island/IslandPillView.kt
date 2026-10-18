@@ -42,7 +42,7 @@ internal class IslandPillView(
 ) : FrameLayout(context) {
 
     data class Geometry(
-        val centerY: Int,       // vertical centre of the camera / status-bar band
+        val centerY: Int,       // vertical centre of the camera / status-bar band, or just below the bar (pillCenterY)
         val collapsedW: Int,
         val collapsedH: Int,
         val expandedW: Int,
@@ -60,6 +60,10 @@ internal class IslandPillView(
         val top: Int get() = (centerY - collapsedH / 2).coerceAtLeast(0)
         /** Bottom of the invisible touch zone just under the status bar: the only part of the collapsed island that can receive touches. */
         val lipBottom: Int get() = band + (10 * density).toInt()
+        /** Bottom of the collapsed touch target: the lip, or the whole pill when it sits below the status bar. */
+        val hitBottom: Int get() = max(lipBottom + (8 * density).toInt(), top + collapsedH)
+        /** Top of the expanded title row: the status-bar bottom, or just under the pill's own row when it sits below the bar. */
+        val titleTop: Int get() = if (top >= band) top + collapsedH + (4 * density).toInt() else band
         val margin: Int get() = (18 * density).toInt()
         val bottomMargin: Int get() = (36 * density).toInt()
     }
@@ -396,7 +400,7 @@ headHit.setOnClickListener { tapped() }
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), MeasureSpec.getSize(heightMeasureSpec))
         measureHeader()
-        hit.measure(MeasureSpec.makeMeasureSpec(dp(104), MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(max(g.lipBottom + dp(8) - g.top, 1), MeasureSpec.EXACTLY))
+        hit.measure(MeasureSpec.makeMeasureSpec(dp(104), MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(max(g.hitBottom - g.top, 1), MeasureSpec.EXACTLY))
         scroller.measure(MeasureSpec.makeMeasureSpec(g.expandedW, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(max(bodyTarget, 1), MeasureSpec.EXACTLY))
     }
 
@@ -404,12 +408,12 @@ headHit.setOnClickListener { tapped() }
         val w = r - l
         val hy = g.top
         val hitHalf = dp(52)
-        hit.layout(w / 2 - hitHalf, hy, w / 2 + hitHalf, g.lipBottom + dp(8))
+        hit.layout(w / 2 - hitHalf, hy, w / 2 + hitHalf, g.hitBottom)
         glyph.layout(0, hy, glyph.measuredWidth, hy + g.collapsedH)
         leftLabel.layout(0, hy, leftLabel.measuredWidth, hy + g.collapsedH)
         rightLabel.layout(0, hy, rightLabel.measuredWidth, hy + g.collapsedH)
         title.layout(0, hy, title.measuredWidth, hy + g.collapsedH)
-        headHit.layout(sx0(w), g.band, sx0(w) + g.expandedW, g.band + dp(46))
+        headHit.layout(sx0(w), g.titleTop, sx0(w) + g.expandedW, g.titleTop + dp(46))
         val sx = (w - g.expandedW) / 2
         val sy = hy + g.collapsedH + dp(4)
         scroller.layout(sx, sy, sx + g.expandedW, sy + max(bodyTarget, 1))
@@ -435,7 +439,7 @@ headHit.setOnClickListener { tapped() }
         leftLabel.translationX = lx0
         rightLabel.translationX = cx + g.holeW / 2f + dp(6f)
         title.translationX = lx1
-        val dy = g.band + dp(24f) - (g.top + g.collapsedH / 2f)
+        val dy = g.titleTop + dp(24f) - (g.top + g.collapsedH / 2f)
         val ty = max(dy, 0f) * open
         glyph.translationY = ty
         title.translationY = max(dy, 0f)

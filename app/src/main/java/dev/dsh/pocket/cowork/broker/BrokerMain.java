@@ -42,7 +42,7 @@ public final class BrokerMain {
     /** Turn a transition refusal into an actionable one; a refusal that paused the session keeps its own code. */
     private static ActionGate.Denied settling(ActionGate.Denied e){return RefusalPolicy.reported(e);}
     /** Observation and input tools the model may not use while the user controls the screen. */
-    private static final Set<String> USER_CONTROL_BLOCKED=Set.of("phone.screenshot","phone.ui_tree","phone.tap","phone.long_press","phone.swipe","phone.scroll","phone.read_page","phone.type_text","phone.key","phone.launch_app","phone.wait");
+    private static final Set<String> USER_CONTROL_BLOCKED=Set.of("phone.screenshot","phone.ui_tree","phone.tap","phone.long_press","phone.swipe","phone.scroll","phone.read_page","phone.type_text","phone.key","phone.launch_app","phone.wait","phone.batch");
     private final Takeover takeover=new Takeover();
     private final java.util.concurrent.atomic.AtomicInteger streams=new java.util.concurrent.atomic.AtomicInteger();
     private volatile boolean taskManaged=false;
@@ -442,6 +442,7 @@ public final class BrokerMain {
             }
             return observeAfter(session,performed(),before,true);
         }
+        if(tool.equals("phone.batch"))return batch(session,a);
         if(!ActionGate.INPUTS.contains(tool))ActionGate.fail("TOOL_DENIED","Tool not implemented");
         treeRead=false;treeIncomplete=false; // any input changes the screen: a fresh phone.ui_tree is required before the next screenshot
         String before=workspace.lastTreeSignature(); // what the model last read, for the changed flag of the reply
@@ -477,6 +478,84 @@ public final class BrokerMain {
         // A cold start is waited out with phone_wait, which returns the screen (measured: 9 of 10 launches were followed by it).
         if(tool.equals("phone.launch_app"))return performed();
         return observeAfter(session,performed(),before,true);
+    }
+    /** Several element inputs planned from one tree observation (phone_batch). Each step runs only after checks made as
+     *  late as possible, right before its input: the window set and foreground UID are still those of the observation,
+     *  nothing outside the previous step's element changed after that step settled, and the target still shows its
+     *  observed label at its observed bounds; high-impact steps are left to a single call (BatchPolicy). The first failed
+     *  check stops the batch with the screen as it is, so a misjudged batch costs about what single steps would.
+     *  Before the first input a refusal is an ordinary refusal and keeps the observation. After it the reply is always
+     *  performed:true with completed and, when stopped, stoppedAt/stopReason (uncertain: the stopped step's input may have
+     *  partly happened): an error would make the model repeat inputs that already happened. A boundary violation still
+     *  pauses, as the next call would. */
+    private JSONObject batch(String session,JSONObject a)throws Exception{
+        String observationId=a.getString("observationId");JSONArray steps=a.getJSONArray("steps");int last=steps.length()-1;
+        if(treeIncomplete)ActionGate.fail("ARGUMENTS_INVALID","phone_batch needs a complete phone_ui_tree observation");
+        treeRead=false;treeIncomplete=false;
+        workspace.requireTree(observationId);
+        workspace.requireForeground(workspace.targetPackage());
+        String before=workspace.lastTreeSignature(),structure="",outside="",typed="";
+        long deadline=SystemClock.elapsedRealtime()+BatchPolicy.TIME_LIMIT_MS;
+        JSONObject result=performed();
+        event("phone.batch","running");
+        int i=0;boolean settle=true; // settle: the last input was not waited out yet
+        for(;i<=last;i++){
+            JSONObject step=steps.getJSONObject(i);String kind=step.getString("tool"),id=step.optString("elementId");
+            boolean injecting=false;
+            try{
+                String stop=null;
+                if(i>0){
+                    // The previous input happened: let it settle, then compare the screen with the one before it.
+                    boolean quiet=workspace.settle();settle=!quiet;
+                    // A takeover first: the user's screen (maybe a secure one) is not checked as if the model held it.
+                    if(takeover.active())stop="USER_CONTROL";
+                    else{
+                        workspace.guard();gate.requireActive(session);
+                        String previous=steps.getJSONObject(i-1).getString("elementId");
+                        String[] now=id.isEmpty()?workspace.outside(previous):workspace.outside(previous,id);
+                        if(SystemClock.elapsedRealtime()>deadline)stop="BATCH_TIME_LIMIT";
+                        else if(!quiet)stop="SCREEN_SETTLING";
+                        else if(!structure.equals(workspace.fingerprint()))stop="WINDOW_CHANGED";
+                        else if(!outside.equals(now[0]))stop="SCREEN_CHANGED_ELSEWHERE";
+                        if(now.length>1)outside=now[1];
+                    }
+                }
+                if(stop==null){
+                    if(kind.equals("key")){if(step.getString("key").equals("ENTER")&&(typed.isEmpty()||!workspace.enterAllowed(typed)))stop="HIGH_IMPACT_SINGLE";}
+                    else{workspace.verifyTarget(id);if(!kind.equals("type_text")&&!workspace.tapAllowed(id))stop="HIGH_IMPACT_SINGLE";}
+                }
+                if(stop!=null){
+                    if(i==0)ActionGate.fail("HIGH_IMPACT_SINGLE","High-impact step: run it alone after checking the screen");
+                    result.put("stoppedAt",i).put("stopReason",stop);break;
+                }
+                if(i==0){
+                    structure=workspace.fingerprint();
+                    gate.consume(session,observationId,structure,SystemClock.elapsedRealtime());
+                    outside=workspace.outside(id)[0];
+                }
+                injecting=true;settle=true;
+                switch(kind){
+                    case "tap":workspace.tap(new JSONObject().put("elementId",id),false);break;
+                    case "long_press":workspace.tap(new JSONObject().put("elementId",id),true);break;
+                    case "type_text":workspace.type(new JSONObject().put("elementId",id).put("text",step.getString("text")));typed=id;activity.note("输入文字");break;
+                    default:workspace.key(step.getString("key"));if(step.getString("key").equals("ENTER"))activity.note("确认输入");
+                }
+            }catch(Exception e){
+                ActionGate.Denied denied=e instanceof ActionGate.Denied?(ActionGate.Denied)e:null;
+                String code=denied==null?"PLATFORM_ERROR":denied.code;
+                // Same pause policy as single calls: a boundary violation pauses; a platform failure pauses only when it
+                // hit an input, not a read.
+                if((denied==null?injecting:!survives(denied))&&!gate.paused())safePause(code);
+                if(i==0)throw denied==null?e:settling(denied);
+                result.put("stoppedAt",i).put("stopReason",denied==null?code:settling(denied).code);
+                if(injecting&&!REJECTED_BEFORE_INPUT.contains(code))result.put("uncertain",true);
+                break;
+            }
+        }
+        result.put("completed",i);
+        // The user holds the screen: nothing is read until the hand-back.
+        if(result.optString("stopReason").equals("USER_CONTROL"))return result.put("observationError","USER_CONTROL");
+        return observeAfter(session,result,before,settle);
     }
     /** Inputs return the settled screen, so the model continues from the reply instead of calling phone_ui_tree next
      *  (measured on a real session: 167 of 553 model steps were exactly that call). The observation is a full ui_tree

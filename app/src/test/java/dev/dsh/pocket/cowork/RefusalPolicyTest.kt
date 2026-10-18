@@ -25,7 +25,7 @@ class RefusalPolicyTest {
             assertFalse(message,RefusalPolicy.survives("APP_DENIED",message))
         for(code in listOf("SECURE_WINDOW","APP_CONFLICT","LOCKED","CONTROL_INTERRUPTED","CONTROLLER_OFFLINE","NO_DISPLAY"))
             assertFalse(code,RefusalPolicy.survives(code,"x"))
-        for(code in listOf("INPUT_REJECTED","LAUNCH_TIMEOUT","NODE_STALE","STALE_OBSERVATION","SCREEN_SETTLING","TREE_REQUIRED"))
+        for(code in listOf("INPUT_REJECTED","LAUNCH_TIMEOUT","NODE_STALE","STALE_OBSERVATION","SCREEN_SETTLING","TREE_REQUIRED","HIGH_IMPACT_SINGLE"))
             assertTrue(code,RefusalPolicy.survives(code,"x"))
     }
     @Test fun onlySurvivedTransitionsAreReportedAsSettling(){

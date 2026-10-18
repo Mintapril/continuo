@@ -22,6 +22,27 @@ public final class ToolContract {
         else point(a,"x","y");
     }
     private static void pkg(JSONObject a){if(!text(a,"packageName",3,200).matches("[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+"))fail();}
+    /** Steps of one observation: element inputs only, each target once, a key only as the last step. The text limit
+     *  keeps the request inside the 64 KiB body limit (5 x 4000 CJK characters would not fit). */
+    static final int BATCH_MIN=2,BATCH_MAX=5,BATCH_TEXT=8000;
+    private static void batch(JSONObject a){
+        fields(a,"observationId,steps","");obs(a);
+        if(!(a.opt("steps") instanceof JSONArray))fail();
+        JSONArray steps=a.optJSONArray("steps");if(steps.length()<BATCH_MIN||steps.length()>BATCH_MAX)fail();
+        Set<String> targets=new HashSet<>();int text=0;
+        for(int i=0;i<steps.length();i++){
+            if(!(steps.opt(i) instanceof JSONObject))fail();
+            JSONObject step=steps.optJSONObject(i);
+            switch(text(step,"tool",1,20)){
+                case "tap":case "long_press":fields(step,"tool,elementId","");break;
+                case "type_text":fields(step,"tool,elementId,text","");text+=text(step,"text",0,4000).length();break;
+                case "key":fields(step,"tool,key","");if(i!=steps.length()-1||!Set.of("ENTER","BACK").contains(text(step,"key",1,20)))fail();continue;
+                default:fail();
+            }
+            String id=text(step,"elementId",2,6);if(!id.matches("n[0-9]{1,4}")||!targets.add(id))fail();
+        }
+        if(text>BATCH_TEXT)fail();
+    }
     public static void validate(String tool,JSONObject a){
         switch(tool){
             case "phone.status":case "phone.apps":case "phone.screenshot":case "phone.ui_tree":case "phone.pause":case "phone.stop":case "phone.intervention_status":fields(a,"","");break;
@@ -36,6 +57,7 @@ public final class ToolContract {
             case "phone.type_text":fields(a,"observationId,text","elementId");obs(a);text(a,"text",0,4000);if(a.has("elementId"))text(a,"elementId",1,30);break;
             case "phone.key":fields(a,"key","observationId");String navKey=text(a,"key",1,20);if(!Set.of("BACK","ENTER","HOME","RECENTS").contains(navKey))ActionGate.fail("KEY_DENIED","Only display-local BACK, HOME, RECENTS and ENTER are permitted");if(!navKey.equals("HOME")&&!navKey.equals("RECENTS"))obs(a);break;
             case "phone.wait":fields(a,"timeoutMs","");number(a,"timeoutMs",0,10000);break;
+            case "phone.batch":batch(a);break;
             default:ActionGate.fail("TOOL_DENIED","Unknown Cowork capability");
         }
     }

@@ -47,6 +47,7 @@ foreach ($entry in $classpath) { if (!(Test-Path -LiteralPath $entry)) { throw "
     dev.dsh.pocket.cowork.BrokerSourceTest `
     dev.dsh.pocket.cowork.TakeoverTest `
     dev.dsh.pocket.cowork.RefusalPolicyTest `
+    dev.dsh.pocket.cowork.BatchPolicyTest `
     dev.dsh.pocket.cowork.ActivityLogTest `
     dev.dsh.pocket.island.IslandStoreTest `
     dev.dsh.pocket.island.IslandPolicyTest

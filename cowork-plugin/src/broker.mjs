@@ -14,7 +14,7 @@ const ERROR_CODES = new Set([
   'APPROVAL_PENDING', 'APPROVAL_STALE', 'APP_CONFLICT', 'APP_DENIED', 'APP_LAUNCH_DENIED',
   'APP_UNAVAILABLE', 'APP_UNKNOWN', 'ARGUMENTS_INVALID', 'CONTROLLER_OFFLINE', 'CONTROL_DENIED', 'LAUNCH_TIMEOUT',
   'CONTROL_INTERRUPTED', 'DISPLAY_BUSY', 'DISPLAY_FAILED', 'EXECUTION_STALE', 'FRAME_UNAVAILABLE',
-  'IME_POLICY_UNAVAILABLE', 'INPUT_REJECTED', 'INVALID_GESTURE', 'KEY_DENIED',
+  'HIGH_IMPACT_SINGLE', 'IME_POLICY_UNAVAILABLE', 'INPUT_REJECTED', 'INVALID_GESTURE', 'KEY_DENIED',
   'LOCKED', 'MAIN_CHANGED', 'MAIN_UNKNOWN', 'NODE_STALE', 'NOT_EDITABLE', 'NO_DISPLAY', 'PAUSED',
   'PLATFORM_ERROR', 'PROTOCOL_INVALID', 'RESTART_REQUIRED', 'REVISION_STALE', 'SCROLL_UNSUPPORTED',
   'SCREEN_SETTLING', 'SECRET_INPUT', 'SECRET_SCREEN', 'SECURE_WINDOW', 'SECURITY_UNAVAILABLE', 'SESSION_BUSY',
@@ -40,12 +40,14 @@ export const PHONE_ARGUMENTS = Object.freeze({
   'phone.key': object({ ...observed, key: { type: 'string', enum: ['BACK', 'ENTER', 'HOME', 'RECENTS'] } }, ['key']),
   'phone.wait': object({ timeoutMs: int }),
   'phone.launch_app': object({ ...observed, packageName: str }, ['packageName']),
+  // 2..5 element inputs planned from one tree observation, a key (ENTER/BACK) only as the last step; checked in BrokerClient.
+  'phone.batch': object({ ...observed, steps: { type: 'array', items: object({ tool: { type: 'string', enum: ['tap', 'long_press', 'type_text', 'key'] }, elementId: str, text: str, key: { type: 'string', enum: ['ENTER', 'BACK'] } }, ['tool']) } }),
   'phone.pause': object(), 'phone.stop': object(), 'phone.request_intervention': object({ reason: str }, []),
 });
 // Native-only tools: accepted by BrokerClient but never registered with, or visible to, the model.
 export const INTERNAL_ARGUMENTS = Object.freeze({ 'phone.intervention_status': object() });
 // Tools natively rejected with USER_CONTROL while the user controls the screen; their wrappers wait for hand-back.
-export const USER_CONTROL_TOOLS = Object.freeze(['phone.screenshot', 'phone.ui_tree', 'phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.read_page', 'phone.type_text', 'phone.key', 'phone.launch_app', 'phone.wait']);
+export const USER_CONTROL_TOOLS = Object.freeze(['phone.screenshot', 'phone.ui_tree', 'phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.read_page', 'phone.type_text', 'phone.key', 'phone.launch_app', 'phone.wait', 'phone.batch']);
 // Read-only observations are re-issued once after hand-back; everything else must be re-planned by the model.
 export const REISSUE_AFTER_HANDBACK = Object.freeze(['phone.status', 'phone.apps', 'phone.screenshot', 'phone.ui_tree', 'phone.wait']);
 export const HANDBACK_MAX_MS = 15 * 60_000, HANDBACK_POLL_MS = 1000;
@@ -60,7 +62,7 @@ const TREE_RESULT = object({ ...metadata, title: str, package: str, nodes: { typ
 // Inputs that return the settled screen as `observation` (exactly a phone.ui_tree result), so the model continues from
 // the reply instead of observing again. changed: differs from the screen last read; settled:false: still changing when
 // read; observationError: the input was performed but the screen could not be read (the plugin adds a note).
-export const OBSERVED_AFTER = Object.freeze(['phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.type_text', 'phone.key', 'phone.wait']);
+export const OBSERVED_AFTER = Object.freeze(['phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.type_text', 'phone.key', 'phone.wait', 'phone.batch']);
 const afterInput = { changed: bool, settled: bool, observationError: str, observation: TREE_RESULT };
 // Native result of the inputs above; RECENTS answers with a note and no observation.
 const OBSERVED_PERFORMED = object({ performed: { type: 'boolean', const: true }, note: str, ...afterInput }, ['performed']);
@@ -73,6 +75,8 @@ export const PHONE_RESULTS = Object.freeze({
   'phone.ui_tree': TREE_RESULT,
   'phone.scroll': object({ performed: { type: 'boolean', const: true }, moved: bool, note: str, ...afterInput }, ['performed']),
   'phone.read_page': object({ performed: { type: 'boolean', const: true }, text: str, pages: int, reachedEnd: bool, title: str }, ['performed', 'text', 'pages', 'reachedEnd']),
+  // completed: steps performed; a stopped batch adds stoppedAt (= completed) and stopReason, uncertain when that step's input may have partly happened.
+  'phone.batch': object({ performed: { type: 'boolean', const: true }, completed: int, stoppedAt: int, stopReason: str, uncertain: bool, note: str, ...afterInput }, ['performed', 'completed']),
   // Native result only; the model-visible result is built by the blocking wrapper in restricted.mjs.
   'phone.request_intervention': object({ performed: { type: 'boolean', const: true }, interventionId: str }),
 });
@@ -141,11 +145,23 @@ export const REFUSAL_HINT = Object.freeze({
   LOCKED: 'The phone is locked: ask the user to unlock it.',
   CONTROLLER_OFFLINE: 'The Cowork controls are not connected: the user must open the app.',
   TREE_REQUIRED: 'Call phone_ui_tree for the current screen before a screenshot.',
+  HIGH_IMPACT_SINGLE: 'The first step must run on its own: it sends, pays, deletes, confirms, grants, buys or publishes, or its target has no label to judge it by. Nothing was performed.',
+  USER_CONTROL: 'The user took over the screen: your next phone call waits until they hand it back; observe again then.',
   RUNNING: 'The action was skipped because the task is no longer running: call phone_status and continue with phone_launch_app / phone_ui_tree.'
 });
+// Why a batch stopped before a step, besides the refusal codes above. Never reflected when unknown.
+const BATCH_STOPS = new Set(['WINDOW_CHANGED', 'SCREEN_CHANGED_ELSEWHERE', 'BATCH_TIME_LIMIT']);
+const BATCH_STOP_HINT = Object.freeze({
+  WINDOW_CHANGED: 'The previous step opened or closed a window (dialog, menu, suggestions, new page).',
+  SCREEN_CHANGED_ELSEWHERE: 'The previous step changed the screen outside its own element (a message, a new section, a list update).',
+  NODE_STALE: 'The next target no longer showed what was observed (moved, gone, or other content).',
+  HIGH_IMPACT_SINGLE: 'That step must run on its own: it sends, pays, deletes, confirms, grants, buys or publishes, its target has no label to judge it by, or it is ENTER outside a search field.',
+  BATCH_TIME_LIMIT: 'The batch took too long; the screen reacts slowly.',
+});
+const BATCH_FIELDS = Object.freeze({ tap: ['tool', 'elementId'], long_press: ['tool', 'elementId'], type_text: ['tool', 'elementId', 'text'], key: ['tool', 'key'] });
 // Refusals raised by argument or element validation, before a single event reached the display.
 export const KEEPS_OBSERVATION = Object.freeze(new Set([
-  'ARGUMENTS_INVALID', 'KEY_DENIED', 'INVALID_GESTURE', 'NODE_STALE', 'NOT_EDITABLE', 'SECRET_INPUT',
+  'ARGUMENTS_INVALID', 'HIGH_IMPACT_SINGLE', 'KEY_DENIED', 'INVALID_GESTURE', 'NODE_STALE', 'NOT_EDITABLE', 'SECRET_INPUT',
   'TEXT_UNSUPPORTED', 'TEXT_LIMIT', 'WAIT_LIMIT', 'SCROLL_UNSUPPORTED', 'TREE_REQUIRED', 'TOOL_DENIED',
 ]));
 export const TREE_REQUIRED_MESSAGE = 'Screenshot refused: call phone_ui_tree first and read the UI elements of the current screen. The tree is the primary, cheaper and more precise observation; screenshots are only for screens whose tree is incomplete (complete:false), custom-drawn content (WebView, game, canvas) or information the tree lacks. The requirement renews after every action, wait, or hand-back.';
@@ -214,25 +230,44 @@ export class BrokerClient {
     if (name === 'phone.wait') integer(args.timeoutMs, 0, 10000, 'timeoutMs');
     if (name === 'phone.scroll') { integer(args.deltaY, -1000, 1000, 'deltaY'); check(args.deltaY !== 0, 'deltaY must be nonzero'); }
     if (name === 'phone.type_text') { boundedString(args.text, 4000, 'text', 0); if (args.elementId !== undefined) boundedString(args.elementId, 256, 'elementId'); }
+    if (name === 'phone.batch') {
+      check(args.steps.length >= 2 && args.steps.length <= 5, 'phone_batch takes 2..5 steps; use the single tool for one input');
+      let text = 0;
+      args.steps.forEach((step, index) => {
+        const fields = BATCH_FIELDS[step.tool];
+        check(Object.keys(step).length === fields.length && fields.every(key => Object.hasOwn(step, key)), `steps[${index}] (${step.tool}) takes exactly ${fields.join(', ')}`);
+        if (step.tool === 'key') check(index === args.steps.length - 1, 'A key (ENTER or BACK) may only be the last step of a batch');
+        else boundedString(step.elementId, 256, 'elementId');
+        if (step.text !== undefined) { boundedString(step.text, 4000, 'text', 0); text += step.text.length; }
+      });
+      const targets = args.steps.filter(step => step.tool !== 'key').map(step => step.elementId);
+      check(new Set(targets).size === targets.length, 'Each element may be the target of only one step in a batch');
+      check(text <= 8000, 'phone_batch text is limited to 8000 characters in total');
+    }
     if (args.observationId !== undefined) {
       boundedString(args.observationId, 256, 'observationId');
       // Element ids belong to the retained phone_ui_tree observation: a screenshot taken afterwards does not take
       // them away, and a refused element action does not force a new observation. A coordinate action may use the
       // newest observation or, when a screenshot came in between, the tree the model is still targeting.
-      const treeObs = args.elementId !== undefined ? this.#tree.get(sessionId) : undefined;
-      const offered = args.elementId !== undefined ? [treeObs] : [this.#observations.get(sessionId), this.#tree.get(sessionId)];
+      // [elementId, must be editable] of every element this call targets (a batch: all of its steps).
+      const elements = name === 'phone.batch' ? args.steps.filter(step => step.tool !== 'key').map(step => [step.elementId, step.tool === 'type_text'])
+        : args.elementId !== undefined ? [[args.elementId, name === 'phone.type_text']] : [];
+      const treeObs = elements.length ? this.#tree.get(sessionId) : undefined;
+      const offered = elements.length ? [treeObs] : [this.#observations.get(sessionId), this.#tree.get(sessionId)];
       const obs = offered.find(candidate => candidate && candidate.observationId === args.observationId) ?? offered[0];
       check(obs && obs.observationId === args.observationId && this.now() - obs.capturedAt >= -1000 && this.now() - obs.capturedAt <= OBSERVATION_TTL_MS, 'Observation missing, stale, consumed, or from another session; observe again', 'STALE_OBSERVATION');
       for (const key of ['x', 'x1', 'x2']) if (args[key] !== undefined) integer(args[key], 0, obs.width - 1, key);
       for (const key of ['y', 'y1', 'y2']) if (args[key] !== undefined) integer(args[key], 0, obs.height - 1, key);
-      if (args.elementId !== undefined) {
+      if (elements.length) {
         check(Array.isArray((treeObs ?? obs).nodes), 'elementId requires a phone_ui_tree observation; screenshot observations have no elements');
-        check((treeObs ?? obs).nodes.some(n => n.id === args.elementId && (name !== 'phone.type_text' || (n.flags ?? '').includes('e'))),
-          name === 'phone.type_text' ? 'elementId must identify an editable node in the current tree' : 'elementId must identify a node in the current tree');
+        for (const [id, editable] of elements) check((treeObs ?? obs).nodes.some(n => n.id === id && (!editable || (n.flags ?? '').includes('e'))),
+          editable ? 'elementId must identify an editable node in the current tree' : 'elementId must identify a node in the current tree');
       }
+      if (name === 'phone.batch') check(treeObs.complete !== false, 'phone_batch needs a complete tree; this one has complete:false, so act step by step');
       // Coordinates consume the observation they were bound to; an id that is also the retained tree is single-use
-      // through both slots (element ids are verified natively against the tree instead).
-      if (args.elementId === undefined) {
+      // through both slots (element ids are verified natively against the tree instead; a batch is replaced by the
+      // screen it returns).
+      if (!elements.length) {
         // One physical screen: another session's tree is as stale as this session's pixel observation.
         for (const other of [...this.#tree.keys()]) if (other !== sessionId) this.#tree.delete(other);
         if (this.#tree.get(sessionId)?.observationId === obs.observationId) this.#tree.delete(sessionId);
@@ -273,6 +308,20 @@ export class BrokerClient {
       if (observation !== undefined) {
         try { this.#admit(sessionId, 'phone.ui_tree', validate(TREE_RESULT, observation, 'observation')); result.observation = observation; }
         catch { result.observationError = 'BROKER_ERROR'; }
+      }
+      if (name === 'phone.batch') {
+        const total = args.steps.length;
+        integer(result.completed, 1, total, 'completed');
+        if (result.stopReason === undefined) check(result.stoppedAt === undefined && result.uncertain === undefined && result.completed === total, 'Inconsistent batch result', 'BROKER_PROTOCOL');
+        else {
+          check(result.stoppedAt === result.completed && result.completed < total, 'Inconsistent batch result', 'BROKER_PROTOCOL');
+          const code = ERROR_CODES.has(result.stopReason) || BATCH_STOPS.has(result.stopReason) ? result.stopReason : 'BROKER_ERROR';
+          const next = result.stoppedAt + 1;
+          result.stopReason = code;
+          result.note = [`Batch stopped before step ${next} of ${total} (${code}): ${result.completed === 1 ? 'step 1 was' : `steps 1-${result.completed} were`} performed, the rest were not.`,
+            result.uncertain ? `Step ${next} may have partly happened: check the screen before repeating it.` : '',
+            BATCH_STOP_HINT[code] ?? REFUSAL_HINT[code] ?? '', 'Continue from the returned screen with single steps.'].filter(Boolean).join(' ');
+        }
       }
       if (result.observationError !== undefined) {
         // The input changed the screen and nothing current describes it: drop what this session still holds.

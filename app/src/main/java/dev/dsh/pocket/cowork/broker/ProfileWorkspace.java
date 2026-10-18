@@ -408,6 +408,11 @@ public final class ProfileWorkspace implements AutoCloseable {
     /** Called after gate.observe: element ids are valid only for this ui_tree observation. */
     public synchronized void bindTree(String observationId){tree.bind(observationId);}
     public synchronized void requireTree(String observationId){tree.requireBound(observationId);}
+    /** phone_batch checks against the bound tree (never a new snapshot, which would unbind the remaining steps). */
+    public synchronized void verifyTarget(String id){tree.verify(id,displayId());}
+    public synchronized boolean tapAllowed(String id){return tree.tapAllowed(id);}
+    public synchronized boolean enterAllowed(String id){return tree.enterAllowed(id);}
+    public synchronized String[] outside(String... ids)throws Exception{return tree.outside(displayId(),W,H,ids);}
     public synchronized JSONObject preview()throws Exception{return image(capture());}
     public synchronized void tap(JSONObject a,boolean longPress)throws Exception{
         float x,y;

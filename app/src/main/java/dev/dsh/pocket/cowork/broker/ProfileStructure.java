@@ -21,7 +21,8 @@ final class ProfileStructure implements AutoCloseable {
     private UiAutomation automation;
     private final Map<String,Entry> nodes=new HashMap<>();
     private String boundObservation="";
-    private record Entry(AccessibilityNodeInfo node,Rect bounds,boolean scrollable){}
+    /** The observed node and what the model saw of it (phone_batch re-checks the label before each step). */
+    private record Entry(AccessibilityNodeInfo node,Rect bounds,boolean scrollable,String text,String desc,String rid,boolean checkable,boolean editable){}
     private static final class Stats{int windows,emitted,interactive,unlabeled,skippedWindows;boolean truncated,custom;String title="",pkg="";}
 
     ProfileStructure(ProfileContext profile){this.profile=profile;}
@@ -72,7 +73,7 @@ final class ProfileStructure implements AutoCloseable {
             o.put("bounds",new JSONArray().put(c.bounds.left).put(c.bounds.top).put(c.bounds.right).put(c.bounds.bottom));
             String flags=(c.clickable?"c":"")+(c.editable?"e":"")+(c.scrollable?"s":"")+(c.focused?"f":"")+(c.checked?"k":"");
             if(!flags.isEmpty())o.put("flags",flags);
-            out.put(o);nodes.put(id,new Entry(c.node,new Rect(c.bounds),c.scrollable));
+            out.put(o);nodes.put(id,new Entry(c.node,new Rect(c.bounds),c.scrollable,c.text,c.desc,c.rid,c.checkable,c.editable));
             boolean interactive=c.clickable||c.editable||c.checkable;
             if(interactive){stats.interactive++;if(!c.labeled)stats.unlabeled++;}
         }
@@ -149,9 +150,7 @@ final class ProfileStructure implements AutoCloseable {
             if(b.intersect(0,0,width,height)&&!b.isEmpty()){
                 boolean covered=false;for(Rect c:covering)if(c.contains(b.centerX(),b.centerY())){covered=true;break;}
                 if(!covered){
-                    boolean secret=n.isPassword();
-                    String text=secret?"[REDACTED]":bounded(n.getText());
-                    String description=secret?"":bounded(n.getContentDescription());
+                    String text=text(n),description=desc(n);
                     boolean clickable=n.isClickable()||n.isLongClickable();
                     String role=role(cls);
                     // A large unlabelled picture is content the structure cannot describe: surface it as an Image node.
@@ -181,6 +180,9 @@ final class ProfileStructure implements AutoCloseable {
             default:return s;
         }
     }
+    /** Label as the model sees it: password fields are redacted. */
+    private static String text(AccessibilityNodeInfo n){return n.isPassword()?"[REDACTED]":bounded(n.getText());}
+    private static String desc(AccessibilityNodeInfo n){return n.isPassword()?"":bounded(n.getContentDescription());}
     private static String shortId(String resource){if(resource==null)return "";int slash=resource.lastIndexOf('/');return slash>=0?resource.substring(slash+1):resource;}    private static String bounded(CharSequence value){if(value==null)return "";String s=value.toString().replace('\u0000',' ');return s.substring(0,Math.min(s.length(),MAX_TEXT));}
     synchronized void bind(String observationId){boundObservation=observationId==null?"":observationId;if(observationId==null){release();lastSignature="";}}
     synchronized String title(){return title;}
@@ -202,6 +204,29 @@ final class ProfileStructure implements AutoCloseable {
         AccessibilityWindowInfo w=n.getWindow();
         if(w==null||w.getDisplayId()!=displayId)ActionGate.fail("WRONG_DISPLAY","Element is not on the owned display");
         return n;
+    }
+    /** phone_batch step target: still the observed node (see live) and still showing the observed text and description.
+     *  A recycled list row keeps its handle and its position while it shows another item, so bounds alone cannot tell. */
+    synchronized void verify(String id,int displayId){
+        AccessibilityNodeInfo n=live(id,displayId,true);Entry e=nodes.get(id);
+        if(!text(n).equals(e.text())||!desc(n).equals(e.desc()))ActionGate.fail("NODE_STALE","Element shows other content; observe again");
+    }
+    private Entry entry(String id){Entry e=nodes.get(id);if(e==null)ActionGate.fail("NODE_STALE","Unknown element id; observe the structure again");return e;}
+    /** {@link BatchPolicy#tapAllowed} for the observed label of a bound node. */
+    synchronized boolean tapAllowed(String id){Entry e=entry(id);return BatchPolicy.tapAllowed(e.text(),e.desc(),e.rid(),e.checkable(),e.editable());}
+    /** {@link BatchPolicy#enterAllowed} for the observed label of the field typed into. */
+    synchronized boolean enterAllowed(String id){Entry e=entry(id);return BatchPolicy.enterAllowed(e.text(),e.desc(),e.rid());}
+    /** One read of the screen, one signature per id: the labelled content outside the observed bounds of that node. A
+     *  batch step may change its own element (a field's text, its clear icon, a check mark) but nothing else. */
+    synchronized String[] outside(int displayId,int width,int height,String... ids)throws Exception{
+        ArrayList<Cand> all=collect(displayId,width,height,new Stats());
+        String[] out=new String[ids.length];
+        for(int i=0;i<ids.length;i++){
+            Rect own=entry(ids[i]).bounds();ArrayList<Cand> rest=new ArrayList<>();
+            for(Cand c:all)if(!Rect.intersects(c.bounds,own))rest.add(c);
+            out[i]=signature(rest);
+        }
+        return out;
     }
     /** Bounds of the largest scrollable region of the bound observation, or null (page reading and default scroll point). */
     synchronized Rect largestScrollable(){

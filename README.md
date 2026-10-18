@@ -74,6 +74,7 @@ Continuo 是一个原生 Android 客户端（Kotlin + Jetpack Compose），连�
 - **结构优先**：模型调用 `phone_screenshot` 前必须先读 `phone_ui_tree`，否则被拒（`TREE_REQUIRED`）；结构不完整（`complete:false`）时可以直接截图。插件与 Broker 各自独立强制。
 - **观察绑定与单次消费**：每次动作带短期 `observationId`（60 秒内有效），屏幕变化、超时或用过一次即失效；元素点击绑定界面树观察，中间截一张图不会让元素 ID 失效。
 - **动作自带结果画面**：点击、长按、滑动、滚动、输入、`BACK`/`ENTER`/`HOME` 和 `phone_wait` 执行后，Broker 等画面稳定（最早 300 毫秒后读，两次读到相同内容即视为稳定，最多读 6 次），再把一份完整的 `phone_ui_tree` 观察放进回复的 `observation`（新的 `observationId` 与元素 ID），模型直接接着用，不必再调一次 `phone_ui_tree`。回复里的 `changed:false` 表示与模型上次读到的画面相比没有可见变化，`settled:false` 表示读取时画面仍在变化；读取失败时只给出 `observationError` 和提示，动作本身仍报告为已执行，避免模型误以为没点上而重复操作。`phone_launch_app`（冷启动通常接着 `phone_wait`）、`phone_read_page` 和 `RECENTS` 不附带画面。
+- **单观察多动作（`phone_batch`）**：同一屏上的几个元素操作（填几个输入框、勾几个选项，最后一步可以是一次点击、`ENTER` 或 `BACK`）一次调用完成，2–5 步，只接受元素 ID，界面树必须完整。每一步执行前，Broker 都会核验三件事：窗口集合和前台 UID 仍是观察时的样子；上一步稳定后，它所操作元素以外的带文字内容没有变化；目标仍在原位，文字和描述与观察时一致。任何一项不满足就停下，返回 `completed`、`stoppedAt`、`stopReason` 和当时的画面，剩余步骤不执行，模型改为逐步继续。所以用错的代价约等于逐步执行，不会点错地方。以下几类会被留给单步（`HIGH_IMPACT_SINGLE`）：标签或 view id 含发送、付款、删除、确认、同意、授权、提交、发布等字样的点击；无法判断的无标签按钮；以及不是在搜索框里输入之后的 `ENTER`（聊天框里的回车就是发送）。设计取舍见 [phone-batch-design.md](docs/phone-batch-design.md)。
 - **高影响操作交给用户**：付款、发消息、授权、删除等由系统提示约束模型不得自行提交，需要时用 `phone_request_intervention` 把屏幕交给你。工作资料模式下没有逐个动作的原生审批（资料本身是授权边界），所以这一条是提示词与用户确认层面的约束，不是 Broker 的硬拦截。
 - **文本输入**：带 `elementId` 时对可编辑节点做语义整体替换，任何语言都可以（含中文），密码框拒绝（`SECRET_INPUT`）；不带 `elementId` 时逐键注入，仅限键盘可表达的 ASCII 可打印字符，中文与 emoji 返回 `TEXT_UNSUPPORTED`（不结束任务）。两种方式都不走共享剪贴板。
 - **不留痕**：工作资料里的启动器入口由 Broker 停用（可恢复，`LauncherHider`），新装应用的入口每秒检查一次并立即隐藏；模型启动的应用带 `FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS`，不进最近任务。
@@ -90,18 +91,18 @@ Continuo 是一个原生 Android 客户端（Kotlin + Jetpack Compose），连�
 
 ### 模型可用的工具
 
-手机工具 17 个。模型看到的名字是下划线形式（如 `phone_tap`），插件与 Broker 之间的线协议名是点号形式（`phone.tap`）：
+手机工具 18 个。模型看到的名字是下划线形式（如 `phone_tap`），插件与 Broker 之间的线协议名是点号形式（`phone.tap`）：
 
 | 类别 | 工具 |
 |---|---|
 | 状态 | `phone.status`、`phone.apps` |
 | 观察 | `phone.ui_tree`、`phone.screenshot`、`phone.read_page`（自动下翻 1–12 页，读长文） |
 | 手势 | `phone.tap`、`phone.long_press`、`phone.swipe`、`phone.scroll` |
-| 输入 | `phone.type_text`、`phone.key`（`BACK`/`ENTER`/`HOME`/`RECENTS`） |
+| 输入 | `phone.type_text`、`phone.key`（`BACK`/`ENTER`/`HOME`/`RECENTS`）、`phone.batch`（同一观察上的 2–5 步元素操作） |
 | 应用与时序 | `phone.start`（可选）、`phone.launch_app`（最多等 8 秒上屏，超时返回 `LAUNCH_TIMEOUT` 但保留已启动的应用）、`phone.wait`（≤10 秒） |
 | 控制 | `phone.pause`、`phone.stop`、`phone.request_intervention` |
 
-另有 `cowork_files_read/write/list`（固定 `/workspace/cowork`，只能新建文件）、`web_search`、`web_fetch`（仅公网 HTTP(S)），共 22 个。宿主装有对应插件时，还会放行上下文管理工具（`compress`、`decompress`、`search_context`、`acp_status`）和记忆工具（`memory_search/get/list/save/update/archive`），但只认宿主的全局定义，带文件参数的调用一律拒绝。
+另有 `cowork_files_read/write/list`（固定 `/workspace/cowork`，只能新建文件）、`web_search`、`web_fetch`（仅公网 HTTP(S)），共 23 个。宿主装有对应插件时，还会放行上下文管理工具（`compress`、`decompress`、`search_context`、`acp_status`）和记忆工具（`memory_search/get/list/save/update/archive`），但只认宿主的全局定义，带文件参数的调用一律拒绝。
 
 ## 其他功能
 

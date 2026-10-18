@@ -24,6 +24,26 @@ class ToolContractTest {
         denied("phone.tap","""{"observationId":"one","elementId":"n12","x":1,"y":2}""");denied("phone.tap","""{"observationId":"one","elementId":"12"}""")
         denied("phone.tap","""{"observationId":"one","elementId":"n12345"}""");denied("phone.tap","""{"observationId":"one"}""");denied("phone.tap","""{"observationId":"one","x":1}""")
     }
+    @Test fun batchIsElementInputsWithAnOptionalFinalKey(){
+        valid("phone.batch","""{"observationId":"one","steps":[{"tool":"type_text","elementId":"n1","text":"张三"},{"tool":"tap","elementId":"n2"},{"tool":"key","key":"ENTER"}]}""")
+        valid("phone.batch","""{"observationId":"one","steps":[{"tool":"tap","elementId":"n1"},{"tool":"long_press","elementId":"n2"},{"tool":"key","key":"BACK"}]}""")
+        for(steps in listOf(
+            """[{"tool":"tap","elementId":"n1"}]""",                                                          // one step is a single call
+            (1..6).joinToString(",","[","]"){"""{"tool":"tap","elementId":"n$it"}"""},                           // more than five
+            """[{"tool":"key","key":"ENTER"},{"tool":"tap","elementId":"n1"}]""",                              // key only last
+            """[{"tool":"tap","elementId":"n1"},{"tool":"key","key":"HOME"}]""",                               // only ENTER/BACK
+            """[{"tool":"tap","elementId":"n1"},{"tool":"tap","elementId":"n1"}]""",                           // each target once
+            """[{"tool":"tap","x":1,"y":2},{"tool":"tap","elementId":"n1"}]""",                                // no coordinates
+            """[{"tool":"tap","elementId":"n1"},{"tool":"swipe","elementId":"n2"}]""",
+            """[{"tool":"type_text","elementId":"n1"},{"tool":"tap","elementId":"n2"}]""",                     // text required
+            """[{"tool":"tap","elementId":"n1","text":"x"},{"tool":"tap","elementId":"n2"}]""",                // no extras
+            """[{"tool":"type_text","text":"x"},{"tool":"tap","elementId":"n2"}]""",                           // elementId required
+            """[{"tool":"tap","elementId":"edit"},{"tool":"tap","elementId":"n2"}]""",
+            """[{"tool":"type_text","elementId":"n1","text":"${"字".repeat(4000)}"},{"tool":"type_text","elementId":"n2","text":"${"字".repeat(4000)}"},{"tool":"type_text","elementId":"n3","text":"x"}]""",
+            """{"tool":"tap"}""","[1,2]"))
+            denied("phone.batch","""{"observationId":"one","steps":$steps}""")
+        denied("phone.batch","""{"steps":[{"tool":"tap","elementId":"n1"},{"tool":"tap","elementId":"n2"}]}""")
+    }
     @Test fun interventionReasonIsBounded(){
         valid("phone.request_intervention","""{"reason":"请输入验证码"}""");valid("phone.intervention_status","{}")
         denied("phone.request_intervention","""{"reason":""}""");denied("phone.request_intervention","""{"reason":"${"x".repeat(121)}"}""");denied("phone.intervention_status","""{"x":1}""")

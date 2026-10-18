@@ -10,7 +10,7 @@ public final class RefusalPolicy {
      *  A boundary violation (foreign task, unapproved app, identity mismatch) is NOT in this class. */
     static final Set<String> SURVIVABLE=Set.of("TEXT_UNSUPPORTED","NODE_STALE","NOT_EDITABLE","SECRET_INPUT",
         "STALE_OBSERVATION","INPUT_REJECTED","APP_LAUNCH_DENIED","LAUNCH_TIMEOUT","TREE_REQUIRED","WAIT_LIMIT","KEY_DENIED",
-        "INVALID_GESTURE","ARGUMENTS_INVALID","SCROLL_UNSUPPORTED","TEXT_LIMIT","CONTROL_DENIED","SCREEN_SETTLING");
+        "INVALID_GESTURE","ARGUMENTS_INVALID","SCROLL_UNSUPPORTED","TEXT_LIMIT","CONTROL_DENIED","SCREEN_SETTLING","HIGH_IMPACT_SINGLE");
     /** How long the owned display may stay unusable (transitional) before the watchdog pauses as SCREEN_UNRESPONSIVE. */
     public static final long SETTLING_LIMIT_MS=20_000L;
     private RefusalPolicy(){}

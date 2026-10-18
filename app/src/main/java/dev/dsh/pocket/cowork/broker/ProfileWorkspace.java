@@ -65,6 +65,45 @@ public final class ProfileWorkspace implements AutoCloseable {
     public long profileSerial(){return profile.serial();}
     public int displayId(){VirtualDisplay d=display;return d==null?-1:d.getDisplay().getDisplayId();}
     public void requestCancellation(String execution){cancellation.request(execution);}
+    /** OWN_DISPLAY_GROUP gives the owned display a power group of its own, with its own screen-off timeout, and only input
+     *  injected into it counts as activity there. A model that reads, thinks or waits longer than the timeout (or a power-
+     *  button sleep, after which only the main group wakes) leaves the group dozing: its activities stop, no task on it is
+     *  visible, launches never arrive and every check looks like a screen that never settles. The owner keeps the group
+     *  awake through this: wake it when it is not interactive, then report activity on it. Only this display's group is
+     *  addressed, never the main screen. Own lock and binder calls only, so it never waits on a running tool; best effort,
+     *  never throws. IPowerManager signatures as shipped on the Android 16 device. */
+    public void keepAwake(){
+        int id=displayId();if(id<=0)return;
+        synchronized(powerLock){
+            try{
+                if(power==null){
+                    IBinder binder=(IBinder)Class.forName("android.os.ServiceManager").getMethod("getService",String.class).invoke(null,"power");
+                    Class<?> type=Class.forName("android.os.IPowerManager");
+                    Object service=Class.forName("android.os.IPowerManager$Stub").getMethod("asInterface",IBinder.class).invoke(null,binder);
+                    if(service==null)throw new IllegalStateException("power service unavailable");
+                    displayInteractive=type.getMethod("isDisplayInteractive",int.class);
+                    wakeDisplay=type.getMethod("wakeUpWithDisplayId",long.class,int.class,String.class,String.class,int.class);
+                    displayActivity=type.getMethod("userActivity",int.class,long.class,int.class,int.class);
+                    power=service;
+                }
+                if(!(Boolean)displayInteractive.invoke(power,id))
+                    wakeDisplay.invoke(power,SystemClock.uptimeMillis(),WAKE_REASON_APPLICATION,"dsh-cowork:owned-display","com.android.shell",id);
+                displayActivity.invoke(power,id,SystemClock.uptimeMillis(),USER_ACTIVITY_EVENT_OTHER,0);
+                powerFailure="";
+            }catch(Throwable e){
+                Throwable cause=e instanceof InvocationTargetException&&e.getCause()!=null?e.getCause():e;
+                String why=cause.getClass().getSimpleName();
+                // Logged once per distinct failure: this runs every two seconds while a turn owns the display.
+                if(!why.equals(powerFailure)){powerFailure=why;System.err.println("owned display wake failed: "+why);}
+            }
+        }
+    }
+    /** PowerManager.WAKE_REASON_APPLICATION and USER_ACTIVITY_EVENT_OTHER (system API values). */
+    private static final int WAKE_REASON_APPLICATION=2,USER_ACTIVITY_EVENT_OTHER=0;
+    private final Object powerLock=new Object();
+    private Object power;
+    private Method displayInteractive,wakeDisplay,displayActivity;
+    private String powerFailure="";
     /** A new owner of the standing display starts a fresh cancellation scope. Lock free: it is only an atomic swap. */
     public void beginScope(String execution){cancellation.begin(execution);}
     /** True while the standing display exists and still has the verified identity (not locked out, same profile). */

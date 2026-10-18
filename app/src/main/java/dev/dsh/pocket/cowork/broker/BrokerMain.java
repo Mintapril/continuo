@@ -35,32 +35,12 @@ public final class BrokerMain {
     private volatile WorkspaceBinding cancellationBinding=new WorkspaceBinding("","");
     /** Argument problems detected before any event is injected; the task stays running and the model may retry. */
     private static final Set<String> REJECTED_BEFORE_INPUT=Set.of("TEXT_UNSUPPORTED","NODE_STALE","NOT_EDITABLE","SECRET_INPUT");
-    /** Refusals a session must survive: the model retries (or asks the user) instead of losing the whole workspace.
-     *  A boundary violation (foreign task, unapproved app, identity mismatch) is NOT in this class. */
-    private static final Set<String> SURVIVABLE=Set.of("TEXT_UNSUPPORTED","NODE_STALE","NOT_EDITABLE","SECRET_INPUT",
-        "STALE_OBSERVATION","INPUT_REJECTED","APP_LAUNCH_DENIED","LAUNCH_TIMEOUT","TREE_REQUIRED","WAIT_LIMIT","KEY_DENIED",
-        "INVALID_GESTURE","ARGUMENTS_INVALID","SCROLL_UNSUPPORTED","TEXT_LIMIT","CONTROL_DENIED","SCREEN_SETTLING");
-    private volatile long transientSince=0;
-    /** A refusal caused by a transition (app switching, a dialog closing, an animated screen) rather than by a
-     *  boundary violation: the workspace stays and the model can wait and observe again. */
-    private static boolean transientDenied(ActionGate.Denied e){
-        String code=e.code;
-        if(code.equals("SCREEN_SETTLING")||code.equals("STALE_OBSERVATION")||code.equals("APP_UNKNOWN"))return true;
-        if(!code.equals("APP_DENIED"))return false;
-        String message=String.valueOf(e.getMessage());
-        // "Cannot verify" is the probe timing out or quarantined: a transport stall, not a boundary verdict.
-        if(code.equals("SECURITY_UNAVAILABLE"))return message.startsWith("Cannot verify");
-        return !(message.startsWith("App is not approved")
-            ||message.startsWith("Verified managed-profile")||message.startsWith("Verified work profile")
-            ||message.startsWith("App is not installed in the work profile"));
-    }
-    /** A survivable refusal is reported; only a real boundary violation pauses the session. */
-    private boolean survives(ActionGate.Denied e){return SURVIVABLE.contains(e.code)||transientDenied(e);}
-    /** Turn a transition refusal into an actionable one: the session is intact, the screen is just moving. */
-    private static ActionGate.Denied settling(ActionGate.Denied e){
-        if(!e.code.equals("APP_DENIED")&&!e.code.equals("APP_UNKNOWN"))return e;
-        return new ActionGate.Denied("SCREEN_SETTLING","The screen is changing (app switch, dialog or animation); the session is still running. Call phone_wait, then phone_ui_tree");
-    }
+    /** Run of transitional watchdog checks for the current owner of the display (see {@link RefusalPolicy.Settling}). */
+    private final RefusalPolicy.Settling screenSettling=new RefusalPolicy.Settling();
+    /** A survivable refusal is reported; only a real boundary violation pauses the session ({@link RefusalPolicy}). */
+    private boolean survives(ActionGate.Denied e){return RefusalPolicy.survives(e.code,e.getMessage());}
+    /** Turn a transition refusal into an actionable one; a refusal that paused the session keeps its own code. */
+    private static ActionGate.Denied settling(ActionGate.Denied e){return RefusalPolicy.reported(e);}
     /** Observation and input tools the model may not use while the user controls the screen. */
     private static final Set<String> USER_CONTROL_BLOCKED=Set.of("phone.screenshot","phone.ui_tree","phone.tap","phone.long_press","phone.swipe","phone.scroll","phone.read_page","phone.type_text","phone.key","phone.launch_app","phone.wait");
     private final Takeover takeover=new Takeover();
@@ -150,11 +130,15 @@ public final class BrokerMain {
         ScheduledExecutorService watchdog=Executors.newScheduledThreadPool(3);
         broker.closer.submit(()->broker.keepStandingDisplay());
         watchdog.scheduleAtFixedRate(broker::keepControllerRunning,1,2,TimeUnit.SECONDS);
+        watchdog.scheduleAtFixedRate(broker::keepOwnedDisplayAwake,1,2,TimeUnit.SECONDS);
         watchdog.scheduleAtFixedRate(broker::lifecycleTick,1,1,TimeUnit.SECONDS);
         final int[] tick={0};
         watchdog.scheduleAtFixedRate(()->{try{broker.guardTick(++tick[0]);}catch(Throwable guardFailure){}},1,1,TimeUnit.SECONDS);
         Looper.loop();
     }
+    /** While a turn owns the display its power group must not doze (see {@link ProfileWorkspace#keepAwake}). Runs on its own
+     *  clock, so a long tool (phone_wait, a takeover) cannot let the group time out. */
+    private void keepOwnedDisplayAwake(){try{if(gate.owner()!=null)workspace.keepAwake();}catch(Throwable keepAwakeFailure){}} // a throw would cancel the schedule
     /** Control-plane watchdog. Never waits on the workspace, so lease expiry and command settlement are always on time. */
     private void lifecycleTick(){
         try{synchronized(this){
@@ -179,15 +163,14 @@ public final class BrokerMain {
         try{
             if(now-controllerSeen>15000)ActionGate.fail("CONTROLLER_OFFLINE","User control channel disconnected");
             if(takeover.active())workspace.guardUser();else guardNow();
-            transientSince=0;
+            screenSettling.reset();
             ApprovalGate.Reservation p=approvals.pending();if(p!=null&&SystemClock.elapsedRealtime()>p.deadline)reason="APPROVAL_STALE";
         }catch(Exception e){
             ActionGate.Denied denied=e instanceof ActionGate.Denied?(ActionGate.Denied)e:null;
-            if(denied!=null&&transientDenied(denied)){
+            if(denied!=null&&RefusalPolicy.transientDenied(denied.code,denied.getMessage())){
                 // An app switch, a closing dialog or an animated screen is normal: the session survives it. Only a
                 // screen that stays unusable for a long time ends the task.
-                if(transientSince==0)transientSince=now;
-                else if(now-transientSince>20000)reason="SCREEN_UNRESPONSIVE";
+                if(screenSettling.expired(now))reason="SCREEN_UNRESPONSIVE";
             }else reason=denied!=null?denied.code:"GUARD_FAILED";
         }
         if(reason!=null)synchronized(this){if(gate.owner()!=null&&(!gate.paused()||approvals.pending()!=null||!reason.equals(pauseReason)))safePause(reason);}
@@ -300,7 +283,7 @@ public final class BrokerMain {
     private synchronized void closeWorkspace(){
         if(!workspaceExecutionId.isEmpty())workspace.requestCancellation(workspaceExecutionId);
         treeRead=false;activity.reset();if(takeover.finish("cancelled"))workspace.userRelease();cancellationBinding=new WorkspaceBinding("","");
-        if(gate.owner()!=null)gate.stop(gate.owner());approvals.clear();workspaceExecutionId="";
+        if(gate.owner()!=null)gate.stop(gate.owner());approvals.clear();workspaceExecutionId="";screenSettling.reset();
     }
     /** The one path that clears the standing display: the model called phone.stop. Removes the profile tasks on it. */
     private synchronized void clearDisplay(){
@@ -334,7 +317,7 @@ public final class BrokerMain {
     private void guardNow(){guardNow(400);}
     /** `budgetMs` is the retry window for one check. phone.wait passes 0: it polls on its own clock and must not
      *  let a single settling gap consume the time the caller asked to wait. */
-    private void guardNow(long budgetMs){if(workspace.hasLaunched())workspace.guard(budgetMs);else workspace.guardIdle();}
+    private void guardNow(long budgetMs){if(workspace.hasLaunched())workspace.guard(budgetMs);else workspace.guardIdle();screenSettling.reset();}
     /** First tool of an admitted turn takes the standing display (no phone_start needed). Ownership is per turn. */
     private void claim(String session,boolean userApproved)throws Exception{
         if(gate.owner()!=null||userApproved)return;
@@ -343,13 +326,14 @@ public final class BrokerMain {
         final String mine=UUID.randomUUID().toString();
         synchronized(this){
             if(tasks.active()&&!userApproved)tasks.requireRunning(session);
-            gate.start(session);workspaceExecutionId=mine;
+            gate.start(session);workspaceExecutionId=mine;screenSettling.reset();
             if(!tasks.active()){taskManaged=false;executionId=mine;}
             cancellationBinding=new WorkspaceBinding(executionId,mine);treeRead=false;treeIncomplete=false;
         }
         synchronized(responses){responses.clear();}
         try{
-            ensureDisplay();workspace.beginScope(mine);
+            // An unowned standing display is allowed to doze; the new owner needs it awake before anything is checked.
+            ensureDisplay();workspace.keepAwake();workspace.beginScope(mine);
             // beginScope starts a fresh cancellation scope: re-check that no stop/pause revoked this claim meanwhile.
             synchronized(this){if(!mine.equals(workspaceExecutionId)||gate.owner()==null||gate.paused())ActionGate.fail("CONTROL_INTERRUPTED","User requested pause or stop");}
             restartRequired=false;pauseReason="";event("workspace.claim","running");
@@ -362,6 +346,8 @@ public final class BrokerMain {
     }
     private synchronized void requestTaskControl(String action,String reason)throws Exception{
         if(!tasks.request(action))return;
+        // Private root-only broker.log: the code only. A native pause/stop is what ends the DSH turn as "aborted".
+        System.err.println("task "+action+" requested: "+reason);
         pauseReason=reason;approvals.clear();
         if(gate.owner()!=null){workspace.requestCancellation(workspaceExecutionId);if(action.equals("stop"))closeWorkspace();else gate.pause(gate.owner());}
         event("task."+action,tasks.state());
@@ -404,7 +390,10 @@ public final class BrokerMain {
         }
         if(takeover.active()&&USER_CONTROL_BLOCKED.contains(tool))ActionGate.fail("USER_CONTROL","The user is controlling the screen; wait for hand-back");
         gate.requireActive(session);
-        try{guardNow();}catch(ActionGate.Denied e){if(!survives(e))safePause(e.code);throw settling(e);}
+        workspace.keepAwake();
+        // phone.wait guards on its own clock below: a settling screen is exactly what it waits out, so this up-front
+        // check must not turn it into an immediate SCREEN_SETTLING.
+        if(!tool.equals("phone.wait"))try{guardNow();}catch(ActionGate.Denied e){if(!survives(e))safePause(e.code);throw settling(e);}
         if(tool.equals("phone.key")){
             // Virtual navigation keys of the AI screen. HOME and RECENTS claim nothing about pixels the model has
             // seen: they address the owned display's desktop and its task list, so no observation is required.
@@ -625,6 +614,7 @@ public final class BrokerMain {
         if(reason.equals("MAIN_CHANGED")||reason.equals("MAIN_UNKNOWN")||reason.equals("APP_CONFLICT"))restartRequired=true;
         if(taskManaged&&tasks.active()){requestTaskControl("pause",reason);return;}
         if(gate.owner()==null)return;
+        System.err.println("workspace paused: "+reason);
         pauseReason=reason;gate.pause(gate.owner());activity.note("任务已暂停");event(reason,"paused");
     }catch(Exception ignored){}}
     private synchronized void event(String action,String next)throws Exception{

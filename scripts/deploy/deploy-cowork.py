@@ -5,7 +5,7 @@ import subprocess
 
 ADB = r"C:\Users\rangt\AppData\Local\Microsoft\WinGet\Packages\Google.PlatformTools_Microsoft.Winget.Source_8wekyb3d8bbwe\platform-tools\adb.exe"
 SERIAL = "5b9a17cd"
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 
 def run(*args, **kwargs):
     return subprocess.run([ADB,"-s",SERIAL,*args],check=True,**kwargs)

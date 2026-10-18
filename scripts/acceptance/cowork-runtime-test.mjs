@@ -33,7 +33,7 @@ async function main() {
     sessionCount:sessions.items.length, runningCount:running.length, unknownRunningCount:unknown.length,
     quiescent:running.length === 0 && unknown.length === 0,
   };
-  fs.writeFileSync(new URL('./test-evidence/cowork/runtime-inspection.json',import.meta.url), JSON.stringify(report,null,2)+'\n');
+  fs.writeFileSync(new URL('../../test-evidence/cowork/runtime-inspection.json',import.meta.url), JSON.stringify(report,null,2)+'\n');
   console.log(JSON.stringify(report));
 }
 main().catch(error=>{console.error(error.message?.startsWith('RPC ') || /^(Missing private|Runtime |Unknown test)/.test(error.message??'') ? error.message : 'Runtime inspection failed; no private diagnostics emitted');process.exitCode=1;});

@@ -9,7 +9,7 @@ import path from 'node:path';
 
 const python = process.env.COWORK_TEST_PYTHON ?? (process.platform === 'win32'
   ? path.join(homedir(), '.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/python.exe') : 'python3');
-const helperDir = fileURLToPath(new URL('../../', import.meta.url));
+const helperDir = fileURLToPath(new URL('../../scripts/', import.meta.url));
 const secret = 'test-only-python-secret-0123456789abcd';
 const serverNonce = 'c'.repeat(64);
 const hash = raw => createHash('sha256').update(raw).digest('hex');

@@ -105,8 +105,7 @@ Continuo 是一个原生 Android 客户端（Kotlin + Jetpack Compose），连�
 | `platform-stubs/` | Android 16 隐藏 API 的编译期桩，仅供 Broker 编译，不打包 |
 | `cowork-plugin/` | DSH `cowork-phone` 预设插件（Node.js ≥ 22）：严格工具目录、协议适配、受限文件与联网工具、任务生命周期 |
 | `runtime/` | 手机端运行时脚本：`pocket-control.sh`、`cowork-service.sh`，以及插件安装器、备份与预检工具 |
-| `deploy-*.py`、`cowork_auth.py` | 经 ADB 的部署脚本与 HMAC 认证客户端（令牌运行时生成，不写入仓库） |
-| `cowork-*-test.*`、`probe-*.py` | 设备验收与探测脚本 |
+| `scripts/` | 经 ADB 的运维脚本，全部绑定测试设备：`deploy/` 部署（`deploy-cowork.py`、`deploy-cowork-plugin.py`）、`acceptance/` 夹具与运行时验收、`probes/` 真机探测（结构优先读屏、接管、实时画面帧率），`cowork_auth.py` 是它们共用的 HMAC 认证客户端（令牌运行时生成，不写入仓库） |
 | `docs/` | 设计文档与[更新日志](docs/CHANGELOG.md) |
 
 ## 构建与测试
@@ -136,10 +135,10 @@ node --test test/strict-*.test.mjs
 1. 手机已 root（KernelSU），手机本机运行 DSH（`127.0.0.1:3080`，Ubuntu chroot）。
 2. 在手机上由用户经系统确认创建工作资料，资料拥有者为 `dev.dsh.pocket.isolation`，见 [创建说明](docs/isolation-profile-setup.md)。应用不会自动创建或删除资料。
 3. `adb install -r` 安装 Continuo；不卸载、不清数据。
-4. `deploy-cowork-plugin.py` 把 `cowork-plugin/` 作为附加的 bundle 装入 DSH（带完整私有备份，且要求 DSH 空闲）。
+4. `scripts/deploy/deploy-cowork-plugin.py` 把 `cowork-plugin/` 作为附加的 bundle 装入 DSH（带完整私有备份，且要求 DSH 空闲）。注意：该脚本的文件清单仍含已删除的 `aux-summary.mjs`、`summary-transport.mjs`，并依赖未入库的预检证据，目前 `--check` 会拒绝执行，需要先更新清单与固定哈希。
 5. 授予悬浮窗与通知权限；Broker 由 `runtime/cowork-service.sh` 经 root 启动，之后应用会自动连接与唤醒。
 
-部署脚本中写死了测试设备序列号和本机 ADB 路径，换设备需要修改。
+`scripts/` 中的脚本写死了测试设备序列号和本机 ADB / Node 路径，换设备需要修改；用到 `test-evidence/` 的脚本会把结果写到该本地目录（已被 .gitignore 排除）。`scripts/acceptance/` 里的两个 `.mjs` 还依赖工作区同级的 `dsh-android/repair-model-rpc.mjs`，不在本仓库内。
 
 ## 已知限制
 

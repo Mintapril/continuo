@@ -1,10 +1,11 @@
 """Real-path probe: structure-first, takeover, live stream. Uses a test-owned native task and the work profile apps."""
 import importlib.util, json, sys, time, uuid, socket, hashlib, secrets
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cowork_auth as ca
 
-ROOT = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location("fixture_harness", ROOT / "cowork-device-test.py")
+ROOT = Path(__file__).resolve().parents[2]
+spec = importlib.util.spec_from_file_location("fixture_harness", ROOT / "scripts/acceptance/cowork-device-test.py")
 h = importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
 TASK = "probe-structure-" + uuid.uuid4().hex[:6]
 PKG = sys.argv[1] if len(sys.argv) > 1 else "com.kiwibrowser.browser"

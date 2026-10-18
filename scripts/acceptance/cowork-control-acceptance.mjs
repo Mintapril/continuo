@@ -1,8 +1,8 @@
 // Real DSH cancellation acceptance; NEW test-owned sessions only, no display or files.
 import fs from 'node:fs';import http from 'node:http';import {randomUUID} from 'node:crypto';import {createRequire} from 'node:module';import {setTimeout as delay} from 'node:timers/promises';
-import {authenticatedRequest} from './cowork-plugin/src/auth.mjs';import {ALLOWED_TOOLS} from './cowork-plugin/src/restricted.mjs';
-const require=createRequire(new URL('../dsh-android/repair-model-rpc.mjs',import.meta.url)),WebSocket=require('ws');
-const origin='http://127.0.0.1:3080',out=new URL(`./test-evidence/cowork/runtime-control-${randomUUID()}.json`,import.meta.url);
+import {authenticatedRequest} from '../../cowork-plugin/src/auth.mjs';import {ALLOWED_TOOLS} from '../../cowork-plugin/src/restricted.mjs';
+const require=createRequire(new URL('../../../dsh-android/repair-model-rpc.mjs',import.meta.url)),WebSocket=require('ws');
+const origin='http://127.0.0.1:3080',out=new URL(`../../test-evidence/cowork/runtime-control-${randomUUID()}.json`,import.meta.url);
 const report={kind:'live-phone-whole-task-control',modelCalled:false,cases:[],passed:false};const check=(v,m)=>{if(!v)throw Error(m);};
 const save=()=>fs.writeFileSync(out,JSON.stringify(report,null,2)+'\n');
 async function main(){

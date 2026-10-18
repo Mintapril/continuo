@@ -41,7 +41,7 @@ import sys
 import tarfile
 import tempfile
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parents[2]
 ADB = Path(r"C:\Users\rangt\AppData\Local\Microsoft\WinGet\Packages\Google.PlatformTools_Microsoft.Winget.Source_8wekyb3d8bbwe\platform-tools\adb.exe")
 SERIAL = "5b9a17cd"
 BASE = "/data/local/dsh-native"

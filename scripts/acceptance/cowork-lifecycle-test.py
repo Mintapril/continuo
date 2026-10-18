@@ -3,11 +3,13 @@ Uses fixed device and a test-owned task. Never acknowledges a real DSH execution
 """
 import importlib.util
 import json
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cowork_auth import request
 
-ROOT = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location("fixture_harness", ROOT / "cowork-device-test.py")
+ROOT = Path(__file__).resolve().parents[2]
+spec = importlib.util.spec_from_file_location("fixture_harness", Path(__file__).resolve().parent / "cowork-device-test.py")
 h = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(h)
 TASK = "cowork-lifecycle-acceptance"

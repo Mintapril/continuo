@@ -1,10 +1,11 @@
 """Fixed fixture-only broker acceptance harness. No arbitrary adb input, shell or app targets."""
-import argparse, base64, json, subprocess, time, uuid
+import argparse, base64, json, subprocess, sys, time, uuid
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cowork_auth import request as authenticated_request
 ADB=r"C:\Users\rangt\AppData\Local\Microsoft\WinGet\Packages\Google.PlatformTools_Microsoft.Winget.Source_8wekyb3d8bbwe\platform-tools\adb.exe"
 SERIAL="5b9a17cd"
-ROOT=Path(__file__).resolve().parent
+ROOT=Path(__file__).resolve().parents[2]
 OUT=ROOT/"test-evidence/cowork"
 SESSION="cowork-fixture-acceptance"
 URL="http://127.0.0.1:13091"

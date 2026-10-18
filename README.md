@@ -1,122 +1,161 @@
-# Continuo（通奏）— 原 DSH Pocket：品牌与界面重构
+# Continuo（通奏）
 
-- 应用改名 **Continuo（通奏）**，包名/applicationId 仍为 `dev.dsh.pocket`（保留数据与授权）；设计依据 `工作区\continuo\continuo\Continuo 品牌与图标设计指导.md`。
-- 视觉：「宣纸石青」配色（纸 #ECE9E1 / 墨 #22252A / 石青 #2E6A8E，深色 #1B1D21 / #5B9BC0），去掉赭红与火花；唯一强调色石青 = “AI 正在执行”与主要操作。
-- 品牌元素：开口 C + 输入光标。`ContinuoCursor`（`ui/Components.kt`）取代转圈与火花：执行中按 1200 ms 闪烁（透明度不低于 0.15）、规划中呼吸、等待确认为稳定的藤黄；系统动画缩放为 0 时静止。`ContinuoMark` 绘制 C+光标。
-- 字体：界面用系统无衬线（不再内置 Anthropic/Inter/Lora/Poppins/Source Serif）；代码用 JetBrains Mono；衬线仅用于品牌时刻（首页标题、关于页字标）。
-- 启动图标为自适应图标（含主题单色层），启动屏为 C 描边 + 光标闪烁动画（Android 12+ 框架启动屏，950 ms）；状态栏/通知图标为单色 C。字标 `drawable/continuo_wordmark.xml`。
-- 标志已按 R2「合环」更新（`工作区\continuo\CHANGES.md`）：C 圆心 (47,50)，光标 6×40、比例 1:6.7、圆角约 17%，启动动画描边弧 `M62.43 31.62 A24 24 0 1 0 62.43 68.38`、光标缩放基点 (72.5,70)。
-- 记忆（设置 → 记忆）：直接读写手机侧 dsh-mneme 记忆库——概览（条数/归档数/检索方式/上次整理/版本）、模式（standard/light）、自动化开关（自动注入、自动总结、自动整理、热记忆、实体抽取、文档记忆、质量过滤、BM25、rerank）、注入预算（单条字数、文档条数）、记忆库列表（类型筛选、关键词搜索、新建、编辑、改重要性、归档/恢复、删除）、注入预览与存储回收（先 dry-run 再确认）。数据经 DSH 自身的 `/api/dsh-mneme/` 路由读取，复用已登录的 DSH 会话 cookie，不额外开端口或令牌；插件未安装时页面直接提示。
-- 旧名称 “DSH Pocket” 仅保留在下方历史版本标题与 DSH 侧脚本名（`pocket-control.sh` 等）中。
-# DSH Pocket 0.7.0（设置重排 / 执行器自动连接 / 任务岛上移）
+**让 AI 在手机的独立副屏上操作应用，你继续正常使用主屏。**
 
-- 无需手动连接执行器：打开应用时自动启动控制服务（`CoworkControllerService` 自愈循环：断线 6 秒后重连，退避 3 秒×失败次数，连续失败 6 次后停止）；发布 Cowork 任务时若控制器心跳超过 15 秒，broker 自行以 root 执行 `am start-foreground-service` 唤醒控制服务（8 秒限频；存在文件 `/data/local/dsh-native/cowork/no-auto-wake` 或关闭设置中的“自动连接执行器”可禁用），插件最多等待 25 秒再给出可操作的错误提示。实机验证：`am force-stop` 后发起任务，约 1.8 秒内控制器与任务岛服务重新就绪。
-- DSH 自动连接：每次启动 DSH 都会换新登录令牌，旧版只尝试一次已保存令牌，失效后要手动点连接。现在 `PocketViewModel` 有自愈监督循环：先用已保存令牌，失败则经 Root 读取当前令牌，带退避持续重试；应用回到前台立即重连；在“运行环境”手动停止后暂停自动连接，启动/重启后恢复。设置里每个目标只有一个入口，Cowork 控制中心页面不再回链设置（原先会互相无限跳转）。
-- 设置页重排为中心页 + 子页：连接与模式（右侧显示 DSH 连接状态）、Cowork（右侧显示执行器状态与任务岛开关）（执行器自动连接、任务岛开关、悬浮窗/通知权限状态、游戏中隐藏、免打扰应用、控制中心入口）、外观与反馈、运行环境、关于。Cowork 控制中心页不再包含设置项，只保留状态、实时画面、接管与应用列表。
-- 任务岛重做（类 iPhone 灵动岛）：待机时是一颗黑色胶囊，垂直居中于前置摄像头与状态栏时间/信号同一行（位置按系统 cutout 与 status bar insets 实测，不写死像素）。任务运行时胶囊以弹簧动画向两侧拉长：摄像头左侧显示“正在使用 <应用名>”，右侧显示最近一个关键动作（打开应用、输入文字、确认输入、请求/结束接管、暂停等）；这些文案由 broker 的 `ActivityLog` 根据真实工具调用与前台应用切换（连续 2 次采样确认）生成，只在关键动作/应用切换时更新，**不再有模型生成的摘要**（摘要功能、插件侧 summary 通道与设置开关已整体删除）。点按胶囊展开为无按钮面板：左侧最近 4 条关键动作，右侧副屏实时预览；点击预览进入全屏预览，底部“接管操作”直接接管（全屏内触摸直通副屏），接管中变为“交还给 AI”，左上“返回”回到任务岛预览态。系统状态栏窗口会吞掉其区域内的触摸，所以胶囊下方有一块透明触摸区（约 104dp 宽）。动效为画布弹簧（展开 ζ=0.62/3Hz，收起 ζ=0.78，出现/消失从摄像头缩放）；运行中为跳动音柱、等待/确认/暂停为呼吸圆点、断连为闪烁点。FLAG_SECURE 在展示副屏画面/全屏预览时开启。通知上的暂停/停止/隐藏动作保留。同时修正系统应用（如桌面）被判为“未知是否游戏”而导致任务岛退回通知的问题。
-- Cowork 现在也放行宿主的记忆工具（`memory_search` / `memory_get` / `memory_list` / `memory_save` / `memory_update` / `memory_archive`，`restricted.mjs` 的 `MEMORY_TOOLS`）：只在记忆插件已安装、且工具由宿主全局定义时列出（后代作用域的同名影子会被拒绝），带 `path`/`toFile` 等文件参数的调用一律拒绝；`memory_register_document`（吃宿主路径）、`memory_runtime`（下载运行时）、`memory_delete`/`memory_forget`（销毁或隐藏数据）仍不暴露。系统提示要求动手前先 `memory_search`、结束时用 `memory_save` 记下持久偏好与决定，并把取回的记忆当作不可信数据。Cowork 与 Code 共用同一个手机侧记忆库（`~/.dsh/memory/memory.db`），app 的「设置 → 记忆」页对两种模式都生效。实测：cowork-phone 会话工具数 26 → 32，`memory_save` 写入成功、`memory_search` 能召回。
-- Cowork 放行 billion-context-dsh 的上下文工具（compress / decompress / search_context / cp_status，
-estricted.mjs 的 CONTEXT_TOOLS）：只放行宿主全局定义（后代作用域同名影子会被拒绝），带 	oFile/path 等写文件参数一律拒绝；其余仍是白名单。
-- 模型可见的工具名不再含点号：OpenAI 兼容接口（如 deepseek-official）要求 ^[a-zA-Z0-9_-]+$，原来的 phone.tap、cowork.files.read 会报 Invalid 'tools[0].name'。现在注册给模型的名字是 phone_tap、phone_ui_tree、cowork_files_read 等（modelName() 把非法字符换成下划线）；插件与手机 Broker 之间的内部线协议名仍是 phone.tap 形式，不变。ALLOWED_TOOLS 即模型可见名，测试断言全部匹配该正则。
-- 截图前必须读结构（代码级强制）：模型调用 phone.screenshot 之前必须先调用 phone.ui_tree 读取当前屏幕的 UI 元素，否则直接以 TREE_REQUIRED 拒绝并返回理由（先读 phone.ui_tree；截图仅用于树不完整、自绘内容或树里没有的信息）。插件 BrokerClient 与原生 Broker 各自独立强制（Broker 内为 	reeRead 标记）：任何输入动作、phone.wait、phone.start、请求接管/交还、关闭副屏都会使标记失效，需重新读树；一次读树之后可连续截图直到屏幕再次变化（树本身返回 complete:false 时也直接允许截图）。设备实测：未读树截图 → TREE_REQUIRED；读树后截图成功；wait/按键后截图再次被拒。
-- 隔离加强（不留痕）：① 工作资料里的启动器入口由 Broker 停用（LauncherHider，只停用组件、不卸载、不清数据），桌面不再出现 Work 文件夹和这些应用；列表记在手机 `/data/local/dsh-native/cowork/hidden-launchers`，建 `/data/local/dsh-native/cowork/no-hide-launchers` 即在下个周期全部恢复；启动应用时 Broker 为该应用启用其入口并在应用运行期间保持启用（停用正在运行的启动活动会让系统强制结束它，实测会令副屏应用立刻消失），独占副屏释放或看门狗发现无副屏时再统一隐藏。② 模型启动应用带 `FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS`，运行期间不出现在最近任务。③ Broker 看门狗每 3 秒执行 `housekeeping`：无独占副屏时移除工作资料遗留的最近任务记录，只处理已验证的工作资料用户，绝不碰个人任务。资料拥有者应用（Cowork 隔离实验）是受保护包，系统拒绝停用它（Cannot disable a protected package），所以改为从源头去掉图标：isolation 模块 0.3-experiment 的清单里 IsolationActivity 不再声明 LAUNCHER，桌面不再有它的图标（需要打开时用 m start -n dev.dsh.pocket.isolation/.IsolationActivity）。桌面（ColorOS 启动器）不会即时刷新缓存的图标，改动后需重启桌面或等它重新加载；Broker 启动后与每个 housekeeping 周期会把被别人重新启用的入口重新隐藏（漂移修复）。
-- 已知限制：唤醒依赖 KernelSU 对 DSH Pocket 的授权与系统允许 root 启动前台服务；ColorOS 上划清除最近任务仍会强杀进程，但 broker 会在下次任务请求时重新唤醒。
+Continuo 是一个原生 Android 客户端（Kotlin + Jetpack Compose），连接手机本机运行的 DSH 智能体服务。它的核心是 **Cowork 模式**：在 Android 工作资料（work profile）里开一块 AI 独占的虚拟副屏，AI 只在这块屏幕上读界面、点击、滑动、输入；个人主屏、你的应用和你的数据不在它的操作范围内。你可以随时在任务岛里看实时画面、暂停，或一键接管。
 
-# DSH Pocket 0.6.0（接管 / 实时画面 / 结构优先）
+> **项目状态：** 这是一个面向特定设备（一加 Ace 3V，Android 16，ColorOS，KernelSU root）的个人项目，不是开箱即用的通用应用。它依赖 root、手机本机的 DSH 运行环境和一个手动创建的工作资料，部署步骤与设备强相关。第三方真实应用的兼容性只验证过一部分。详见[已知限制](#已知限制)。
 
-- 页面结构优先：`phone.ui_tree` 通过 UiAutomation 读取工作资料副屏的节点树，返回**紧凑格式** `{title, package, nodes:[{id, text?, desc?, role?, rid?, bounds:[l,t,r,b], flags?}], complete, advice}`（`flags` 字母 c 可点/e 可编辑/s 可滚动/f 聚焦/k 选中）。无文字的可点击外壳、被上层窗口遮挡的节点、重复堆叠的同一操作栏都会被去掉；大块无描述图片以 `role:"Image"` 出现（没有替代文本，需要时用截图）。模型按 `elementId` 点击/输入（`phone.tap`/`long_press`/`type_text` 的 `elementId`，与 x,y 二选一）；`elementId` 绑定的是树观察，所以 `phone_ui_tree` → `phone_screenshot` → `phone_tap(elementId)` 可以连着用。`complete:false` 表示结构不足（WebView、自绘/游戏/大面积 SurfaceView、多数控件无标签、被截断），此时截图不再需要重读树。密码框内容为 `[REDACTED]`；安全窗口与外来包窗口不导出。上限：2000 节点、深度 40、文本 300 字、读取预算 5 秒。
-- 读长文与滚动反馈：`phone.read_page` 一次调用自动向下翻页（`maxPages` 1–12，默认 4），返回去重后的可见文本、`pages`、`reachedEnd`、`title`；`phone.scroll` 返回 `moved`，并说明“没动”的原因，`x`/`y` 可省略（自动取最大可滚动区域）。
-- 拒绝不等于结束会话：注入前的参数/元素校验失败（`NODE_STALE`、`STALE_OBSERVATION`、`ARGUMENTS_INVALID`、`KEY_DENIED`、`INVALID_GESTURE`、`WAIT_LIMIT`、`SCROLL_UNSUPPORTED`、`INPUT_REJECTED`、`LAUNCH_TIMEOUT`、`SCREEN_SETTLING`）不会暂停或结束任务，插件同时给出下一步建议；只有越界类失败（外任务占用副屏、未批准包、身份/安全校验失败、`LOCKED`、`USER_CONTROL`、`APP_CONFLICT`）才暂停。看门狗容忍转场最多 20 秒，之后才以 `SCREEN_UNRESPONSIVE` 暂停。`phone.start`/`phone.launch_app` 最多等应用 8 秒上屏，超时返回 `LAUNCH_TIMEOUT` 但保留副屏与已启动的活动，模型用 `phone_wait`（上限 10 秒）后继续观察，而不是重开。
-- 副屏虚拟导航键：副屏没有系统装饰（个人桌面与 launcher 会破坏资料隔离），所以导航由 broker 自带三键实现——`phone.key` 的 `BACK`（副屏本地返回，需观察）、`HOME`（打开资料内的「AI 桌面」`dev.dsh.pocket.isolation/.HomeActivity`，当前应用留在后台继续运行）、`RECENTS`（列出副屏上的工作资料任务及前后台状态，不改变画面）。`HOME`/`RECENTS` 按屏幕寻址而非像素，因此不需要 observationId，切回后台应用用 `phone.launch_app`（同样不需要）。`phone.launch_app` 去掉了 `MULTIPLE_TASK`，因此切回会复用原有任务而不是新建。用户接管时同样可用：Cowork 页面新增「桌面」按钮，任务岛全屏的左右边缘内滑=返回、底部上滑=桌面（与 ColorOS 手势一致）。
-- 用户接管：模型调用 `phone.request_intervention`（可带 reason）或用户在 Cowork 页面/任务岛点“接管操作”，期间模型的观察/操作工具返回 `USER_CONTROL`，DSH 回合保持存活（插件阻塞等待，最长 15 分钟，到期自动交还）；用户在实时画面中触摸、发送文字、按 返回/回车/删除，完成后点“交还给 AI”，模型重新观察后继续。
-- 实时画面：`GET /v1/stream`（控制器鉴权，单观看者，4 字节长度前缀帧，首帧 PNG，之后 540x960 JPEG q65，最小间隔 30ms；屏幕静止时不产生新帧，因此 30fps 是动态画面的上限）。用户输入在同一条已鉴权连接上回传，避免逐次 HTTP 往返。Cowork 页面与任务岛共享同一路流。
-- 任务岛：连接控制器后自动启动；偏好持久化（SharedPreferences `island_preferences`，默认开启）；需要“显示在其他应用上层”权限；展开后显示实时画面与接管/交还。模型请求介入时发出高优先级通知。
-- 已知限制：ColorOS 在用户从最近任务划掉 DSH Pocket 时会强杀进程，控制器随之断开，需重新连接并建议在最近任务中锁定。
+- 包名 `dev.dsh.pocket`（沿用旧名 DSH Pocket 以保留数据与授权），当前版本 `0.7.0`（versionCode 9），`minSdk 28` / `targetSdk 36`。
+- 许可证：尚未指定。仅内置字体 JetBrains Mono 遵循 SIL OFL（见 `app/src/main/assets/licenses/`）。
 
-# DSH Pocket 0.5.0（Cowork 工作资料模式）
+## Cowork：独立副屏
 
-- Cowork 现只在已验证的工作资料（userId 10）独立副屏运行；个人主屏可任意切换，不再因此暂停；无逐应用白名单，范围为该资料内可启动应用。
-- 输入仅为 UID 定向触摸（点击/长按/滑动/滚动）；截图为 UID 过滤、非安全层；文本输入（0.5.1）：按键事件逐字注入焦点输入框（UID 定向，每字符复查目标），仅支持键盘可表达的可打印字符（ASCII 字母数字标点空格）；中文/emoji 返回 TEXT_UNSUPPORTED（不暂停任务）；按键仅 BACK/ENTER；无障碍节点暂不支持。工作资料内“允许未知来源安装”已由资料拥有者应用的 SideloadPolicyActivity 放开（可用 --es action restrict 恢复），未授予任何应用的单独“安装未知应用”权限。
-- 详见 [docs/cowork-concurrent-design.md](docs/cowork-concurrent-design.md)。以下为旧版 0.3.1 说明。
+### 它解决什么问题
 
-# DSH Pocket 0.3.1
+让 AI 代你操作手机，通常意味着它和你抢同一块屏幕：你一碰手机，任务就被打断；它一执行，你就没法用手机。Continuo 的做法是把 AI 的操作面彻底搬离主屏：
 
-## 0.3.1 更新
-
-- 本机显示配置已核对：`wm size` 为 `1080x2414`，`wm density` 为 `436`，`settings get secure display_density_forced` 为 `436`。使用现有持久化设置，没有重启手机或改动运行环境；重启后未另做实测。
-- 使用用户提供的 Anthropic Sans / Serif / Mono 正体与斜体，从 WOFF2 转换为 Android 可加载的 SFNT 字体；中文缺失字形由系统补充。不把专有字体标为 OFL，也不据此主张公开分发权。
-- 工作区与权限改为屏幕居中的选择弹窗。工作区在新任务创建之前选择，创建后即锁定（包括已发送首条消息的会话）；UI 与 ViewModel 均阻止中途切换，原会话目录不变。
-- 对话右上角“⋯”收纳工具权限与后台任务，输入卡片不再重复显示权限。权限名称和说明统一中文：只读、工作区读写、完全访问。
-- 助手正文 16.5sp → 14sp，用户正文 16sp → 14sp；工具折叠行最小高度 40dp → 30dp，消息间距 12dp → 6dp，思考与工具标题压缩至 12sp。参数、输出和真实错误均保留。
-
-
-用于连接手机本地 DSH 的原生 Android 客户端，使用 Kotlin 和 Jetpack Compose，不嵌入 WebView。0.3.0 按 Claude 移动应用的公开资料重做外观与交互，只保留 **Cowork** 与 **Code** 两种任务模式，没有基础聊天模式。
-
-> 本版已通过构建和 56 项 JVM 回归测试。安装验证记录见下文。按此前约定，没有打开副屏做界面验收，没有发送模型请求，也没有重启 DSH。新界面的实机观感、键盘适配和真实提问交互仍需手动验收。手机上没有 Claude 应用，设计依据只有公开资料，因此做不到逐像素一致。
-
-## 模式
-
-| 模式 | DSH agent preset | 状态 |
+| | 常见做法 | Continuo Cowork |
 |---|---|---|
-| Code | `standard` | 可用；新任务使用 `session/create {agentPreset:"standard"}` |
-| Cowork | `cowork`（预留） | 当前 DSH 只有 `standard / ptc / minimal / cordis`，所以显示“未配置”，无法创建 Cowork 任务。DSH 中加入名为 `cowork` 的模式后，无需改应用即可使用 |
+| AI 操作的屏幕 | 主屏 | 独占的虚拟副屏 |
+| 用户同时使用主屏 | 会打断任务 | 主屏任意切换，不影响任务 |
+| AI 能碰到的应用 | 全部，或靠白名单 | 工作资料里的应用（与个人应用数据隔离） |
+| 观察与干预 | 事后查看 | 任务岛实时画面，可随时暂停、接管、交还 |
 
-- 任务列表按会话的 `projections.values.agentPreset` 归类：`cowork` 归入 Cowork，其余（含 ptc/minimal/cordis 旧会话）归入 Code，非 standard 会显示 preset 标签。
-- 读取模式列表失败时，只开放 Code。
+### 工作原理
 
-## 界面
+```
+ ┌────────────────────────── 手机 ──────────────────────────┐
+ │                                                          │
+ │  Continuo App（个人空间）             DSH 服务            │
+ │  ├ 对话 / 设置 / 记忆                 Node + Ubuntu chroot │
+ │  ├ CoworkControllerService  ◄──HMAC──►  127.0.0.1:3080    │
+ │  └ 任务岛（悬浮窗）                    └ cowork-phone 插件 │
+ │         ▲   控制 / 状态 / 实时画面            │ 工具调用    │
+ │         │                                    ▼            │
+ │  ┌──────┴────────────────────────────────────────────┐   │
+ │  │ Broker（root，app_process 启动，127.0.0.1:3091）   │   │
+ │  │  创建并持有虚拟副屏 · UID 定向输入 · UID 过滤截图   │   │
+ │  │  UiAutomation 读界面结构 · 接管 · 看门狗 · 实时流   │   │
+ │  └──────┬────────────────────────────────────────────┘   │
+ │         ▼                                                 │
+ │  工作资料（userId 10）里的应用 ──► AI 独占副屏              │
+ │                                                           │
+ │  个人主屏：用户自己使用，不在 AI 操作范围内                  │
+ └───────────────────────────────────────────────────────────┘
+```
 
-- 风格：象牙底 `#FAF9F5`、陶土色强调 `#D97757`、暖色深色模式；正文与标题使用 Anthropic Serif，界面使用 Anthropic Sans，代码使用 Anthropic Mono。字体来源为用户指定的本地文件，火花图标为自绘。
-- 首页：左侧菜单、Cowork｜Code 切换、火花与问候语，以及底部输入卡片（附件、工作区、模型 + 推理强度、权限、发送／停止）。发送时用当前模式创建任务，并带上所选模型和权限。
-- 侧边栏：搜索、新任务、Cowork、Code、最近任务（置顶、运行中或待输入状态点），底部是连接状态与设置入口。
-- 任务列表：筛选（全部、需要输入、运行中、已完成、已归档）、搜索、下拉刷新、工作区标签、相对时间；长按或“更多”可以重命名、置顶、归档或恢复。
-- 对话：用户消息是右侧气泡，助手回复是无气泡正文；思考过程可折叠。连续的工具调用合并成一条可折叠记录，展开后才看到各次调用的参数与输出，不再每个调用单独一栏。会话记录同样按相邻记录合并。实时流在消费跟不上时等待，不再因为缓冲满而整段断开重同步；助手输出按短时间窗合并刷新。进度面板显示待办与目标；排队消息和补充回答入口；长按消息可复制。
-- 模型面板按 Provider 分组，推理强度用胶囊选择；顶部和输入框里的模型胶囊始终显示 Provider，用来区分同名模型。
-- 提问面板：分段进度、编号选项、自定义回答、超时后补答。
-- 设置：连接、模式状态、外观（浅色、跟随系统、深色）、触感反馈、运行环境、版本与许可。运行环境页的启动、重启、停止和重建 Linux 环境仍调用固定的 `pocket-control.sh` 动作，需要 KernelSU 授权；重建前会确认，若仍有进程留在 chroot 中会被拒绝。
+1. **DSH 的 `cowork-phone` 预设**（`cowork-plugin/`）：模型只能看到一组固定的手机工具、有限的文档读写和基础联网，没有 Shell、代码执行、包管理、MCP 和子代理。限制同时落在工具注册表和执行守卫上，不只是提示词。
+2. **Broker**（`app/.../cowork/broker/`）：以 root 通过 `app_process` 运行的原生服务，监听 `127.0.0.1:3091`。它是所有安全边界的最终执行者：创建副屏、校验窗口与 UID、注入输入、截图、读界面结构、管理接管与暂停。
+3. **Continuo App**：显式启用控制服务，提供任务岛、实时画面和接管界面。控制令牌与模型令牌分开，模型没有审批、恢复或接管的能力。
+4. **工作资料**（`isolation/`）：由用户经系统确认创建，作为 AI 应用实例与存储的隔离层。Broker 只认已验证的资料（userId、serial、父用户、拥有者全部核对），不认应用包名或窗口标题。
 
-上一版的事件、投影一致性与请求重试修正都保留：未知扩展事件不报错，真实失败仍会显示。
+### 隔离与安全模型
 
-## 安装
+- **独占虚拟副屏**：Broker 创建一块 `OWN_FOCUS`、不抢主屏焦点、独立显示组、始终解锁的虚拟显示，并常驻保留。每轮任务首次调用工具时占用它，轮次结束只清空内容。主屏切换应用不会让它暂停；主屏的变化只在安全无法确认时才会触发暂停。
+- **UID 定向输入**：每个触摸或按键事件在 InputDispatcher 层绑定到“副屏 + 目标应用 UID”，没有无定向回退，不用全局按键、共享剪贴板或主屏输入法。
+- **UID 过滤截图与界面结构**：截图按 UID 过滤，不抓安全层；UiAutomation 只读副屏上属于工作资料的窗口，密码框内容为 `[REDACTED]`，安全窗口不导出。
+- **没有应用白名单**：范围由“工作资料内可启动的应用”决定，而不是逐个包名放行。
+- **结构优先**：模型调用 `phone_screenshot` 前必须先读 `phone_ui_tree`，否则被拒（`TREE_REQUIRED`）。插件与 Broker 各自独立强制。截图只用于结构不完整（WebView、自绘、游戏）的场景。
+- **观察绑定与单次消费**：每次动作带短期 `observationId`，屏幕变化、超时或用过一次即失效；元素点击绑定界面树观察，截图不会让元素 ID 失效。
+- **拒绝不等于结束**：参数、元素、转场类的拒绝（如 `NODE_STALE`、`SCREEN_SETTLING`）只返回下一步建议；只有越界类失败（外来任务占用副屏、身份校验失败、`LOCKED`、`APP_CONFLICT` 等）才暂停任务。
+- **高影响操作交给用户**：付款、发消息、授权、删除等不自动提交；审批绑定动作、会话与屏幕版本，模型不能给自己审批。
+- **文本输入限制**：仅支持键盘可表达的 ASCII 可打印字符，中文与 emoji 直接返回 `TEXT_UNSUPPORTED`，不会悄悄改走共享剪贴板。
+- **不留痕**：工作资料里的启动器入口由 Broker 停用（可恢复），模型启动的应用不进最近任务，看门狗每 3 秒清理遗留任务记录。
+- **鉴权**：Broker 只监听回环地址；Agent / Controller 使用请求绑定的 HMAC 双向挑战应答，令牌不经过 URL、日志或命令行。
 
-- 包名 `dev.dsh.pocket`，versionCode `4`，versionName `0.3.1`。
-- 连接目标：手机本机 `http://127.0.0.1:3080`。
-- APK：[安装包](<C:/Users/rangt/Desktop/工作区/work/dsh-android-app/app/build/outputs/apk/debug/app-debug.apk>)，debug 签名。
-- 更新使用 `adb -s 5b9a17cd install -r`：不卸载、不清除应用数据，也不改 DSH 或 provider 配置。
+> 工作资料不是虚拟机，也不是防恶意应用的完整沙箱；root 链路仍是共享的。屏幕、网页、消息中的文字一律视为待观察数据，不是指令。
+
+### 用户体验
+
+- **任务岛**：类灵动岛的悬浮胶囊，待机时是屏幕顶部的一颗黑色胶囊；任务运行时向两侧展开，左侧显示“正在使用 <应用>”，右侧显示最近的关键动作（打开应用、输入文字、请求接管等，由 Broker 原生生成，不调用模型）。点按展开，右侧是副屏实时预览。
+- **实时画面与接管**：副屏画面经 GPU 直送硬件 H.264 编码器，通过 Broker 的 `/v1/stream` 推给任务岛和 Cowork 页面。全屏预览里可直接“接管操作”，触摸直通副屏，完成后“交还给 AI”；模型也可以主动请求接管。接管期间模型的观察与操作工具返回 `USER_CONTROL`，DSH 回合保持存活。
+- **副屏虚拟导航**：副屏没有系统导航栏，由 Broker 提供 BACK / HOME（工作资料里的“AI 桌面”）/ RECENTS 三个虚拟键。
+- **自动连接**：打开应用即自动启动控制服务并自愈重连；发布任务时如控制器心跳过期，Broker 会以 root 唤醒它。
+
+### 模型可用的手机工具
+
+共 17 个，模型可见名把点号换成下划线（如 `phone_tap`），线协议名保持 `phone.tap`：
+
+| 类别 | 工具 |
+|---|---|
+| 状态 | `phone.status`、`phone.apps` |
+| 观察 | `phone.ui_tree`、`phone.screenshot`、`phone.read_page`（自动翻页读长文） |
+| 手势 | `phone.tap`、`phone.long_press`、`phone.swipe`、`phone.scroll` |
+| 输入 | `phone.type_text`、`phone.key`（`BACK`/`ENTER`/`HOME`/`RECENTS`） |
+| 应用与时序 | `phone.start`（可选）、`phone.launch_app`、`phone.wait` |
+| 控制 | `phone.pause`、`phone.stop`、`phone.request_intervention` |
+
+另有 `cowork_files_read/write/list`（固定 `/workspace/cowork`，只能新建文件）、`web_search`、`web_fetch`（仅公网 HTTP(S)），以及在记忆插件已安装时放行的 `memory_*` 与上下文压缩工具。完整契约见 [PROTOCOL.md](cowork-plugin/PROTOCOL.md) 与 [COWORK-CONTRACT.md](COWORK-CONTRACT.md)。
+
+## 其他功能
+
+- **Code 模式**：连接 DSH 的 `standard` 预设，是完整的手机端编码智能体对话——流式回复、可折叠的思考与工具调用、模型与推理强度选择、工作区与权限、提问面板、后台任务、任务列表（筛选、搜索、置顶、归档）。应用只有 Cowork 与 Code 两种任务模式，没有基础聊天。
+- **记忆**：设置 → 记忆，读写手机侧 dsh-mneme 记忆库（概览、自动化开关、注入预算、条目增删改与归档、注入预览、存储回收）。Cowork 与 Code 共用同一个库。
+- **运行环境**：设置 → 运行环境，启动、重启、停止、重建 DSH 的 Ubuntu chroot（调用固定动作的 `pocket-control.sh`，需要 root 授权）。
+- **品牌与界面**：宣纸石青配色，开口 C + 输入光标的标志；深浅色主题；系统无衬线为界面字体，JetBrains Mono 为代码字体。
+
+## 仓库结构
+
+| 目录 / 文件 | 内容 |
+|---|---|
+| `app/` | Continuo 主应用：`ui/` 界面、`data/` DSH 接口与会话数据、`cowork/` 控制连接与 `broker/` 原生 Broker、`island/` 任务岛 |
+| `isolation/` | “Cowork 隔离实验”：工作资料创建与资料拥有者应用（minSdk 33） |
+| `fixture/` | 无网络、无权限的测试夹具应用，用于验证点击、长按、输入、滚动与安全窗口 |
+| `platform-stubs/` | Android 16 隐藏 API 的编译期桩，仅供 Broker 编译，不打包 |
+| `cowork-plugin/` | DSH `cowork-phone` 预设插件（Node.js ≥ 22）：严格工具目录、协议适配、受限文件与联网工具、任务生命周期 |
+| `runtime/` | 手机端运行时脚本：`pocket-control.sh`、`cowork-service.sh`，以及插件安装器、备份与预检工具 |
+| `deploy-*.py`、`cowork_auth.py` | 经 ADB 的部署脚本与 HMAC 认证客户端（令牌运行时生成，不写入仓库） |
+| `cowork-*-test.*`、`probe-*.py` | 设备验收与探测脚本 |
+| `docs/` | 设计文档与[更新日志](docs/CHANGELOG.md) |
 
 ## 构建与测试
 
+环境：JDK 21、Gradle 8.13（AGP 8.13.2、Kotlin 2.2.21）、Android SDK 36。仓库不含 `local.properties`，需自行指向 SDK。
+
 ```powershell
-.\test-unit.ps1            # 构建 APK、编译并运行 JVM 测试
+.\test-unit.ps1            # 构建 debug APK，编译并运行 JVM 测试
 .\test-unit.ps1 -SkipBuild # 仅运行测试
 ```
 
-[测试脚本](<C:/Users/rangt/Desktop/工作区/work/dsh-android-app/test-unit.ps1>) 使用工作区里的 JDK 21、Gradle 8.13 和 Android SDK 36，通过 JUnitCore 直接运行测试，以绕开本机 Gradle 测试 worker 在 Unicode 路径下的启动问题。
+`test-unit.ps1` 默认工具链放在工作区上级目录的 `tools\android-build\`（JDK、SDK、Gradle），并用 JUnitCore 直接运行测试，以绕开 Gradle 测试 worker 在 Unicode 路径下的启动问题。换环境时请先改脚本里的路径。`app/` 约有 200 个 JVM 单元测试，覆盖协议契约、动作闸门、接管状态机、任务生命周期、任务岛策略等。
 
-本版结果：
+插件的离线测试：
 
-- `:app:assembleDebug`、`:app:compileDebugUnitTestKotlin`：通过。
-- Transcript / Presentation / PendingPromptStore / ProjectionState / RpcRejectedException / Modes：`OK (56 tests)`。
-- 设备 `5b9a17cd` 覆盖安装 `Success`；Package Manager 显示 `versionCode=4`、`versionName=0.3.1`，firstInstallTime `2026-10-15 13:28:36` 未变，lastUpdateTime `2026-10-15 17:14:46`。
-- 安装后 SurfaceFlinger 只有 `HWC display 0`，没有遗留副屏。
-- APK SHA-256：`36CFEA25AFB605A3881457B43ABDB8308B45EB1B1190CF8C802FED4D165F1BD0`。
+```powershell
+cd cowork-plugin
+node --test test/strict-*.test.mjs
+```
 
-## 手动验收重点
+其中 `strict-integration` 依赖从已安装的 DSH 中提取的运行时副本（`cowork-plugin/research/`）。该目录是调研转储，未随仓库提交，因此这部分集成测试在干净检出上无法直接运行。
 
-1. 首页：Cowork 显示“未配置”，Code 能输入并开始任务；模型胶囊显示 Provider · 模型 · 强度。
-2. 侧边栏与任务列表：旧会话都在 Code 下；筛选、搜索、置顶和归档正常。
-3. 对话：工具行足够紧凑，展开后有参数和输出；长回复的衬线正文、代码块和链接显示正常。
-4. 深色模式和键盘弹出时，输入卡片不被遮挡。
-5. 提问面板的单选、多选、自定义回答与补答。
+## 部署概览
 
-## 代码入口
+没有一键安装。大致流程（细节与风险见各脚本头部说明与 [docs](docs/)）：
 
-- [应用框架、侧边栏、首页、任务列表、设置、运行环境](<C:/Users/rangt/Desktop/工作区/work/dsh-android-app/app/src/main/java/dev/dsh/pocket/ui/PocketApp.kt>)
-- [对话与输入卡片](<C:/Users/rangt/Desktop/工作区/work/dsh-android-app/app/src/main/java/dev/dsh/pocket/ui/ChatScreen.kt>)
-- [底部面板：模型、权限、工作区、后台任务、审批](<C:/Users/rangt/Desktop/工作区/work/dsh-android-app/app/src/main/java/dev/dsh/pocket/ui/Sheets.kt>)
-- [提问面板](<C:/Users/rangt/Desktop/工作区/work/dsh-android-app/app/src/main/java/dev/dsh/pocket/ui/QuestionSheet.kt>)
-- [主题、字体与组件](<C:/Users/rangt/Desktop/工作区/work/dsh-android-app/app/src/main/java/dev/dsh/pocket/ui/Theme.kt>)、[图标与通用组件](<C:/Users/rangt/Desktop/工作区/work/dsh-android-app/app/src/main/java/dev/dsh/pocket/ui/Components.kt>)
-- [模式与展示规则](<C:/Users/rangt/Desktop/工作区/work/dsh-android-app/app/src/main/java/dev/dsh/pocket/data/Modes.kt>)
-- [会话状态](<C:/Users/rangt/Desktop/工作区/work/dsh-android-app/app/src/main/java/dev/dsh/pocket/PocketViewModel.kt>)
+1. 手机已 root（KernelSU），手机本机运行 DSH（`127.0.0.1:3080`，Ubuntu chroot）。
+2. 在手机上由用户经系统确认创建工作资料，资料拥有者为 `dev.dsh.pocket.isolation`，见 [创建说明](docs/isolation-profile-setup.md)。应用不会自动创建或删除资料。
+3. `adb install -r` 安装 Continuo；不卸载、不清数据。
+4. `deploy-cowork-plugin.py` 把 `cowork-plugin/` 作为附加的 bundle 装入 DSH（带完整私有备份，且要求 DSH 空闲）。
+5. 授予悬浮窗与通知权限；Broker 由 `runtime/cowork-service.sh` 经 root 启动，之后应用会自动连接与唤醒。
 
-- 常驻副屏：AI 副屏由 broker 在启动时创建并一直保留，不随每轮任务销毁；每轮首次工具调用自动占用（无需 phone_start），轮次结束只清空内容；任务岛在 Continuo 前台时同样显示，模型请求接管时自动展开并显示「请求接管」，用户双击预览后进入全屏接管。
+部署脚本中写死了测试设备序列号和本机 ADB 路径，换设备需要修改。
+
+## 已知限制
+
+- 依赖 root、手机本机 DSH 与手动创建的工作资料，仅在一加 Ace 3V 上验证。
+- 工作资料不是完整沙箱：应用跨资料或跨显示的跳转只会被检测并暂停，不是系统级阻断；root 链路共享。
+- 文本输入仅支持 ASCII；无障碍节点只读副屏结构，不用于输入。
+- ColorOS 在用户从最近任务划掉应用时会强杀进程，控制器会断开，Broker 会在下次任务请求时重新唤醒；建议在最近任务里锁定应用。
+- 副屏画面与结构不保证覆盖所有应用：WebView、游戏、自绘界面常缺少结构节点，只能依赖截图。
+- 第三方真实应用的兼容性只做过抽样验证；付款、登录等流程应由用户接管。
+
+## 文档
+
+- [Cowork 与任务岛实施设计](docs/cowork-design.md)
+- [主屏自由使用与后台并行：设计与验收](docs/cowork-concurrent-design.md)
+- [创建隔离工作资料](docs/isolation-profile-setup.md)
+- [Broker 协议 v1](cowork-plugin/PROTOCOL.md) · [插件说明](cowork-plugin/README.md) · [集成约定](COWORK-CONTRACT.md)
+- [更新日志](docs/CHANGELOG.md)
+
+> 设计文档里引用的 `test-evidence/` 实机证据（截图、会话记录等）含个人数据，未随仓库提交。

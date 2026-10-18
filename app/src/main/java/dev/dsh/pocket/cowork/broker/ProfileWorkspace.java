@@ -258,17 +258,44 @@ public final class ProfileWorkspace implements AutoCloseable {
             SystemClock.sleep(150);
         }
     }
+    /** The reverse leak: a work-profile activity started without a display (by a service, a receiver, an installer or a
+     *  notification) lands on the main screen, because the owned display never takes global focus. It is moved onto the
+     *  owned display, as if it had started there; the rule is {@link StrayTaskSweep}. Runs inside every check and from
+     *  the 1 Hz watchdog (also between turns), so it neither sits on the main screen nor pauses the turn as APP_CONFLICT.
+     *  Returns how many tasks were moved; a task that cannot be moved stays where it is and is logged once. */
+    public synchronized int pullBackStrayTasks(){
+        int owned=displayId();if(owned<=0)return 0;
+        ArrayList<StrayTaskSweep.Task> rows=new ArrayList<>();
+        for(ActivityManager.RunningTaskInfo t:tasks())
+            rows.add(new StrayTaskSweep.Task(t.taskId,taskInt(t,"parentTaskId"),taskInt(t,"userId"),taskInt(t,"displayId"),t.baseActivity==null?null:t.baseActivity.getPackageName()));
+        int moved=0;
+        for(int id:StrayTaskSweep.targets(rows,owned,profile.userId(),DESKTOP)){
+            try{
+                Object atm=Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null);
+                atm.getClass().getMethod("moveRootTaskToDisplay",int.class,int.class).invoke(atm,id,owned);
+                moved++;unmovable.remove(id);
+                System.err.println("moved work-profile task "+id+" from the main screen to the owned display");
+            }catch(Exception e){
+                Throwable cause=e instanceof InvocationTargetException&&e.getCause()!=null?e.getCause():e;
+                if(unmovable.add(id))System.err.println("work-profile task "+id+" could not be moved to the owned display: "+cause.getClass().getSimpleName()+": "+cause.getMessage());
+            }
+        }
+        if(moved>0)generation++; // the owned display got new content: every earlier observation is stale
+        return moved;
+    }
+    private final Set<Integer> unmovable=new HashSet<>();
 
     private void check(boolean content,boolean checkCancel){
         binding();if(checkCancel&&cancellation.cancelled())ActionGate.fail("CONTROL_INTERRUPTED","User requested pause or stop");
         protection.requireSafe(displayId(),content);
         try{
             sweepForeignTasks();
+            pullBackStrayTasks();
             for(ActivityManager.RunningTaskInfo t:tasks()){
                 int user=t.getClass().getField("userId").getInt(t),d=t.getClass().getField("displayId").getInt(t);
                 if(d==displayId()&&user!=profile.userId())ActionGate.fail("APP_DENIED","Foreign task on profile display");
                 if(user==profile.userId()&&d!=displayId()&&((t.topActivity!=null&&launched.contains(t.topActivity.getPackageName()))||(t.baseActivity!=null&&launched.contains(t.baseActivity.getPackageName()))))
-                    ActionGate.fail("APP_CONFLICT","Work-profile app left the owned display; stop and review");
+                    ActionGate.fail("APP_CONFLICT","Work-profile app left the owned display and could not be moved back; stop and review");
             }
             if(content)target();
             else {ProfileWindowPolicy.Snapshot snapshot=windows.awaitSnapshot(1500);boolean hasInput=snapshot.windows().stream().anyMatch(w->w.displayId()==displayId()&&!(w.windowToken()==null&&(w.inputConfig()&1)!=0));if(hasInput)ProfileWindowPolicy.requireInputTargets(snapshot,displayId(),profile.userId());}
@@ -301,8 +328,10 @@ public final class ProfileWorkspace implements AutoCloseable {
         catch(Exception ignored){}return "";
     }
     public synchronized void launch(String pkg)throws Exception{
+        // check() has already moved a task of this app that leaked to the main screen onto the owned display; starting
+        // the app below then brings that task to the front. Only a task that could not be moved is still refused.
         parked=false;check(false,true);requirePackage(pkg);
-        for(ActivityManager.RunningTaskInfo t:tasks())if(t.getClass().getField("userId").getInt(t)==profile.userId()&&t.getClass().getField("displayId").getInt(t)!=displayId()&&((t.topActivity!=null&&pkg.equals(t.topActivity.getPackageName()))||(t.baseActivity!=null&&pkg.equals(t.baseActivity.getPackageName()))))ActionGate.fail("APP_CONFLICT","This work-profile app is already on another display");
+        for(ActivityManager.RunningTaskInfo t:tasks())if(t.getClass().getField("userId").getInt(t)==profile.userId()&&t.getClass().getField("displayId").getInt(t)!=displayId()&&((t.topActivity!=null&&pkg.equals(t.topActivity.getPackageName()))||(t.baseActivity!=null&&pkg.equals(t.baseActivity.getPackageName()))))ActionGate.fail("APP_CONFLICT","This work-profile app is on another display and could not be moved to the owned display");
         // No MULTIPLE_TASK: switching back to an app that the AI desktop pushed to the background must reuse its task.
         Intent intent=new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(profile.launcher(pkg)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
         ActivityOptions options=ActivityOptions.makeBasic();options.setLaunchDisplayId(displayId());

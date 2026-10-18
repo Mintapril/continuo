@@ -154,6 +154,9 @@ public final class BrokerMain {
         // 1 Hz: an app installed into the work profile must never stay visible to the personal launcher long enough
         // for an icon of it to land on the home screen (the user's report: icon shows up and only a reboot clears it).
         try{workspace.hideNewInstalls();}catch(Exception installSweepFailure){}
+        // 1 Hz, also between turns: a work-profile activity that landed on the main screen (started by a service, an
+        // installer or a notification without a display) is moved to the owned display. A running tool does it in its own check.
+        if(toolsInFlight.get()==0)try{workspace.pullBackStrayTasks();}catch(Exception strayTaskFailure){}
         if(gate.owner()==null){if(tick%5==0&&toolsInFlight.get()==0)keepStandingDisplay();return;}
         long now=SystemClock.elapsedRealtime();
         if(takeover.expired(now))endTakeover("expired");

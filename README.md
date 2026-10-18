@@ -61,13 +61,19 @@ Continuo 是一个原生 Android 客户端（Kotlin + Jetpack Compose），连�
 插件在每轮任务的第一步向 Broker 申请一个原生租约（`/v1/task` 的 `begin`），之后每 0.5 秒轮询一次。当 Broker 发出 `pause` / `stop` 命令时，插件会取消这一轮 DSH 回合，会话里就出现 **Turn aborted**（`reason.kind` 为 `user`，即使不是你按的停止）。因此“反复 turn aborted”几乎总是 Broker 一侧决定暂停了任务。
 
 - **不会结束任务的拒绝**：参数、元素与转场类，如 `NODE_STALE`、`STALE_OBSERVATION`、`SCREEN_SETTLING`、`INPUT_REJECTED`、`LAUNCH_TIMEOUT`、`TREE_REQUIRED`、`TEXT_UNSUPPORTED`。模型拿到错误码和下一步建议（`phone_wait` 后再读结构、请求接管等）继续做。窗口身份或安全探测超时（`SECURITY_UNAVAILABLE: Cannot verify…`）也按转场处理。分类集中在 `RefusalPolicy.java`。
-- **会立即暂停任务的情况**：越界或身份类失败，如 AI 启动的应用跑出副屏（`APP_CONFLICT`）、资料身份或副屏身份变化、`SECURE_WINDOW`、`LOCKED`、控制器失联超过 15 秒（`CONTROLLER_OFFLINE`）、用户暂停或停止。
+- **会立即暂停任务的情况**：越界或身份类失败，如 AI 启动的应用跑出副屏、而且移不回来（`APP_CONFLICT`，见下文“跑到主屏的工作资料界面”）、资料身份或副屏身份变化、`SECURE_WINDOW`、`LOCKED`、控制器失联超过 15 秒（`CONTROLLER_OFFLINE`）、用户暂停或停止。
 - **转场超时**：副屏连续 20 秒不可用（一直在转场、没有可验证的工作资料前台、外来任务清不掉）时，看门狗以 `SCREEN_UNRESPONSIVE` 暂停。这 20 秒按“当前占用者的一段连续转场”计时，换轮次、关闭工作区或任一次检查通过都会重新计时。
 - **排查**：每次原生暂停或停止都会在 root 私有的 `/data/local/dsh-native/cowork/broker.log` 里留一行 `task pause requested: <原因码>`（只写码，不写界面内容）。该日志在每次 Broker 启动时被覆盖。
 
 ### 隔离与安全模型
 
 - **独占虚拟副屏**：副屏不抢主屏焦点，主屏切换应用、看视频、玩游戏都不会让任务暂停；Broker 只校验副屏自身（窗口 UID、任务归属、身份），不看主屏在做什么。
+- **跑到主屏的工作资料界面会被移回副屏**：
+  - 工作资料里的应用、安装器或通知可能不指定屏幕就打开一个界面，例如应用宝装完应用后弹出的“垃圾清理”页。它们是从后台服务、广播或通知里启动的，而副屏从不拿全局焦点，所以系统会把这个界面放到主屏上。
+  - Broker 每秒检查一次（两轮任务之间也查），每个工具执行前也会检查，把这样的任务移到副屏最上层（`StrayTaskSweep`，等同于 `cmd activity display move-stack`），这一轮任务继续进行。
+  - 只移动主屏上工作资料用户的根任务。个人用户的任务、其他虚拟屏上的任务、嵌在分屏等容器里的任务，以及资料拥有者（隔离应用）的设置界面都不动。
+  - 移不回来时，才按 `APP_CONFLICT` 暂停任务。
+  - 副作用：你在主屏上有意打开的工作资料应用（例如点了它的通知）也会被移到副屏。
 - **UID 定向输入**：每个触摸或按键事件在 InputDispatcher 层绑定到“副屏 + 目标应用 UID”，没有无定向回退，不用全局按键、共享剪贴板或主屏输入法（副屏输入法策略为隐藏）。
 - **UID 过滤截图与界面结构**：截图按 UID 过滤，不抓安全层；UiAutomation 只读副屏上属于工作资料的窗口，密码框内容为 `[REDACTED]`，带 `FLAG_SECURE` 的窗口不导出并要求用户接管。
 - **没有应用白名单**：范围由“工作资料内可启动的应用”决定，而不是逐个包名放行。

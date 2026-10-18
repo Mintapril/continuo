@@ -399,8 +399,9 @@ public final class BrokerMain {
             // seen: they address the owned display's desktop and its task list, so no observation is required.
             String navKey=a.getString("key");
             if(navKey.equals("HOME")){
+                String before=workspace.lastTreeSignature();
                 try{workspace.home();}catch(ActionGate.Denied e){if(!survives(e))safePause(e.code);throw settling(e);}catch(Exception e){safePause("PLATFORM_ERROR");throw e;}
-                treeRead=false;treeIncomplete=false;activity.note("回到桌面");event(tool,"running");return performed();
+                treeRead=false;treeIncomplete=false;activity.note("回到桌面");event(tool,"running");return observeAfter(session,performed(),before,true);
             }
             if(navKey.equals("RECENTS")){event(tool,"running");return performed().put("note",workspace.recents());}
         }
@@ -431,17 +432,19 @@ public final class BrokerMain {
             // A settling screen (app switch, dialog, animation) is exactly what this wait is for: one failed check
             // must not end it early. Keep polling until the requested time; only then report the last denial.
             int ms=a.optInt("timeoutMs",300);if(ms<0||ms>10000)ActionGate.fail("WAIT_LIMIT","Wait must be between 0 and 10000 ms");
-            long until=SystemClock.elapsedRealtime()+ms;ActionGate.Denied last=null;
+            long until=SystemClock.elapsedRealtime()+ms;ActionGate.Denied last=null;String before=workspace.lastTreeSignature();
             while(true){
-                try{guardNow(0);return performed();}
+                try{guardNow(0);break;}
                 catch(ActionGate.Denied e){if(!survives(e)){safePause(e.code);throw settling(e);}last=e;}
                 long left=until-SystemClock.elapsedRealtime();
                 if(left<=0)throw settling(last);
                 SystemClock.sleep(Math.min(100,left));
             }
+            return observeAfter(session,performed(),before,true);
         }
         if(!ActionGate.INPUTS.contains(tool))ActionGate.fail("TOOL_DENIED","Tool not implemented");
         treeRead=false;treeIncomplete=false; // any input changes the screen: a fresh phone.ui_tree is required before the next screenshot
+        String before=workspace.lastTreeSignature(); // what the model last read, for the changed flag of the reply
         if(tool.equals("phone.launch_app"))workspace.requirePackage(a.getString("packageName"));
         // The foreground may be a system dialog hosted in the same task (permission prompt, installer):
         // it has no launcher entry, so only the profile app identity is required here, not a launcher activity.
@@ -463,7 +466,7 @@ public final class BrokerMain {
             case "phone.tap":workspace.tap(a,false);break;
             case "phone.long_press":workspace.tap(a,true);break;
             case "phone.swipe":workspace.swipe(a);break;
-            case "phone.scroll":{JSONObject moved=workspace.scroll(a);workspace.guard();return performed(moved);}
+            case "phone.scroll":{JSONObject moved=workspace.scroll(a);workspace.guard();return observeAfter(session,performed(moved),before,false);} // scroll already waited for the fling
             case "phone.read_page":{JSONObject page=workspace.readPage(a);return performed(page);}
             case "phone.type_text":workspace.type(a);activity.note("输入文字");break;
             case "phone.key":workspace.key(a.getString("key"));if(a.getString("key").equals("ENTER"))activity.note("确认输入");break;
@@ -471,7 +474,31 @@ public final class BrokerMain {
             default:ActionGate.fail("TOOL_DENIED","Unsupported operation");
         }
         workspace.guard();}catch(ActionGate.Denied e){if(!survives(e))safePause(e.code);throw settling(e);}catch(Exception e){safePause("PLATFORM_ERROR");throw e;}
-        return performed();
+        // A cold start is waited out with phone_wait, which returns the screen (measured: 9 of 10 launches were followed by it).
+        if(tool.equals("phone.launch_app"))return performed();
+        return observeAfter(session,performed(),before,true);
+    }
+    /** Inputs return the settled screen, so the model continues from the reply instead of calling phone_ui_tree next
+     *  (measured on a real session: 167 of 553 model steps were exactly that call). The observation is a full ui_tree
+     *  observation: new id, element ids bound to it, screenshot allowed afterwards. The input has already happened, so
+     *  nothing here may throw: a failed read is reported as observationError next to performed:true, otherwise the model
+     *  would take a performed input for a failed one and repeat it. changed compares with the screen the model last read;
+     *  settled:false means the content was still changing when it was read. */
+    private JSONObject observeAfter(String session,JSONObject result,String before,boolean settle)throws JSONException{
+        try{
+            if(settle&&!workspace.settle())result.put("settled",false);
+            ProfileWorkspace.Observation observation=workspace.observe(false);
+            JSONObject tree=observation.result();
+            String observationId=gate.observeTree(session,observation.fingerprint(),SystemClock.elapsedRealtime());
+            workspace.bindTree(observationId);treeRead=true;treeIncomplete=!tree.optBoolean("complete",true);
+            if(!before.isEmpty())result.put("changed",!before.equals(workspace.lastTreeSignature()));
+            result.put("observation",tree.put("observationId",observationId));
+        }catch(ActionGate.Denied e){
+            // Same policy as the next tool's up-front check would apply, one call earlier; a pause keeps its first reason.
+            if(!survives(e)&&!gate.paused())safePause(e.code);
+            result.put("observationError",settling(e).code);
+        }catch(Exception e){result.put("observationError","PLATFORM_ERROR");}
+        return result;
     }
     private JSONObject control(JSONObject a)throws Exception{
         String action=a.optString("action"),session=a.optString("sessionId");

@@ -92,6 +92,8 @@ final class ProfileStructure implements AutoCloseable {
     /** Signature of the structure the latest snapshot() saw (the "before" of a following gesture). */
     synchronized String lastSignature(){return lastSignature;}
     private String lastSignature="",title="",pkg="";
+    /** Signature of a screen without any labelled node. */
+    static final String NO_LABELS=signature(List.of());
     private static String signature(List<Cand> list){
         java.security.MessageDigest digest;
         try{digest=java.security.MessageDigest.getInstance("SHA-1");}catch(Exception e){throw new IllegalStateException(e);}

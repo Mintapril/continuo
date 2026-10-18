@@ -56,12 +56,22 @@ export const PERFORMED = object({ performed: { type: 'boolean', const: true } })
 export const MUTATION_OUTPUT = object({ performed: bool, userControlled: bool, note: str }, ['performed']);
 // Compact node: empty fields are omitted; bounds are [left, top, right, bottom]; flags is a string of c(lickable) e(ditable) s(crollable) f(ocused) k(checked).
 const node = object({ id: str, text: str, desc: str, role: str, rid: str, bounds: { type: 'array', items: int }, flags: str }, ['id', 'bounds']);
+const TREE_RESULT = object({ ...metadata, title: str, package: str, nodes: { type: 'array', items: node }, complete: bool, advice: str });
+// Inputs that return the settled screen as `observation` (exactly a phone.ui_tree result), so the model continues from
+// the reply instead of observing again. changed: differs from the screen last read; settled:false: still changing when
+// read; observationError: the input was performed but the screen could not be read (the plugin adds a note).
+export const OBSERVED_AFTER = Object.freeze(['phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.type_text', 'phone.key', 'phone.wait']);
+const afterInput = { changed: bool, settled: bool, observationError: str, observation: TREE_RESULT };
+// Native result of the inputs above; RECENTS answers with a note and no observation.
+const OBSERVED_PERFORMED = object({ performed: { type: 'boolean', const: true }, note: str, ...afterInput }, ['performed']);
+// Model-visible result of the inputs above, including the not-performed hand-back notice.
+export const OBSERVED_OUTPUT = object({ performed: bool, userControlled: bool, note: str, ...afterInput }, ['performed']);
 export const PHONE_RESULTS = Object.freeze({
   'phone.status': object({ state: { type: 'string', enum: ['ready', 'paused', 'stopped', 'unavailable'] }, accessibilityReady: bool, screenCaptureReady: bool, userControl: bool }, ['state', 'accessibilityReady', 'screenCaptureReady']),
   'phone.apps': object({ apps: { type: 'array', items: object({ packageName: str, label: str, approved: bool }) } }),
   'phone.screenshot': object({ ...metadata, mimeType: { type: 'string', enum: ['image/png', 'image/jpeg', 'image/webp'] }, base64: str }),
-  'phone.ui_tree': object({ ...metadata, title: str, package: str, nodes: { type: 'array', items: node }, complete: bool, advice: str }),
-  'phone.scroll': object({ performed: { type: 'boolean', const: true }, moved: bool, note: str }, ['performed']),
+  'phone.ui_tree': TREE_RESULT,
+  'phone.scroll': object({ performed: { type: 'boolean', const: true }, moved: bool, note: str, ...afterInput }, ['performed']),
   'phone.read_page': object({ performed: { type: 'boolean', const: true }, text: str, pages: int, reachedEnd: bool, title: str }, ['performed', 'text', 'pages', 'reachedEnd']),
   // Native result only; the model-visible result is built by the blocking wrapper in restricted.mjs.
   'phone.request_intervention': object({ performed: { type: 'boolean', const: true }, interventionId: str }),
@@ -117,13 +127,13 @@ export async function waitForHandback(call, signal, { sleep = defaultSleep, now 
 
 // A refusal is not a dead end: tell the model what to do next instead of only naming a code.
 export const REFUSAL_HINT = Object.freeze({
-  SCREEN_SETTLING: 'The screen is changing (app switch, dialog or animation) and the session is still running: call phone_wait, then phone_ui_tree.',
+  SCREEN_SETTLING: 'The screen is changing (app switch, dialog or animation) and the session is still running: call phone_wait (it returns the settled screen).',
   STALE_OBSERVATION: 'The screen changed since that observation: call phone_ui_tree again.',
   NODE_STALE: 'That element moved or disappeared: read phone_ui_tree again, or use coordinates with the same observationId.',
   INPUT_REJECTED: 'This window refuses injected input (usually a system permission or chooser dialog). The session is still running: ask the user to take over with phone_request_intervention.',
   APP_DENIED: 'The target is outside the owned work-profile display or refused: observe again, or ask the user. The session is still running.',
-  APP_UNKNOWN: 'The AI screen shows no window of the app yet: call phone_wait, then phone_ui_tree; if the screen stays empty call phone_launch_app with the package.',
-  LAUNCH_TIMEOUT: 'The app is still starting: call phone_wait (up to 10000 ms), then phone_ui_tree; do not call phone_start again.',
+  APP_UNKNOWN: 'The AI screen shows no window of the app yet: call phone_wait (it returns the screen); if the screen stays empty call phone_launch_app with the package.',
+  LAUNCH_TIMEOUT: 'The app is still starting: call phone_wait (up to 10000 ms; it returns the screen); do not call phone_start again.',
   SESSION_MISMATCH: 'The AI screen belongs to another session or turn: call phone_status; the screen is claimed automatically by your next phone_launch_app / phone_ui_tree.',
   SESSION_BUSY: 'Another session currently uses the AI screen: wait, then call phone_status.',
   CONTROL_INTERRUPTED: 'The user paused or stopped the workspace: call phone_status, then phone_launch_app if it is stopped.',
@@ -151,6 +161,35 @@ export class BrokerClient {
     this.#tail = task.catch(() => {}); return task;
   }
   forget(sessionId) { this.#observations.delete(sessionId); this.#tree.delete(sessionId); this.#treeRead.delete(sessionId); this.#incomplete.delete(sessionId); }
+  // Checks a schema-valid screenshot or tree, then makes it the session's current observation (a tree also binds element ids).
+  #admit(sessionId, name, result) {
+    boundedString(result.observationId, 256, 'observationId');
+    integer(result.width, 1, 8192, 'width'); integer(result.height, 1, 8192, 'height');
+    check(this.now() - result.capturedAt <= OBSERVATION_TTL_MS && result.capturedAt <= this.now() + 1000, 'Broker observation already stale', 'STALE_OBSERVATION');
+    if (name === 'phone.screenshot') {
+      check(result.base64.length <= 11_184_812 && result.base64.length > 0 && Buffer.from(result.base64, 'base64').toString('base64') === result.base64, 'Invalid or oversized canonical image base64', 'BROKER_PROTOCOL');
+      const image = Buffer.from(result.base64, 'base64');
+      check(image.length <= 8 * 1024 * 1024, 'Decoded image exceeds 8 MiB', 'BROKER_PROTOCOL');
+      const signature = result.mimeType === 'image/png' ? image.subarray(0, 8).toString('hex') === '89504e470d0a1a0a' : result.mimeType === 'image/jpeg' ? image[0] === 255 && image[1] === 216 && image[2] === 255 : image.subarray(0, 4).toString() === 'RIFF' && image.subarray(8, 12).toString() === 'WEBP';
+      check(signature, 'Image signature does not match MIME type', 'BROKER_PROTOCOL');
+    } else {
+      check(result.nodes.length <= 2000, 'UI tree exceeds node limit', 'BROKER_PROTOCOL');
+      boundedString(result.advice, 1000, 'advice', 0);
+      const ids = new Set();
+      for (const node of result.nodes) {
+        boundedString(node.id, 256, 'node.id'); check(!ids.has(node.id), 'Duplicate UI node id', 'BROKER_PROTOCOL'); ids.add(node.id);
+        for (const field of ['text', 'desc', 'role', 'rid', 'flags']) if (node[field] !== undefined) boundedString(node[field], 4000, `node.${field}`, 0);
+        check(node.bounds.length === 4 && node.bounds.every(Number.isSafeInteger), 'UI bounds malformed', 'BROKER_PROTOCOL');
+        const [left, top, right, bottom] = node.bounds;
+        check(left >= 0 && top >= 0 && right >= left && bottom >= top && right <= result.width && bottom <= result.height, 'UI bounds outside observation', 'BROKER_PROTOCOL');
+      }
+    }
+    this.#observations.set(sessionId, result);
+    if (name === 'phone.ui_tree') {
+      this.#tree.set(sessionId, result); this.#treeRead.add(sessionId);
+      if (result.complete === false) this.#incomplete.add(sessionId); else this.#incomplete.delete(sessionId);
+    }
+  }
   async #call(sessionId, name, args, signal) {
     check(Object.hasOwn(PHONE_ARGUMENTS, name) || Object.hasOwn(INTERNAL_ARGUMENTS, name), 'Phone tool is not allowed', 'TOOL_DENIED');
     boundedString(sessionId, 256, 'sessionId'); validate(PHONE_ARGUMENTS[name] ?? INTERNAL_ARGUMENTS[name], args);
@@ -225,34 +264,22 @@ export class BrokerClient {
         const code = ERROR_CODES.has(response.error.code) ? response.error.code : 'BROKER_ERROR';
         fail('BROKER_REJECTED', `Native broker rejected the action (${code}). ${REFUSAL_HINT[code] ?? 'The workspace is unchanged; adjust the request and retry.'}`);
       }
-      const result = validate(PHONE_RESULTS[name] ?? INTERNAL_RESULTS[name] ?? PERFORMED, response.result);
-      if (name === 'phone.screenshot' || name === 'phone.ui_tree') {
-        boundedString(result.observationId, 256, 'observationId');
-        integer(result.width, 1, 8192, 'width'); integer(result.height, 1, 8192, 'height');
-        check(this.now() - result.capturedAt <= OBSERVATION_TTL_MS && result.capturedAt <= this.now() + 1000, 'Broker observation already stale', 'STALE_OBSERVATION');
-        if (name === 'phone.screenshot') {
-          check(result.base64.length <= 11_184_812 && result.base64.length > 0 && Buffer.from(result.base64, 'base64').toString('base64') === result.base64, 'Invalid or oversized canonical image base64', 'BROKER_PROTOCOL');
-          const image = Buffer.from(result.base64, 'base64');
-          check(image.length <= 8 * 1024 * 1024, 'Decoded image exceeds 8 MiB', 'BROKER_PROTOCOL');
-          const signature = result.mimeType === 'image/png' ? image.subarray(0, 8).toString('hex') === '89504e470d0a1a0a' : result.mimeType === 'image/jpeg' ? image[0] === 255 && image[1] === 216 && image[2] === 255 : image.subarray(0, 4).toString() === 'RIFF' && image.subarray(8, 12).toString() === 'WEBP';
-          check(signature, 'Image signature does not match MIME type', 'BROKER_PROTOCOL');
-        } else {
-          check(result.nodes.length <= 2000, 'UI tree exceeds node limit', 'BROKER_PROTOCOL');
-          boundedString(result.advice, 1000, 'advice', 0);
-          const ids = new Set();
-          for (const node of result.nodes) {
-            boundedString(node.id, 256, 'node.id'); check(!ids.has(node.id), 'Duplicate UI node id', 'BROKER_PROTOCOL'); ids.add(node.id);
-            for (const field of ['text', 'desc', 'role', 'rid', 'flags']) if (node[field] !== undefined) boundedString(node[field], 4000, `node.${field}`, 0);
-            check(node.bounds.length === 4 && node.bounds.every(Number.isSafeInteger), 'UI bounds malformed', 'BROKER_PROTOCOL');
-            const [left, top, right, bottom] = node.bounds;
-            check(left >= 0 && top >= 0 && right >= left && bottom >= top && right <= result.width && bottom <= result.height, 'UI bounds outside observation', 'BROKER_PROTOCOL');
-          }
-        }
-        this.#observations.set(sessionId, result);
-        if (name === 'phone.ui_tree') {
-          this.#tree.set(sessionId, result); this.#treeRead.add(sessionId);
-          if (result.complete === false) this.#incomplete.add(sessionId); else this.#incomplete.delete(sessionId);
-        }
+      let reply = response.result, observation;
+      // The settled screen after an input is checked on its own: a bad observation must never turn a performed input
+      // into an error, or the model would repeat an input that already happened.
+      if (OBSERVED_AFTER.includes(name) && Object.hasOwn(reply, 'observation')) ({ observation, ...reply } = reply);
+      const result = validate(PHONE_RESULTS[name] ?? INTERNAL_RESULTS[name] ?? (OBSERVED_AFTER.includes(name) ? OBSERVED_PERFORMED : PERFORMED), reply);
+      if (name === 'phone.screenshot' || name === 'phone.ui_tree') this.#admit(sessionId, name, result);
+      if (observation !== undefined) {
+        try { this.#admit(sessionId, 'phone.ui_tree', validate(TREE_RESULT, observation, 'observation')); result.observation = observation; }
+        catch { result.observationError = 'BROKER_ERROR'; }
+      }
+      if (result.observationError !== undefined) {
+        // The input changed the screen and nothing current describes it: drop what this session still holds.
+        this.forget(sessionId);
+        const code = ERROR_CODES.has(result.observationError) ? result.observationError : 'BROKER_ERROR';
+        result.observationError = code;
+        result.note = `${result.note ? `${result.note} ` : ''}The action was performed, but the screen could not be read afterwards (${code}). ${REFUSAL_HINT[code] ?? 'Call phone_ui_tree before the next action.'}`;
       }
       if (name === 'phone.status' && (result.state !== 'ready' || result.userControl === true)) this.forget(sessionId);
       if (name === 'phone.intervention_status') check(result.active ? result.outcome === 'active' : result.outcome !== 'active', 'Inconsistent intervention status', 'BROKER_PROTOCOL');

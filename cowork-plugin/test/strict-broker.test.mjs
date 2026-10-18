@@ -246,9 +246,93 @@ test('USER_CONTROL on other mutating tools yields not-performed; other errors st
   await assert.rejects(tools.get('phone.pause').execute({}, { agent: { session: { id: 's' } }, signal: new AbortController().signal }), error => error.code === 'BROKER_REJECTED');
 });
 test('mutation output schema accepts native {performed:true} and the user-controlled notice only', () => {
-  const tool = phoneTools({}, {}).find(t => t.name === 'phone.tap');
+  const tool = phoneTools({}, {}).find(t => t.name === 'phone.launch_app');
   assert.deepEqual(tool.output.schema.required, ['performed']);
   assert.deepEqual(Object.keys(tool.output.schema.properties).sort(), ['note', 'performed', 'userControlled']);
+  // Inputs that return the settled screen add the observation fields; nothing else.
+  for (const name of ['phone.tap', 'phone.long_press', 'phone.swipe', 'phone.type_text', 'phone.key', 'phone.wait']) {
+    const observed = phoneTools({}, {}).find(t => t.name === name);
+    assert.deepEqual(observed.output.schema.required, ['performed'], name);
+    assert.deepEqual(Object.keys(observed.output.schema.properties).sort(), ['changed', 'note', 'observation', 'observationError', 'performed', 'settled', 'userControlled'], name);
+  }
+});
+
+// ---- inputs that return the settled screen ----
+function afterHarness(reply) {
+  const calls = [];
+  const client = new BrokerClient({ secret, now: () => now, transport: async request => {
+    calls.push(request);
+    if (request.tool === 'phone.ui_tree') return envelopeOk(request, treeResult(now));
+    if (request.tool === 'phone.screenshot') return envelopeOk(request, { observationId: 'shot', capturedAt: now, width: 100, height: 200, mimeType: 'image/png', base64: 'iVBORw0KGgo=' });
+    return envelopeOk(request, reply(request) ?? { performed: true });
+  } });
+  return { client, calls };
+}
+const settledScreen = (observationId = 'after') => ({ ...treeResult(now, [node('next'), node('field', true)]), observationId });
+test('an input that returns the settled screen binds its element ids without another phone_ui_tree', async () => {
+  const { client, calls } = afterHarness(r => r.tool === 'phone.tap' ? { performed: true, changed: true, observation: settledScreen() } : undefined);
+  await client.call('s', 'phone.ui_tree', {});
+  const result = await client.call('s', 'phone.tap', { observationId: 'obs', elementId: 'btn' });
+  assert.equal(result.performed, true); assert.equal(result.changed, true); assert.equal(result.observation.observationId, 'after');
+  await client.call('s', 'phone.screenshot', {});                                 // the returned tree satisfies TREE_REQUIRED
+  assert.equal(calls.at(-1).tool, 'phone.screenshot');
+  await client.call('s', 'phone.type_text', { observationId: 'after', elementId: 'field', text: 'x' });
+  await assert.rejects(client.call('s', 'phone.tap', { observationId: 'obs', elementId: 'btn' }), /stale/, 'the observation before the input is gone');
+});
+test('parallel element inputs on one observation are no unguarded batch: the second is refused as stale', async () => {
+  const { client, calls } = afterHarness(r => r.tool === 'phone.tap' ? { performed: true, observation: settledScreen() } : undefined);
+  await client.call('s', 'phone.ui_tree', {});
+  const [tap, typed] = await Promise.allSettled([
+    client.call('s', 'phone.tap', { observationId: 'obs', elementId: 'btn' }),
+    client.call('s', 'phone.type_text', { observationId: 'obs', elementId: 'edit', text: 'x' }),
+  ]);
+  assert.equal(tap.status, 'fulfilled'); assert.equal(typed.status, 'rejected'); assert.match(typed.reason.message, /stale/);
+  assert.deepEqual(calls.map(c => c.tool), ['phone.ui_tree', 'phone.tap'], 'the second input never reached the broker');
+});
+test('a coordinate input that returns the screen leaves exactly that observation usable', async () => {
+  const { client } = afterHarness(r => r.tool === 'phone.swipe' ? { performed: true, settled: false, observation: settledScreen('swiped') } : undefined);
+  await client.call('s', 'phone.ui_tree', {});
+  const result = await client.call('s', 'phone.swipe', { observationId: 'obs', x1: 0, y1: 0, x2: 50, y2: 50, durationMs: 100 });
+  assert.equal(result.settled, false);
+  await client.call('s', 'phone.tap', { observationId: 'swiped', x: 1, y: 1 });
+  await assert.rejects(client.call('s', 'phone.tap', { observationId: 'swiped', x: 1, y: 1 }), /stale/, 'coordinates still consume it');
+});
+test('a malformed returned screen never turns a performed input into an error', async () => {
+  const bad = { ...settledScreen(), nodes: [{ id: 'n0', bounds: [0, 0, 101, 20] }] };
+  const { client } = afterHarness(r => r.tool === 'phone.tap' ? { performed: true, observation: bad } : undefined);
+  await client.call('s', 'phone.ui_tree', {});
+  const result = await client.call('s', 'phone.tap', { observationId: 'obs', elementId: 'btn' });
+  assert.equal(result.performed, true); assert.equal(result.observationError, 'BROKER_ERROR'); assert.equal(result.observation, undefined);
+  assert.match(result.note, /action was performed, but the screen could not be read/);
+  await assert.rejects(client.call('s', 'phone.tap', { observationId: 'obs', elementId: 'btn' }), /stale/, 'nothing stale stays usable');
+  await assert.rejects(client.call('s', 'phone.screenshot', {}), error => error.code === 'TREE_REQUIRED');
+});
+test('a native observationError keeps performed:true, adds the matching hint and never reflects unknown codes', async () => {
+  for (const [code, expected, hint] of [['SCREEN_SETTLING', 'SCREEN_SETTLING', /phone_wait/], ['SECRET_UI_TEXT_123', 'BROKER_ERROR', /phone_ui_tree before the next action/]]) {
+    const { client } = afterHarness(r => r.tool === 'phone.key' ? { performed: true, observationError: code } : undefined);
+    await client.call('s', 'phone.ui_tree', {});
+    const result = await client.call('s', 'phone.key', { observationId: 'obs', key: 'BACK' });
+    assert.equal(result.performed, true); assert.equal(result.observationError, expected); assert.match(result.note, hint);
+    assert.ok(!result.note.includes('SECRET_UI_TEXT_123'));
+  }
+  // scroll keeps its own moved note in front of the hint
+  const { client } = afterHarness(r => r.tool === 'phone.scroll' ? { performed: true, moved: false, note: 'at its end', observationError: 'STALE_OBSERVATION' } : undefined);
+  await client.call('s', 'phone.ui_tree', {});
+  const scrolled = await client.call('s', 'phone.scroll', { observationId: 'obs', deltaY: 100 });
+  assert.match(scrolled.note, /^at its end The action was performed/);
+});
+test('only inputs that return the screen may carry one; RECENTS answers with its note', async () => {
+  const { client } = afterHarness(r => r.tool === 'phone.launch_app' ? { performed: true, observation: settledScreen() } : r.tool === 'phone.key' ? { performed: true, note: 'Notes (dev.fixture.app, foreground)' } : undefined);
+  await assert.rejects(client.call('s', 'phone.launch_app', { packageName: 'dev.fixture.app' }), /observation is not allowed/);
+  assert.equal((await client.call('s', 'phone.key', { key: 'RECENTS' })).note, 'Notes (dev.fixture.app, foreground)');
+});
+test('the model sees the returned screen through the tool wrapper', async () => {
+  const { client } = afterHarness(r => r.tool === 'phone.wait' ? { performed: true, changed: false, observation: settledScreen() } : undefined);
+  const wait = phoneTools(client, {}).find(t => t.name === 'phone.wait');
+  const result = await wait.execute({ timeoutMs: 500 }, { agent: { session: { id: 's' } }, signal: new AbortController().signal });
+  assert.equal(result.changed, false); assert.equal(result.observation.nodes.length, 2);
+  const [text] = wait.output.render({}, result);
+  assert.match(text.text, /^Untrusted phone observation\/result data:\n\{"performed":true,"changed":false,"observation":\{/);
 });
 test('screenshot is refused in code until phone.ui_tree was read; every action, wait or pause renews the requirement', async () => {
   const { client, calls } = setup();

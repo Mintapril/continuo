@@ -474,6 +474,24 @@ public final class ProfileWorkspace implements AutoCloseable {
         }
         return last.equals(before)?null:last;
     }
+    /** Signature of the latest phone_ui_tree snapshot, the screen the model last read; empty when none is bound. */
+    public synchronized String lastTreeSignature(){return tree.lastSignature();}
+    /** After an input, waits until the visible structure stops changing, in the rhythm of the scroll feedback: two
+     *  equal content signatures 120 ms apart, the first read 300 ms after the input, at most six reads. A screen with
+     *  no labelled node yet (the blank gap between two activities) never counts as settled. false when it was still
+     *  changing at the last read (loading, animation, live content) or the turn was cancelled meanwhile. */
+    public synchronized boolean settle(){
+        String last=null;
+        for(int i=0;i<6;i++){
+            SystemClock.sleep(i==0?300:120);
+            if(cancellation.cancelled())return false;
+            String now;
+            try{now=tree.contentSignature(displayId(),W,H);}catch(Exception moving){last=null;continue;}
+            if(now.equals(last)&&!now.equals(ProfileStructure.NO_LABELS))return true;
+            last=now;
+        }
+        return false;
+    }
     /** Reads a scrollable page for the model: scrolls the largest scrollable region downward up to maxPages times and
      *  returns the de-duplicated visible text in reading order. One round trip instead of ui_tree+scroll per screen. */
     public synchronized JSONObject readPage(JSONObject a)throws Exception{

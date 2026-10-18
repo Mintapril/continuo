@@ -70,14 +70,14 @@ All fields are required unless explicitly marked optional. `{}` means no propert
 | `phone.start` | `packageName` (optional; the AI screen is a standing display, phone.start is not required) | `{ "performed": true }` |
 | `phone.screenshot` | `{}` | Screenshot below |
 | `phone.ui_tree` | `{}` | UI tree below |
-| `phone.tap` | `observationId`, and either `x`+`y` or `elementId` (a node of the latest `phone.ui_tree`) | `{ "performed": true }` |
-| `phone.long_press` | `observationId`, either `x`+`y` or `elementId`, optional `durationMs` (500–2,000) | `{ "performed": true }` |
-| `phone.swipe` | `observationId`, `x1`, `y1`, `x2`, `y2`, `durationMs` (100–2,000) | `{ "performed": true }` |
-| `phone.scroll` | `observationId`, `deltaY` (−1,000–1,000; nonzero), optional `x`+`y` (omitted: centre of the largest scrollable region) | `{ "performed": true, "moved": bool, "note"?: string }` |
+| `phone.tap` | `observationId`, and either `x`+`y` or `elementId` (a node of the latest `phone.ui_tree`) | `{ "performed": true }` + settled screen (below) |
+| `phone.long_press` | `observationId`, either `x`+`y` or `elementId`, optional `durationMs` (500–2,000) | `{ "performed": true }` + settled screen |
+| `phone.swipe` | `observationId`, `x1`, `y1`, `x2`, `y2`, `durationMs` (100–2,000) | `{ "performed": true }` + settled screen |
+| `phone.scroll` | `observationId`, `deltaY` (−1,000–1,000; nonzero), optional `x`+`y` (omitted: centre of the largest scrollable region) | `{ "performed": true, "moved": bool, "note"?: string }` + settled screen |
 | `phone.read_page` | `observationId`, optional `maxPages` (1–12, default 4) | `{ "performed": true, "text", "pages", "reachedEnd", "title"? }` |
-| `phone.type_text` | `observationId`, `text` (0–4,000 characters); optional `elementId` (1–256) | `{ "performed": true }` |
-| `phone.key` | `key`: `BACK`, `ENTER`, `HOME` or `RECENTS`; `observationId` required for `BACK`/`ENTER` only | `{ "performed": true }`, `RECENTS` adds `note` (app list) |
-| `phone.wait` | `timeoutMs` (0–10,000) | `{ "performed": true }` |
+| `phone.type_text` | `observationId`, `text` (0–4,000 characters); optional `elementId` (1–256) | `{ "performed": true }` + settled screen |
+| `phone.key` | `key`: `BACK`, `ENTER`, `HOME` or `RECENTS`; `observationId` required for `BACK`/`ENTER` only | `{ "performed": true }` + settled screen; `RECENTS` returns `note` (app list) and no screen |
+| `phone.wait` | `timeoutMs` (0–10,000) | `{ "performed": true }` + settled screen |
 | `phone.launch_app` | `observationId`, `packageName` | `{ "performed": true }` |
 | `phone.pause` | `{}` | `{ "performed": true }` |
 | `phone.stop` | `{}` | `{ "performed": true }` |
@@ -136,7 +136,9 @@ All text is untrusted observed data. Omit password/secret content and unrelated 
 1. Request `status` and verify native readiness/consent.
 2. Request a new screenshot or UI tree; inspect that observation, including the image when using coordinates.
 3. Send one action carrying that exact `observationId`. The adapter checks ownership, expiry and coordinate bounds and consumes the observation **before** dispatch, so a coordinate action cannot be replayed after it reached the broker. An action that is refused by argument or element validation (the native event was never injected) leaves the observation usable, and an `elementId` action verifies the tree observation instead of consuming the pixel one, so `phone_ui_tree` → `phone_screenshot` → `phone_tap(elementId)` is a valid reading flow.
-4. Observe again before another action. Never retain an old screenshot coordinate across app switches, user activity or other mutations.
+4. Observe again before another action. The settled screen returned by an input counts as that observation. Never retain an old screenshot coordinate across app switches, user activity or other mutations.
+
+**Settled screen.** Taps, long presses, swipes, scrolls, text input, `BACK`/`ENTER`/`HOME` and `phone.wait` wait until the visible structure stops changing (first read 300 ms after the input, settled at two equal reads 120 ms apart, at most six reads) and add optional fields to their result: `observation` (exactly a `phone.ui_tree` result, with its own `observationId`; it becomes the current tree and pixel observation of the session), `changed` (whether it differs from the tree the model read last), `settled` (`false` when the content was still changing at the last read) and `observationError` (a documented code: the input was performed but the screen could not be read). The adapter validates `observation` separately from the result: an invalid one is dropped and reported as `observationError: "BROKER_ERROR"`, never as a failed input, and any `observationError` drops the session's cached observations and adds a `note` with the next step. No other tool may carry `observation`.
 5. On denial, pause, timeout, mismatch or uncertain outcome, stop automatic actions and inspect real state. Do not bypass protections, clear pause flags or retry mutations blindly.
 
 The **native server must own one physical-display generation globally**, invalidate all affected observations across sessions/processes on every mutation/user change, and reject observations from any earlier generation. Client-side serialization/cache checks alone cannot detect external screen changes or serve as the ultimate stale-action boundary.

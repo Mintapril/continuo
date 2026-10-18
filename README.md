@@ -73,6 +73,7 @@ Continuo 是一个原生 Android 客户端（Kotlin + Jetpack Compose），连�
 - **没有应用白名单**：范围由“工作资料内可启动的应用”决定，而不是逐个包名放行。
 - **结构优先**：模型调用 `phone_screenshot` 前必须先读 `phone_ui_tree`，否则被拒（`TREE_REQUIRED`）；结构不完整（`complete:false`）时可以直接截图。插件与 Broker 各自独立强制。
 - **观察绑定与单次消费**：每次动作带短期 `observationId`（60 秒内有效），屏幕变化、超时或用过一次即失效；元素点击绑定界面树观察，中间截一张图不会让元素 ID 失效。
+- **动作自带结果画面**：点击、长按、滑动、滚动、输入、`BACK`/`ENTER`/`HOME` 和 `phone_wait` 执行后，Broker 等画面稳定（最早 300 毫秒后读，两次读到相同内容即视为稳定，最多读 6 次），再把一份完整的 `phone_ui_tree` 观察放进回复的 `observation`（新的 `observationId` 与元素 ID），模型直接接着用，不必再调一次 `phone_ui_tree`。回复里的 `changed:false` 表示与模型上次读到的画面相比没有可见变化，`settled:false` 表示读取时画面仍在变化；读取失败时只给出 `observationError` 和提示，动作本身仍报告为已执行，避免模型误以为没点上而重复操作。`phone_launch_app`（冷启动通常接着 `phone_wait`）、`phone_read_page` 和 `RECENTS` 不附带画面。
 - **高影响操作交给用户**：付款、发消息、授权、删除等由系统提示约束模型不得自行提交，需要时用 `phone_request_intervention` 把屏幕交给你。工作资料模式下没有逐个动作的原生审批（资料本身是授权边界），所以这一条是提示词与用户确认层面的约束，不是 Broker 的硬拦截。
 - **文本输入**：带 `elementId` 时对可编辑节点做语义整体替换，任何语言都可以（含中文），密码框拒绝（`SECRET_INPUT`）；不带 `elementId` 时逐键注入，仅限键盘可表达的 ASCII 可打印字符，中文与 emoji 返回 `TEXT_UNSUPPORTED`（不结束任务）。两种方式都不走共享剪贴板。
 - **不留痕**：工作资料里的启动器入口由 Broker 停用（可恢复，`LauncherHider`），新装应用的入口每秒检查一次并立即隐藏；模型启动的应用带 `FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS`，不进最近任务。

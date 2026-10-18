@@ -1,0 +1,16 @@
+.gradle/
+.kotlin/
+local.properties
+**/build/
+*.jks
+*.keystore
+captures/
+__pycache__/
+.kctmp/
+.tmpbuild/
+test-evidence/
+tools/font-conversion/
+build-log.txt
+*.bak-*
+cowork-plugin/research/
+research/

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="continuo_paper">#ECE9E1</color>
+    <color name="continuo_ink">#22252A</color>
+    <color name="continuo_accent">#2E6A8E</color>
+    <color name="continuo_ink_night">#1B1D21</color>
+    <color name="continuo_accent_light">#5B9BC0</color>
+    <color name="continuo_background">@color/continuo_paper</color>
+    <color name="continuo_icon_background">@color/continuo_paper</color>
+</resources>

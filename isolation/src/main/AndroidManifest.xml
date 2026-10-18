@@ -1,0 +1,20 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- No requested permissions: no Internet, storage, accounts, sensors, accessibility or root. -->
+    <queries><intent><action android:name="android.app.action.PROVISION_MANAGED_PROFILE"/><category android:name="android.intent.category.DEFAULT"/></intent></queries>
+    <application android:label="Cowork 隔离实验" android:allowBackup="false" android:dataExtractionRules="@xml/no_data_extraction" android:icon="@drawable/ic_isolation" android:usesCleartextTraffic="false" android:supportsRtl="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <!-- No LAUNCHER entry on purpose: the profile owner package is protected (cannot be disabled), so its only way to stay off the home screen is to not declare an icon. Open it with `am start -n dev.dsh.pocket.isolation/.IsolationActivity` if provisioning UI is ever needed. -->
+        <activity android:name=".IsolationActivity" android:exported="true" android:resizeableActivity="true"/>
+        <activity android:name=".SideloadPolicyActivity" android:exported="false" android:excludeFromRecents="true" android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
+        <receiver android:name=".ProfileAdminReceiver" android:exported="true" android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data android:name="android.app.device_admin" android:resource="@xml/profile_admin"/>
+            <intent-filter><action android:name="android.app.action.DEVICE_ADMIN_ENABLED"/><action android:name="android.app.action.PROFILE_PROVISIONING_COMPLETE"/></intent-filter>
+        </receiver>
+        <activity android:name=".HomeActivity" android:exported="true" android:excludeFromRecents="true" android:launchMode="singleTask" android:theme="@android:style/Theme.Material.Light.NoActionBar"/>
+        <activity android:name=".ProvisioningModeActivity" android:exported="true" android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <intent-filter><action android:name="android.app.action.GET_PROVISIONING_MODE"/><category android:name="android.intent.category.DEFAULT"/></intent-filter>
+        </activity>
+        <activity android:name=".ProfileReadyActivity" android:exported="true" android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <intent-filter><action android:name="android.app.action.ADMIN_POLICY_COMPLIANCE"/><action android:name="android.app.action.PROVISIONING_SUCCESSFUL"/><category android:name="android.intent.category.DEFAULT"/></intent-filter>
+        </activity>
+    </application>
+</manifest>

@@ -1,0 +1,4 @@
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Empty legacy policies: no wipe-data, force-lock, reset-password, camera or storage policy. -->
+    <uses-policies />
+</device-admin>

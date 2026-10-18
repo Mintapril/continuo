@@ -1,0 +1,656 @@
+package dev.dsh.pocket.cowork.broker;
+
+import android.app.*;
+import android.content.*;
+import android.content.pm.*;
+import android.graphics.PixelFormat;
+import android.hardware.display.*;
+import android.media.*;
+import android.os.*;
+import android.view.*;
+import org.json.*;
+import java.lang.reflect.*;
+import java.util.*;
+
+/** Profile-only pixel/input driver. No personal-user fallback, application allowlist, clipboard,
+ * arbitrary keys or accessibility provider calls. Android profiles are not app-escape containment.
+ * The original AndroidWorkspace is retained separately; this driver never falls back to it. */
+public final class ProfileWorkspace implements AutoCloseable {
+    private final Context context;
+    private final ProfileContext profile;
+    private final LauncherHider launchers;
+    private final WindowOwnershipProbe windows;
+    private final SecureWindowProbe protection=new SecureWindowProbe();
+    private final SecureSettingProbe secureSetting=new SecureSettingProbe();
+    private final ExecutionCancellation cancellation=new ExecutionCancellation();
+    private final HandlerThread drain=new HandlerThread("cowork-profile-frame-drain");
+    private volatile VirtualDisplay display;
+    private volatile ImageReader reader;
+    private String displayIdentity;
+    private volatile String displayExecution="";
+    private long generation;
+    private final Set<String> launched=new HashSet<>();
+    private record Frame(byte[] png,long at,String fingerprint,int uid){}
+    private final ProfileStructure tree;
+    private final Object frameLock=new Object();
+    private Handler drainHandler;
+    private LauncherApps.Callback installs;
+    private volatile int viewers;
+    private java.nio.ByteBuffer rowBuffer;
+    private long userDown,userCheck;
+    private int userUid=-1;
+    private float userX,userY;
+    /** Same aspect ratio and density feel as the main screen (set once from the real default display). */
+    static volatile int W=720,H=1600,DPI=290;static final int FPS=120;
+    private static final int FLAG_OWN_DISPLAY_GROUP=1<<11,FLAG_ALWAYS_UNLOCKED=1<<12;
+    /** True once the owned display really retained ALWAYS_UNLOCKED + OWN_DISPLAY_GROUP: the main-screen lock no longer gates it. */
+    private volatile boolean unlockedDisplay;
+    private volatile LiveStream live;
+
+    public ProfileWorkspace()throws Exception{
+        Class<?> at=Class.forName("android.app.ActivityThread");Object thread=at.getMethod("systemMain").invoke(null);
+        context=(Context)at.getMethod("getSystemContext").invoke(thread);
+        sizeFromMainScreen();profile=new ProfileContext(context);launchers=new LauncherHider(profile);tree=new ProfileStructure(profile);windows=new WindowOwnershipProbe();try{windows.awaitInitial();}catch(IllegalStateException e){System.err.println("window snapshot not yet available at start; every operation re-checks it");}drain.start();drainHandler=new Handler(drain.getLooper());watchInstalls();
+    }
+    private void sizeFromMainScreen(){
+        try{
+            android.util.DisplayMetrics m=new android.util.DisplayMetrics();
+            context.getSystemService(DisplayManager.class).getDisplay(Display.DEFAULT_DISPLAY).getRealMetrics(m);
+            int mw=Math.min(m.widthPixels,m.heightPixels),mh=Math.max(m.widthPixels,m.heightPixels);
+            if(mw>0&&mh>0){int h=(int)Math.round(720.0*mh/mw);h=Math.max(1280,Math.min(2000,h))&~1;W=720;H=h;DPI=Math.max(120,Math.round(m.densityDpi*720f/mw));}
+        }catch(Exception e){System.err.println("main screen size unavailable; using "+W+"x"+H);}
+    }
+    public Context context(){return context;}
+    public int profileUserId(){return profile.userId();}
+    public long profileSerial(){return profile.serial();}
+    public int displayId(){VirtualDisplay d=display;return d==null?-1:d.getDisplay().getDisplayId();}
+    public void requestCancellation(String execution){cancellation.request(execution);}
+    /** A new owner of the standing display starts a fresh cancellation scope. Lock free: it is only an atomic swap. */
+    public void beginScope(String execution){cancellation.begin(execution);}
+    /** True while the standing display exists and still has the verified identity (not locked out, same profile). */
+    public synchronized boolean ready(){if(display==null)return false;try{binding();return true;}catch(Throwable e){return false;}}
+    private volatile boolean parked=true;
+    /** True once an app was started on the display since the last reset (nothing to observe before that). */
+    public synchronized boolean hasLaunched(){return !launched.isEmpty();}
+    /** Ownership/idle check for an empty display: identity and cancellation only, no app window required. */
+    public synchronized void guardIdle(){check(false,true);}
+    /** Turn boundary: the display stays, its content goes. Removes the profile tasks shown on it, hides the launcher
+     *  entries revealed for the turn and invalidates every observation. Skipped when a newer owner already took over. */
+    public synchronized void resetContent(String execution){
+        if(!execution.isEmpty()&&!cancellation.current(execution))return;
+        userRelease();
+        if(display!=null){
+            try{
+                Object atm=Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null);
+                long until=SystemClock.elapsedRealtime()+2000;
+                while(true){
+                    boolean any=false;
+                    for(ActivityManager.RunningTaskInfo t:tasks()){
+                        if(t.getClass().getField("displayId").getInt(t)==displayId()&&t.getClass().getField("userId").getInt(t)==profile.userId()){
+                            any=true;atm.getClass().getMethod("removeTask",int.class).invoke(atm,t.taskId);
+                        }
+                    }
+                    if(!any||SystemClock.elapsedRealtime()>=until)break;
+                    SystemClock.sleep(100);
+                }
+            }catch(Exception e){System.err.println("display content reset failed: "+(e instanceof InvocationTargetException&&e.getCause()!=null?e.getCause():e));}
+        }
+        launched.clear();tree.bind(null);generation++;parked=true;cancellation.end();
+        try{launchers.hideRevealed();launchers.hideUnseen();}catch(Exception hideFailure){}
+    }
+    public void clearCancellation(String execution){cancellation.clear(execution);}
+    public boolean locked(){return context.getSystemService(KeyguardManager.class).isDeviceLocked();}
+    public String mainPackage(){
+        try{for(ActivityManager.RunningTaskInfo t:tasks())if(t.getClass().getField("displayId").getInt(t)==0&&t.getClass().getField("isVisible").getBoolean(t)&&t.topActivity!=null)return t.topActivity.getPackageName();}
+        catch(Exception ignored){}return "";
+    }
+    private List<ActivityManager.RunningTaskInfo> tasks(){return context.getSystemService(ActivityManager.class).getRunningTasks(100);}
+    private String identity()throws Exception{
+        VirtualDisplay d=display;if(d==null)throw new IllegalStateException();
+        Class<?> type=Class.forName("android.view.DisplayInfo");Object info=type.getConstructor().newInstance();
+        boolean valid=(Boolean)Display.class.getMethod("getDisplayInfo",type).invoke(d.getDisplay(),info);
+        int flags=type.getField("flags").getInt(info);
+        int own=Display.class.getField("FLAG_OWN_FOCUS").getInt(null),noSteal=Display.class.getField("FLAG_STEAL_TOP_FOCUS_DISABLED").getInt(null);
+        if((flags&own)==0||(flags&noSteal)==0)ActionGate.fail("SECURITY_UNAVAILABLE","Profile focus isolation unavailable");
+        unlockedDisplay=(flags&(FLAG_OWN_DISPLAY_GROUP|FLAG_ALWAYS_UNLOCKED))==(FLAG_OWN_DISPLAY_GROUP|FLAG_ALWAYS_UNLOCKED);
+        return OwnedDisplayIdentity.require(valid,type.getField("displayId").getInt(info),displayId(),type.getField("type").getInt(info),flags,
+            (String)type.getField("uniqueId").get(info),type.getField("ownerUid").getInt(info),(String)type.getField("ownerPackageName").get(info));
+    }
+    /** The system server destroys the VirtualDisplay on its own restart while this broker keeps running, and the stale
+     *  Display handle still reports its old id. Liveness therefore has to be asked of DisplayManager, not of the handle. */
+    private boolean displayAlive(){
+        VirtualDisplay d=display;
+        if(d==null)return false;
+        try{
+            int id=d.getDisplay().getDisplayId();
+            if(id<=0)return false;
+            DisplayManager manager=(DisplayManager)context.getSystemService(Context.DISPLAY_SERVICE);
+            return manager!=null&&manager.getDisplay(id)!=null;
+        }catch(Throwable e){return false;}
+    }
+    private void binding(){
+        if(!displayAlive())ActionGate.fail("NO_DISPLAY","No owned work-profile display");
+        if(locked()&&!unlockedDisplay)ActionGate.fail("LOCKED","Unlock before using the workspace");
+        try{profile.current();if(!Objects.equals(displayIdentity,identity()))throw new IllegalStateException();secureSetting.requireSafe();}
+        catch(ActionGate.Denied e){throw e;}catch(Exception e){ActionGate.fail("SECURITY_UNAVAILABLE","Profile or owned display identity changed");}
+    }
+    private static final Set<String> SYSTEM_DIALOG_HOSTS=Set.of("com.android.permissioncontroller","com.google.android.permissioncontroller","com.android.packageinstaller","com.google.android.packageinstaller","com.oplus.securitypermission","com.oplus.appdetail","com.oplus.packageinstaller","com.coloros.securitypermission");
+    public synchronized void requirePackage(String pkg)throws Exception{
+        try{profile.app(pkg);profile.launcher(pkg);}
+        catch(PackageManager.NameNotFoundException e){ActionGate.fail("APP_UNKNOWN","App is not installed in the work profile; call phone_apps for the installed apps");}
+    }
+    /** Foreground identity only (work-profile UID/installed/enabled); system dialogs have no launcher activity. */
+    public synchronized void requireForeground(String pkg)throws Exception{profile.app(pkg);}
+    /** The AI display is a standing display: it is created once (at broker start / first claim) and kept. Ownership
+     *  and the cancellation scope are per turn ({@link #beginScope}); only the content is reset between turns. */
+    public static final String STANDING="standing";
+    public synchronized void create(String label)throws Exception{
+        if(display!=null)ActionGate.fail("DISPLAY_BUSY","Display already exists");
+        profile.current();
+        displayExecution=label;parked=true;
+        try{
+            reader=ImageReader.newInstance(W,H,PixelFormat.RGBA_8888,2);
+            // Frames are drained and discarded unless a user-controller stream is attached (viewers>0);
+            // then pollFrame() consumes them. Secure layers are never rendered into this unsecured display.
+            reader.setOnImageAvailableListener(source->{try(Image i=source.acquireLatestImage()){}catch(Exception ignored){}},drainHandler);
+            // PUBLIC|OWN_CONTENT_ONLY|SUPPORTS_TOUCH|ROTATES|DESTROY_CONTENT|TRUSTED|OWN_DISPLAY_GROUP|ALWAYS_UNLOCKED|OWN_FOCUS|STEAL_TOP_FOCUS_DISABLED.
+            // ALWAYS_UNLOCKED is only honoured for a display in its own group, so the two travel together.
+            int flags=1|8|64|128|256|1024|FLAG_OWN_DISPLAY_GROUP|FLAG_ALWAYS_UNLOCKED|16384|65536;
+            display=createDisplay(flags,reader.getSurface());
+            if(display==null||displayId()<=0)ActionGate.fail("DISPLAY_FAILED","Owned display unavailable");
+            generation++;displayIdentity=identity();
+            if(locked()&&!unlockedDisplay)ActionGate.fail("LOCKED","Unlock before starting");
+            Object wm=Class.forName("android.view.WindowManagerGlobal").getMethod("getWindowManagerService").invoke(null);
+            Class<?> wmType=Class.forName("android.view.IWindowManager");
+            wmType.getMethod("setDisplayImePolicy",int.class,int.class).invoke(wm,displayId(),2);
+            if((Integer)wmType.getMethod("getDisplayImePolicy",int.class).invoke(wm,displayId())!=2)ActionGate.fail("IME_POLICY_UNAVAILABLE","Hidden IME policy unavailable");
+            long until=SystemClock.elapsedRealtime()+3000;
+            while(true){binding();try{protection.requireSafe(displayId(),false);break;}catch(ActionGate.Denied e){if(!e.code.equals("SECURITY_UNAVAILABLE")||SystemClock.elapsedRealtime()>=until)throw e;SystemClock.sleep(50);}}
+        }catch(Exception e){closeDisplay();throw e;}
+    }
+    /** Builds the display through VirtualDisplayConfig so the requested refresh rate (120 Hz) is honoured; the
+     *  legacy overload (no refresh rate) is the fallback when the config API is unavailable. */
+    private VirtualDisplay createDisplay(int flags,android.view.Surface surface)throws Exception{
+        DisplayManager manager=context.getSystemService(DisplayManager.class);
+        try{
+            Class<?> builderType=Class.forName("android.hardware.display.VirtualDisplayConfig$Builder");
+            Object builder=builderType.getConstructor(String.class,int.class,int.class,int.class).newInstance("DSH-Cowork-Profile",W,H,DPI);
+            builderType.getMethod("setFlags",int.class).invoke(builder,flags);
+            builderType.getMethod("setSurface",android.view.Surface.class).invoke(builder,surface);
+            builderType.getMethod("setRequestedRefreshRate",float.class).invoke(builder,(float)FPS);
+            Object config=builderType.getMethod("build").invoke(builder);
+            VirtualDisplay made=(VirtualDisplay)DisplayManager.class.getMethod("createVirtualDisplay",Class.forName("android.hardware.display.VirtualDisplayConfig")).invoke(manager,config);
+            if(made!=null)return made;
+        }catch(Exception e){System.err.println("virtual display config unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
+        return manager.createVirtualDisplay("DSH-Cowork-Profile",W,H,DPI,surface,flags);
+    }
+    /** Personal foreground changes are allowed. Only profile ownership/display binding is authoritative. */
+    public synchronized void guard(){guard(400);}
+    /** One ownership check, retried only for a transient gap (app switch, dialog, animation) and only up to
+     *  `budgetMs`. A foreign task, a cancellation or any other denial fails at once. Callers that poll on their
+     *  own clock (phone.wait) pass 0 so a single gap cannot eat the caller's whole wait. */
+    public synchronized void guard(long budgetMs){
+        long until=SystemClock.elapsedRealtime()+Math.max(0,budgetMs);
+        while(true){
+            try{check(true,true);return;}
+            catch(ActionGate.Denied e){
+                boolean transientGap=(e.code.equals("APP_DENIED")||e.code.equals("APP_UNKNOWN")||e.code.equals("SECURITY_UNAVAILABLE"))&&!"Foreign task on profile display".equals(e.getMessage());
+                if(!transientGap||SystemClock.elapsedRealtime()>=until){System.err.println("guard denied: "+e.code+": "+e.getMessage());throw e;}
+                SystemClock.sleep(50);
+            }
+        }
+    }
+    /** The owned display is reserved for the work profile, but a system surface can still land there (a Settings
+     *  page opened while the display had focus, a permission host, the trial launcher from an earlier build).
+     *  Evicting it keeps the turn alive; only a task that refuses to leave stays a boundary violation. */
+    private void sweepForeignTasks()throws Exception{
+        for(int attempt=0;attempt<2;attempt++){
+            boolean foreign=false;
+            for(ActivityManager.RunningTaskInfo t:tasks()){
+                int user=taskInt(t,"userId"),d=taskInt(t,"displayId");
+                if(d==displayId()&&user!=profile.userId()){
+                    foreign=true;
+                    try{Object atm=Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null);
+                        atm.getClass().getMethod("removeTask",int.class).invoke(atm,t.taskId);
+                    }catch(Exception ignored){}
+                }
+            }
+            if(!foreign)return;
+            SystemClock.sleep(150);
+        }
+    }
+
+    private void check(boolean content,boolean checkCancel){
+        binding();if(checkCancel&&cancellation.cancelled())ActionGate.fail("CONTROL_INTERRUPTED","User requested pause or stop");
+        protection.requireSafe(displayId(),content);
+        try{
+            sweepForeignTasks();
+            for(ActivityManager.RunningTaskInfo t:tasks()){
+                int user=t.getClass().getField("userId").getInt(t),d=t.getClass().getField("displayId").getInt(t);
+                if(d==displayId()&&user!=profile.userId())ActionGate.fail("APP_DENIED","Foreign task on profile display");
+                if(user==profile.userId()&&d!=displayId()&&((t.topActivity!=null&&launched.contains(t.topActivity.getPackageName()))||(t.baseActivity!=null&&launched.contains(t.baseActivity.getPackageName()))))
+                    ActionGate.fail("APP_CONFLICT","Work-profile app left the owned display; stop and review");
+            }
+            if(content)target();
+            else {ProfileWindowPolicy.Snapshot snapshot=windows.awaitSnapshot(1500);boolean hasInput=snapshot.windows().stream().anyMatch(w->w.displayId()==displayId()&&!(w.windowToken()==null&&(w.inputConfig()&1)!=0));if(hasInput)ProfileWindowPolicy.requireInputTargets(snapshot,displayId(),profile.userId());}
+        }catch(ActionGate.Denied e){throw e;}catch(Exception e){
+            // Private root-only broker.log: exception class/message only, never window or UI content.
+            Throwable cause=e instanceof java.lang.reflect.InvocationTargetException&&e.getCause()!=null?e.getCause():e;
+            System.err.println("profile-check failed: "+cause.getClass().getName()+": "+cause.getMessage()+" at "+(cause.getStackTrace().length>0?cause.getStackTrace()[0]:"?"));
+            ActionGate.fail("APP_DENIED","Profile task ownership unavailable");}
+        binding();
+    }
+    /** target() that rides out a short app-transition gap (activity finishing/starting) before denying. */
+    private ManagedProfileScope.App targetWait()throws Exception{
+        long until=SystemClock.elapsedRealtime()+3000;
+        while(true){
+            try{return target();}
+            catch(ActionGate.Denied e){if(!(e.code.equals("APP_DENIED")||e.code.equals("APP_UNKNOWN")||e.code.equals("SECURITY_UNAVAILABLE"))||SystemClock.elapsedRealtime()>=until)throw e;SystemClock.sleep(50);}
+        }
+    }
+    private ManagedProfileScope.App target()throws Exception{
+        String pkg=targetPackage();if(pkg.isEmpty())throw new ActionGate.Denied("APP_UNKNOWN","No verified work-profile foreground");
+        ManagedProfileScope.App app=profile.app(pkg);
+        List<ProfileWindowPolicy.Window> admitted=ProfileWindowPolicy.requireInputTargets(windows.awaitSnapshot(1500),displayId(),profile.userId());
+        if(admitted.stream().noneMatch(w->w.ownerUid()==app.uid()))ActionGate.fail("APP_DENIED","Target UID has no admitted window");
+        return app;
+    }
+    /** Lock-free (volatile display + binder query): the control plane reads it while a tool holds the workspace. */
+    public String targetPackage(){
+        if(displayId()<=0)return "";
+        try{for(ActivityManager.RunningTaskInfo t:tasks())if(t.getClass().getField("displayId").getInt(t)==displayId()&&t.getClass().getField("userId").getInt(t)==profile.userId()&&t.getClass().getField("isVisible").getBoolean(t)&&t.topActivity!=null)return t.topActivity.getPackageName();}
+        catch(Exception ignored){}return "";
+    }
+    public synchronized void launch(String pkg)throws Exception{
+        parked=false;check(false,true);requirePackage(pkg);
+        for(ActivityManager.RunningTaskInfo t:tasks())if(t.getClass().getField("userId").getInt(t)==profile.userId()&&t.getClass().getField("displayId").getInt(t)!=displayId()&&((t.topActivity!=null&&pkg.equals(t.topActivity.getPackageName()))||(t.baseActivity!=null&&pkg.equals(t.baseActivity.getPackageName()))))ActionGate.fail("APP_CONFLICT","This work-profile app is already on another display");
+        // No MULTIPLE_TASK: switching back to an app that the AI desktop pushed to the background must reuse its task.
+        Intent intent=new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(profile.launcher(pkg)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+        ActivityOptions options=ActivityOptions.makeBasic();options.setLaunchDisplayId(displayId());
+        Object am=ActivityManager.class.getMethod("getService").invoke(null);
+        Method start=am.getClass().getMethod("startActivityAsUser",Class.forName("android.app.IApplicationThread"),String.class,Intent.class,String.class,IBinder.class,String.class,int.class,int.class,Class.forName("android.app.ProfilerInfo"),Bundle.class,int.class);
+        launched.add(pkg);
+        // The launcher entry is enabled only while the app starts (the system refuses to start a disabled component)
+        // and is hidden again once the app has established its window, or if the launch fails.
+        ComponentName entry=intent.getComponent();boolean revealed=launchers.reveal(entry);int started;
+        try{started=(Integer)start.invoke(am,null,"com.android.shell",intent,null,null,null,0,0,null,options.toBundle(),profile.userId());}
+        catch(Exception e){if(revealed)launchers.hide(entry);throw e;}
+        if(started<0){if(revealed)launchers.hide(entry);ActionGate.fail("APP_LAUNCH_DENIED","Profile launch rejected");}
+        // The entry stays enabled while the app runs: disabling a live launcher activity force-finishes it (re-hidden in closeDisplay/housekeeping).
+        // A first start can take many seconds (cold start, installer or first-run screens, ads). Wait longer, then
+        // report a distinct retryable code: the display and the started activity stay, the model can wait and observe.
+        long until=SystemClock.elapsedRealtime()+8000;
+        do{try{check(false,true);String top=targetPackage();if(pkg.equals(top)||(!top.isEmpty()&&SYSTEM_DIALOG_HOSTS.contains(top))){guard();return;}}catch(ActionGate.Denied notReady){if(!Set.of("APP_DENIED","APP_UNKNOWN","SECURITY_UNAVAILABLE").contains(notReady.code))throw notReady;}SystemClock.sleep(50);}while(SystemClock.elapsedRealtime()<until);
+        // Do NOT hide the entry here: disabling a live launcher activity force-finishes the app that is still starting.
+        ActionGate.fail("LAUNCH_TIMEOUT","The app is starting but has not reached the owned display yet; call phone_wait and then phone_ui_tree");
+    }
+
+    /** Profile-owned desktop that stands in for the system home screen on the owned display. */
+    public static final String DESKTOP="dev.dsh.pocket.isolation";
+    /** Virtual HOME: the running app keeps running in the background and the profile desktop takes the display. */
+    public synchronized void home()throws Exception{
+        parked=false;check(false,true);
+        Intent intent=new Intent(Intent.ACTION_MAIN).setComponent(new ComponentName(DESKTOP,DESKTOP+".HomeActivity")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+        // The desktop lists what keeps running behind it, so neither the agent nor the human has to ask first. The app
+        // that is foreground right now is exactly the one this HOME pushes to the background.
+        String behind=recents();
+        if(!behind.startsWith("The AI screen"))intent.putExtra("recents",behind.replace("\uff0c\u524d\u53f0)","\uff0c\u540e\u53f0)"));
+        ActivityOptions options=ActivityOptions.makeBasic();options.setLaunchDisplayId(displayId());
+        Object am=ActivityManager.class.getMethod("getService").invoke(null);
+        Method start=am.getClass().getMethod("startActivityAsUser",Class.forName("android.app.IApplicationThread"),String.class,Intent.class,String.class,IBinder.class,String.class,int.class,int.class,Class.forName("android.app.ProfilerInfo"),Bundle.class,int.class);
+        launched.add(DESKTOP);
+        int started=(Integer)start.invoke(am,null,"com.android.shell",intent,null,null,null,0,0,null,options.toBundle(),profile.userId());
+        if(started<0)ActionGate.fail("APP_LAUNCH_DENIED","Profile launch rejected");
+        long until=SystemClock.elapsedRealtime()+4000;
+        do{try{check(false,true);if(DESKTOP.equals(targetPackage())){guard();return;}}catch(ActionGate.Denied notReady){if(!Set.of("APP_DENIED","APP_UNKNOWN","SECURITY_UNAVAILABLE").contains(notReady.code))throw notReady;}SystemClock.sleep(50);}while(SystemClock.elapsedRealtime()<until);
+        ActionGate.fail("LAUNCH_TIMEOUT","The AI desktop has not reached the owned display yet; call phone_wait and then phone_ui_tree");
+    }
+    /** Virtual RECENTS: the work-profile tasks on the owned display, newest first, without changing the screen. */
+    public synchronized String recents()throws Exception{
+        check(false,true);
+        StringBuilder text=new StringBuilder();Set<String> seen=new HashSet<>();
+        for(ActivityManager.RunningTaskInfo t:tasks()){
+            if(taskInt(t,"displayId")!=displayId()||taskInt(t,"userId")!=profile.userId())continue;
+            ComponentName top=t.topActivity!=null?t.topActivity:t.baseActivity;if(top==null)continue;
+            if(!seen.add(top.getPackageName()))continue;
+            if(text.length()>0)text.append('\u3001');
+            text.append(appLabel(top.getPackageName())).append(" (").append(top.getPackageName()).append(taskVisible(t)?"\uff0c\u524d\u53f0)":"\uff0c\u540e\u53f0)");
+        }
+        return text.length()==0?"The AI screen has no running app":text.toString();
+    }
+    private static int taskInt(ActivityManager.RunningTaskInfo t,String field){try{return t.getClass().getField(field).getInt(t);}catch(Exception e){return Integer.MIN_VALUE;}}
+    private static boolean taskVisible(ActivityManager.RunningTaskInfo t){try{return t.getClass().getField("isVisible").getBoolean(t);}catch(Exception e){return false;}}
+    private String structure(int uid){
+        ArrayList<String> owned=new ArrayList<>();for(ProfileWindowPolicy.Window w:windows.awaitSnapshot(1500).windows())if(w.displayId()==displayId())owned.add(w.ownerUid()+":"+w.inputConfig()+":"+Objects.hashCode(w.windowToken()));
+        Collections.sort(owned);return generation+"|"+displayIdentity+"|"+profile.serial()+"|"+uid+"|"+owned;
+    }
+    private Frame capture()throws Exception{
+        check(true,false);ManagedProfileScope.App app=target();String before=structure(app.uid());
+        byte[] png=OwnedDisplayCapture.profilePng(displayId(),profile.userId(),app.uid(),W,H);long at=System.currentTimeMillis();
+        check(true,false);if(target().uid()!=app.uid()||!before.equals(structure(app.uid())))ActionGate.fail("STALE_OBSERVATION","Profile window changed during capture");
+        // Structural identity only: animated pixels must not invalidate every action, but UID/windows must match.
+        return new Frame(png,at,before,app.uid());
+    }
+    public record Observation(JSONObject result,String fingerprint){}
+    private JSONObject image(Frame f)throws JSONException{return new JSONObject().put("mimeType","image/png").put("base64",android.util.Base64.encodeToString(f.png(),android.util.Base64.NO_WRAP)).put("width",W).put("height",H).put("capturedAt",f.at());}
+    private int verifiedUid=-1;
+    /** Structural identity only (no pixels): same string a screenshot or tree observation carries. */
+    private String structuralFingerprint()throws Exception{
+        check(true,false);ManagedProfileScope.App app=target();String before=structure(app.uid());
+        check(true,false);if(target().uid()!=app.uid()||!before.equals(structure(app.uid())))ActionGate.fail("STALE_OBSERVATION","Profile window changed during observation");
+        verifiedUid=app.uid();return before;
+    }
+    /** UID bound by the latest consumed observation; input never re-chooses a target after the race. */
+    public synchronized String fingerprint()throws Exception{return structuralFingerprint();}
+    public synchronized String fingerprintIdle(){return generation+"|"+displayIdentity+"|"+profile.serial();}
+    /** Bind the observation to the exact returned PNG, never two surrounding captures. */
+    public synchronized Observation observe(boolean screenshot)throws Exception{
+        guard();
+        // A screenshot is about pixels; it does not invalidate the element ids of the latest phone_ui_tree.
+        if(screenshot){Frame f=capture();verifiedUid=f.uid();return new Observation(image(f),f.fingerprint());}
+        // Structure path: no pixels are read. Secure windows are refused by check(true,..) like screenshots.
+        // Animated screens (carousels, video, countdowns) change their structure while it is being read; retry the
+        // read and the stability check together for a bounded time instead of reporting a stale observation at once.
+        ActionGate.Denied last=null;
+        long until=SystemClock.elapsedRealtime()+2000;
+        do{
+            try{
+                check(true,false);ManagedProfileScope.App app=target();String before=structure(app.uid());
+                JSONObject result=tree.snapshot(displayId(),W,H).put("width",W).put("height",H).put("capturedAt",System.currentTimeMillis());
+                check(true,false);if(target().uid()!=app.uid()||!before.equals(structure(app.uid())))ActionGate.fail("STALE_OBSERVATION","The screen is still changing; observe again");
+                verifiedUid=app.uid();return new Observation(result,before);
+            }catch(ActionGate.Denied moving){
+                if(!moving.code.equals("STALE_OBSERVATION"))throw moving;
+                last=moving;SystemClock.sleep(120);
+            }
+        }while(SystemClock.elapsedRealtime()<until);
+        throw last;
+    }
+    /** Called after gate.observe: element ids are valid only for this ui_tree observation. */
+    public synchronized void bindTree(String observationId){tree.bind(observationId);}
+    public synchronized void requireTree(String observationId){tree.requireBound(observationId);}
+    public synchronized JSONObject preview()throws Exception{return image(capture());}
+    public synchronized void tap(JSONObject a,boolean longPress)throws Exception{
+        float x,y;
+        if(a.has("elementId")){float[] c=tree.centre(a.getString("elementId"),displayId());x=c[0];y=c[1];}
+        else{x=(float)a.getDouble("x");y=(float)a.getDouble("y");}
+        touch(x,y,x,y,longPress?a.optInt("durationMs",650):80);
+    }
+    public synchronized void swipe(JSONObject a)throws Exception{touch((float)a.getDouble("x1"),(float)a.getDouble("y1"),(float)a.getDouble("x2"),(float)a.getDouble("y2"),a.optInt("durationMs",400));}
+    private void touch(float x1,float y1,float x2,float y2,int duration)throws Exception{
+        int uid=verifiedUid;verifiedUid=-1;
+        if(uid<0)uid=admit();
+        gesture(uid,x1,y1,x2,y2,duration);
+    }
+    /** Re-admit the foreground app when the pixel observation was already used (element actions are bound to the
+     *  tree observation instead, so several taps may follow one phone_ui_tree). The guard runs exactly as before. */
+    private int admit()throws Exception{guard();return targetWait().uid();}
+    /** One guarded gesture bound to an already admitted UID (the observation binding is consumed by the caller). */
+    private void gesture(int uid,float x1,float y1,float x2,float y2,int duration)throws Exception{
+        int id=displayId();
+        guard();if(targetWait().uid()!=uid)ActionGate.fail("APP_DENIED","Foreground app changed after observation");
+        if(!Float.isFinite(x1)||!Float.isFinite(x2)||!Float.isFinite(y1)||!Float.isFinite(y2)||x1<0||x2<0||y1<0||y2<0||x1>=W||x2>=W||y1>=H||y2>=H||duration<40||duration>2000)ActionGate.fail("INVALID_GESTURE","Gesture bounds invalid");
+        long down=SystemClock.uptimeMillis();boolean complete=false;
+        try{
+            // An injection timeout can occur after delivery. Every attempted DOWN is covered by CANCEL.
+            ProfileInput.motion(id,profile.userId(),uid,down,down,MotionEvent.ACTION_DOWN,x1,y1);
+            while(SystemClock.uptimeMillis()-down<duration){SystemClock.sleep(16);guard();if(targetWait().uid()!=uid)ActionGate.fail("APP_DENIED","Input target changed");float f=Math.min(1f,(SystemClock.uptimeMillis()-down)/(float)duration);ProfileInput.motion(id,profile.userId(),uid,down,SystemClock.uptimeMillis(),MotionEvent.ACTION_MOVE,x1+(x2-x1)*f,y1+(y2-y1)*f);}
+            guard();if(targetWait().uid()!=uid)ActionGate.fail("APP_DENIED","Input target changed");
+            ProfileInput.motion(id,profile.userId(),uid,down,SystemClock.uptimeMillis(),MotionEvent.ACTION_UP,x2,y2);complete=true;
+        }finally{if(!complete)ProfileInput.motion(id,profile.userId(),uid,down,SystemClock.uptimeMillis(),MotionEvent.ACTION_CANCEL,x2,y2);}
+    }
+    /** Scroll gesture with feedback: the reply says whether the visible content really moved, so a silent no-op
+     *  (wrong point, end of page, non-scrollable area) is never reported as a plain success. Without x/y the centre
+     *  of the largest scrollable region of the latest ui_tree is used. */
+    public synchronized JSONObject scroll(JSONObject a)throws Exception{
+        int delta=a.getInt("deltaY");
+        int x,y;
+        if(a.has("x")&&a.has("y")){x=a.getInt("x");y=a.getInt("y");}
+        else{android.graphics.Rect r=tree.largestScrollable();if(r==null)ActionGate.fail("SCROLL_UNSUPPORTED","No scrollable region in the latest phone_ui_tree; pass x and y");x=r.centerX();y=r.centerY();}
+        int travel=Math.max(-800,Math.min(800,delta));
+        // Keep the whole stroke on screen: start further down for a downward page, further up for an upward one.
+        int start=y,finish=y-travel;
+        if(finish<16){start+=16-finish;finish=16;}
+        if(finish>H-17){start-=finish-(H-17);finish=H-17;}
+        start=Math.max(16,Math.min(H-17,start));
+        if(finish==start)ActionGate.fail("SCROLL_UNSUPPORTED","Choose a point with room for the scroll gesture");
+        int uid=verifiedUid;verifiedUid=-1;
+        if(uid<0)uid=admit();
+        String before=tree.contentSignature(displayId(),W,H);
+        gesture(uid,x,start,x,finish,400);
+        JSONObject result=new JSONObject();
+        boolean moved=settledSignature(before)!=null;
+        result.put("moved",moved);
+        if(!moved)result.put("note","The visible content did not change: this point is not scrollable or the page is already at its end. Use phone_ui_tree (scrollable:true nodes carry flag s) or omit x and y.");
+        return result;
+    }
+    /** Waits for the scroll fling to settle; returns the new signature, or null when it equals {@code before}. */
+    private String settledSignature(String before)throws Exception{
+        String last=before;
+        for(int i=0;i<6;i++){
+            SystemClock.sleep(i==0?300:120);
+            String now=tree.contentSignature(displayId(),W,H);
+            if(i>0&&now.equals(last))return now.equals(before)?null:now;
+            last=now;
+        }
+        return last.equals(before)?null:last;
+    }
+    /** Reads a scrollable page for the model: scrolls the largest scrollable region downward up to maxPages times and
+     *  returns the de-duplicated visible text in reading order. One round trip instead of ui_tree+scroll per screen. */
+    public synchronized JSONObject readPage(JSONObject a)throws Exception{
+        int maxPages=a.optInt("maxPages",4);
+        int uid=verifiedUid;verifiedUid=-1;
+        if(uid<0)uid=admit();
+        android.graphics.Rect area=tree.largestScrollable();
+        if(area==null)area=new android.graphics.Rect(0,H/6,W,H-H/6);
+        int x=area.centerX(),mid=area.centerY(),travel=Math.max(200,Math.min(800,area.height()*3/4));
+        int from=Math.min(H-17,mid+travel/2),to=Math.max(16,from-travel);
+        StringBuilder text=new StringBuilder();
+        java.util.HashSet<String> previous=new java.util.HashSet<>(),seen=new java.util.HashSet<>();
+        int pages=0;boolean end=false;
+        String signature=tree.contentSignature(displayId(),W,H);
+        for(int page=0;page<maxPages;page++){
+            java.util.List<String> lines=tree.visibleLines(displayId(),W,H);
+            java.util.HashSet<String> current=new java.util.HashSet<>(lines);
+            // A page seam repeats the last lines of the previous page; only short labels may legitimately repeat.
+            for(String line:lines)if(!previous.contains(line)&&(!seen.contains(line)||line.length()<=8)){if(text.length()>0)text.append('\n');text.append(line);seen.add(line);}
+            previous=current;pages++;
+            if(text.length()>60000){text.setLength(60000);break;}
+            if(page==maxPages-1)break;
+            gesture(uid,x,from,x,to,400);
+            String next=settledSignature(signature);
+            if(next==null){end=true;break;}
+            signature=next;
+        }
+        guard();
+        return new JSONObject().put("text",text.toString()).put("pages",pages).put("reachedEnd",end).put("title",tree.title());
+    }
+    /** Consumes the observation-bound UID exactly like a gesture; input never re-chooses its target. */
+    private int boundUid()throws Exception{
+        int uid=verifiedUid;verifiedUid=-1;
+        if(uid<0)return admit();
+        guard();if(targetWait().uid()!=uid)ActionGate.fail("APP_DENIED","Foreground app changed after observation");
+        return uid;
+    }
+    /** Literal text, delivered as key events bound to the frozen work-profile UID on the owned display.
+     * No clipboard, no accessibility, no shared/personal IME (display IME policy stays HIDE).
+     * Every character is validated before the first event, so text is all-or-nothing in scope. */
+    public synchronized void type(JSONObject a)throws Exception{
+        String text=a.getString("text");
+        if(a.has("elementId")){
+            // Semantic REPLACE of the whole field (any language). Password fields are refused by ProfileStructure.
+            if(text.indexOf('\u0000')>=0)ActionGate.fail("TEXT_UNSUPPORTED","Text contains an invalid character");
+            int uid=boundUid();tree.setText(a.getString("elementId"),displayId(),text);guard();return;
+        }
+        if(text.isEmpty())return;
+        ArrayList<KeyEvent[]> units=new ArrayList<>();
+        for(int i=0;i<text.length();){
+            int cp=text.codePointAt(i);i+=Character.charCount(cp);
+            if(Character.isISOControl(cp))ActionGate.fail("TEXT_UNSUPPORTED","Control characters are not text; use phone_key ENTER or BACK");
+            KeyEvent[] events=ProfileInput.events(new String(Character.toChars(cp)));
+            if(events==null)ActionGate.fail("TEXT_UNSUPPORTED","This character needs an input method; profile input supports printable keyboard characters only");
+            units.add(events);
+        }
+        int uid=boundUid(),id=displayId(),count=0;
+        for(KeyEvent[] unit:units){
+            if((count++&7)==0){guard();if(targetWait().uid()!=uid)ActionGate.fail("APP_DENIED","Input target changed");}
+            ProfileInput.character(id,profile.userId(),uid,unit);
+        }
+        guard();
+    }
+    public synchronized void key(String key)throws Exception{
+        int code=key.equals("BACK")?KeyEvent.KEYCODE_BACK:key.equals("ENTER")?KeyEvent.KEYCODE_ENTER:-1;
+        if(code<0)ActionGate.fail("KEY_DENIED","Only display-local BACK and ENTER are permitted");
+        int uid=boundUid();
+        ProfileInput.key(displayId(),profile.userId(),uid,code);
+    }
+    /** Human-readable label of a work-profile package, falling back to the package name. */
+    public String appLabel(String pkg){
+        try{PackageManager pm=profile.context().getPackageManager();return String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(pkg,0)));}
+        catch(Exception e){return pkg;}
+    }
+    public JSONArray availableApps(Set<String> ignored)throws Exception{
+        JSONArray out=new JSONArray();PackageManager pm=profile.context().getPackageManager();
+        for(ManagedProfileScope.App a:profile.launcherApps())out.put(new JSONObject().put("packageName",a.packageName()).put("label",String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(a.packageName(),0)))).put("approved",true));
+        return out;
+    }
+    // ---- user takeover (human input, still display- and UID-bound) and live view ----
+    /** Human takeover checks: ownership and identity only (a user may be entering a secret on a protected window). */
+    public synchronized void guardUser(){
+        long until=SystemClock.elapsedRealtime()+3000;
+        while(true){
+            try{check(false,false);return;}
+            catch(ActionGate.Denied e){
+                boolean transientGap=(e.code.equals("APP_DENIED")||e.code.equals("APP_UNKNOWN")||e.code.equals("SECURITY_UNAVAILABLE"))&&!"Foreign task on profile display".equals(e.getMessage());
+                if(!transientGap||SystemClock.elapsedRealtime()>=until)throw e;
+                SystemClock.sleep(50);
+            }
+        }
+    }
+    /** One touch event of the human; DOWN freezes the target UID for the whole gesture. */
+    private static final long USER_RECHECK_MS=250;
+    private long userChecked;
+    public synchronized void userTouch(String action,float x,float y)throws Exception{
+        if(!Float.isFinite(x)||!Float.isFinite(y)||x<0||y<0||x>=W||y>=H)ActionGate.fail("INVALID_GESTURE","Gesture bounds invalid");
+        int id=displayId(),user=profile.userId();
+        int type;
+        switch(action){case "down":type=MotionEvent.ACTION_DOWN;break;case "move":type=MotionEvent.ACTION_MOVE;break;case "up":type=MotionEvent.ACTION_UP;break;case "cancel":type=MotionEvent.ACTION_CANCEL;break;default:ActionGate.fail("ARGUMENTS_INVALID","Unknown touch action");return;}
+        long now=SystemClock.uptimeMillis();
+        if(type==MotionEvent.ACTION_DOWN){
+            if(userUid>=0){try{ProfileInput.userMotion(id,user,userUid,userDown,now,MotionEvent.ACTION_CANCEL,userX,userY);}catch(Exception ignored){}userUid=-1;}
+            guardUser();userUid=targetWait().uid();userDown=now;userX=x;userY=y;userChecked=now;
+            try{ProfileInput.userMotion(id,user,userUid,userDown,now,type,x,y);}catch(Exception e){userUid=-1;throw e;}
+            return;
+        }
+        if(userUid<0){if(type==MotionEvent.ACTION_CANCEL)return;ActionGate.fail("INVALID_GESTURE","Touch gesture has not started");}
+        int uid=userUid;userX=x;userY=y;
+        boolean last=type==MotionEvent.ACTION_UP||type==MotionEvent.ACTION_CANCEL;
+        try{
+            // The frozen-UID recheck is a window-snapshot + task binder query (~20 ms); at touch rate it throttled the finger,
+            // so a gesture re-verifies its target at most every USER_RECHECK_MS (the DOWN already admitted it).
+            if(!last&&now-userChecked>=USER_RECHECK_MS){userChecked=now;if(targetWait().uid()!=uid){type=MotionEvent.ACTION_CANCEL;last=true;ProfileInput.userMotion(id,user,uid,userDown,now,type,x,y);ActionGate.fail("APP_DENIED","Input target changed during the gesture");}}
+            ProfileInput.userMotion(id,user,uid,userDown,now,type,x,y);
+        }finally{if(last)userUid=-1;}
+    }
+    public synchronized void userKey(String key)throws Exception{
+        // HOME is not a key event on a virtual display (it would address the main screen): the human HOME opens the same
+        // profile desktop that the AI HOME key opens.
+        if(key.equals("HOME")){home();return;}
+        int code=key.equals("BACK")?KeyEvent.KEYCODE_BACK:key.equals("ENTER")?KeyEvent.KEYCODE_ENTER:key.equals("DEL")?KeyEvent.KEYCODE_DEL:-1;
+        if(code<0)ActionGate.fail("KEY_DENIED","Only BACK, ENTER, DEL and HOME are permitted");
+        guardUser();ProfileInput.userKey(displayId(),profile.userId(),targetWait().uid(),code);
+    }
+    /** Human-typed text: key events when every character has a key mapping, otherwise a semantic append to the focused field. */
+    public synchronized void userText(String text)throws Exception{
+        if(text==null||text.isEmpty()||text.length()>200)ActionGate.fail("ARGUMENTS_INVALID","Text length must be 1..200");
+        ArrayList<KeyEvent[]> units=new ArrayList<>();boolean mappable=true;
+        for(int i=0;i<text.length();){
+            int cp=text.codePointAt(i);i+=Character.charCount(cp);
+            if(Character.isISOControl(cp))ActionGate.fail("TEXT_UNSUPPORTED","Control characters are not text");
+            KeyEvent[] events=ProfileInput.events(new String(Character.toChars(cp)));
+            if(events==null){mappable=false;break;}
+            units.add(events);
+        }
+        guardUser();int uid=targetWait().uid();
+        if(mappable){for(KeyEvent[] unit:units)ProfileInput.character(displayId(),profile.userId(),uid,unit);}
+        else tree.appendFocused(displayId(),text);
+    }
+    /** Release any half-finished human gesture (takeover hand-back, expiry, stop). */
+    public synchronized void userRelease(){
+        if(userUid>=0&&displayId()>0){try{ProfileInput.userMotion(displayId(),profile.userId(),userUid,userDown,SystemClock.uptimeMillis(),MotionEvent.ACTION_CANCEL,userX,userY);}catch(Exception ignored){}}
+        userUid=-1;
+    }
+    /** The first viewer starts the hardware encoder and points the display at its input Surface; the ImageReader
+     *  stays the idle sink. No viewer = no encoder = no extra GPU/CPU work. */
+    public void viewerAttach()throws Exception{
+        LiveStream stream=new LiveStream(W,H,FPS);
+        synchronized(this){
+            VirtualDisplay d=display;if(d==null)throw new IllegalStateException("No display");
+            viewers++;
+            try{d.setSurface(stream.start());live=stream;}
+            catch(Exception e){viewers--;stream.close();throw e;}
+        }
+    }
+    public synchronized void viewerDetach(){
+        if(viewers>0)viewers--;
+        LiveStream stream=live;live=null;
+        VirtualDisplay d=display;ImageReader r=reader;
+        if(d!=null&&r!=null){try{d.setSurface(r.getSurface());}catch(Exception ignored){}}
+        if(stream!=null)stream.close();
+    }
+    public LiveStream liveStream(){return live;}
+    public static int width(){return W;}
+    public static int height(){return H;}    /** Seed for a new viewer on a static screen: UID-filtered capture, PNG (the client decodes either format). */
+    public synchronized byte[] initialFrame(){
+        try{check(false,false);ManagedProfileScope.App app=targetWait();return OwnedDisplayCapture.profilePng(displayId(),profile.userId(),app.uid(),W,H);}catch(Exception e){return null;}
+    }
+    public long displayGeneration(){return generation;}
+    /** Housekeeping for the personal user: launcher entries stay disabled. Task records of the profile are removed
+     *  only while no owned display exists; a standing display keeps its content until the model clears it. */
+    public synchronized void housekeeping(){
+        if(displayId()>0)return; // a standing display keeps whatever is on it; never sweep its tasks or launcher state
+        launchers.hideRevealed();
+        launchers.reconcile();
+        try{
+            Object atm=Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null);
+            Object slice=atm.getClass().getMethod("getRecentTasks",int.class,int.class,int.class).invoke(atm,50,1|2,profile.userId());
+            List<?> rows=(List<?>)slice.getClass().getMethod("getList").invoke(slice);
+            for(Object row:rows){
+                // getRecentTasks returns the personal user AND its profiles: only ever remove tasks of the verified work profile.
+                if(row.getClass().getField("userId").getInt(row)!=profile.userId())continue;
+                int id=row.getClass().getField("persistentId").getInt(row);if(id<=0)continue;
+                atm.getClass().getMethod("removeTask",int.class).invoke(atm,id);
+            }
+        }catch(Exception e){System.err.println("profile recents cleanup failed: "+(e instanceof InvocationTargetException&&e.getCause()!=null?e.getCause():e));}
+    }
+    /** Fast path from the watchdog: hide the launcher entry of every app that appeared in the work profile since the
+     * last sweep. Runs at 1 Hz and while an owned display is open, so an install into the profile has no window in
+     * which the personal launcher can put an icon of it on the home screen. Takes only the launcher-hider lock. */
+    public void hideNewInstalls(){try{launchers.hideUnseen();}catch(Exception e){System.err.println("launcher install sweep failed: "+e.getClass().getSimpleName());}}
+    /** Hide an app that appeared in the work profile as soon as the system reports the package change, instead of
+     * waiting for the next sweep. Best effort: the sweep is the guarantee. */
+    private void watchInstalls(){
+        try{
+            LauncherApps service=profile.context().getSystemService(LauncherApps.class);
+            if(service==null)return;
+            installs=new LauncherApps.Callback(){
+                @Override public void onPackageAdded(String name,UserHandle user){if(isProfile(user))sweep(name);}
+                @Override public void onPackageRemoved(String name,UserHandle user){if(isProfile(user))sweep(name);}
+                @Override public void onPackageChanged(String name,UserHandle user){if(isProfile(user))sweep(name);}
+                @Override public void onPackagesAvailable(String[] names,UserHandle user,boolean replacing){if(isProfile(user))sweep("");}
+                @Override public void onPackagesUnavailable(String[] names,UserHandle user,boolean replacing){if(isProfile(user))sweep("");}
+            };
+            service.registerCallback(installs,drainHandler);
+        }catch(Exception e){System.err.println("work-profile install watch unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
+    }
+    private void sweep(String pkg){
+        try{int done=launchers.hideUnseen();if(done>0)System.err.println("install watch hid "+done+" launcher entr"+(done==1?"y":"ies")+(pkg.isEmpty()?"":" of "+pkg));}
+        catch(Exception e){System.err.println("launcher install sweep failed: "+e.getClass().getSimpleName());}
+    }
+    /** UserHandle.getIdentifier() is a hidden API: hashCode() returns exactly the user id. */
+    private boolean isProfile(UserHandle user){return user!=null&&user.hashCode()==profile.userId();}
+    /** Closes the display only if it still belongs to `execution` (an ordered async close never hits a successor). */
+    public synchronized void closeDisplay(String execution){if(execution.equals(displayExecution))closeDisplay();}
+    public synchronized void closeDisplay(){displayExecution="";userUid=-1;unlockedDisplay=false;LiveStream stream=live;live=null;if(stream!=null)stream.close();tree.disconnect();cancellation.end();generation++;displayIdentity=null;launched.clear();try{if(display!=null)display.release();}finally{display=null;if(reader!=null)reader.close();reader=null;}try{launchers.hideRevealed();launchers.hideUnseen();}catch(Exception hideFailure){}}
+    @Override public synchronized void close(){closeDisplay();tree.close();windows.close();protection.close();secureSetting.close();drain.quitSafely();}
+}

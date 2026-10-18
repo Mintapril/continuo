@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt">
+    <aapt:attr name="android:drawable">
+        <vector
+            android:width="288dp"
+            android:height="288dp"
+            android:viewportWidth="288"
+            android:viewportHeight="288">
+            <group
+                android:translateX="48"
+                android:translateY="48"
+                android:scaleX="1.92"
+                android:scaleY="1.92">
+                <path
+                    android:name="c_arc"
+                    android:pathData="M62.43 31.62A24 24 0 1 0 62.43 68.38"
+                    android:strokeColor="#22252A"
+                    android:strokeWidth="12"
+                    android:strokeLineCap="butt"
+                    android:trimPathStart="0"
+                    android:trimPathEnd="0" />
+                <group
+                    android:name="cursor"
+                    android:pivotX="72.5"
+                    android:pivotY="70">
+                    <path
+                        android:name="cursor_shape"
+                        android:fillColor="#2E6A8E"
+                        android:fillAlpha="0"
+                        android:pathData="M70.5 30H74.5A1 1 0 0 1 75.5 31V69A1 1 0 0 1 74.5 70H70.5A1 1 0 0 1 69.5 69V31A1 1 0 0 1 70.5 30Z" />
+                </group>
+            </group>
+        </vector>
+    </aapt:attr>
+    <target android:name="c_arc">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:propertyName="trimPathEnd"
+                android:duration="480"
+                android:valueFrom="0"
+                android:valueTo="1"
+                android:valueType="floatType">
+                <aapt:attr name="android:interpolator">
+                    <pathInterpolator
+                        android:controlX1="0.05"
+                        android:controlY1="0.7"
+                        android:controlX2="0.1"
+                        android:controlY2="1" />
+                </aapt:attr>
+            </objectAnimator>
+        </aapt:attr>
+    </target>
+    <target android:name="cursor">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:propertyName="scaleY"
+                android:startOffset="480"
+                android:duration="120"
+                android:valueFrom="0.6"
+                android:valueTo="1"
+                android:valueType="floatType">
+                <aapt:attr name="android:interpolator">
+                    <pathInterpolator
+                        android:controlX1="0.2"
+                        android:controlY1="0"
+                        android:controlX2="0"
+                        android:controlY2="1" />
+                </aapt:attr>
+            </objectAnimator>
+        </aapt:attr>
+    </target>
+    <target android:name="cursor_shape">
+        <aapt:attr name="android:animation">
+            <set android:ordering="together">
+                <objectAnimator
+                    android:propertyName="fillAlpha"
+                    android:startOffset="480"
+                    android:duration="120"
+                    android:valueFrom="0"
+                    android:valueTo="1"
+                    android:valueType="floatType">
+                    <aapt:attr name="android:interpolator">
+                        <pathInterpolator
+                            android:controlX1="0.2"
+                            android:controlY1="0"
+                            android:controlX2="0"
+                            android:controlY2="1" />
+                    </aapt:attr>
+                </objectAnimator>
+                <objectAnimator
+                    android:propertyName="fillAlpha"
+                    android:startOffset="600"
+                    android:duration="175"
+                    android:valueFrom="1"
+                    android:valueTo="0.25"
+                    android:valueType="floatType">
+                    <aapt:attr name="android:interpolator">
+                        <pathInterpolator
+                            android:controlX1="0.2"
+                            android:controlY1="0"
+                            android:controlX2="0"
+                            android:controlY2="1" />
+                    </aapt:attr>
+                </objectAnimator>
+                <objectAnimator
+                    android:propertyName="fillAlpha"
+                    android:startOffset="775"
+                    android:duration="175"
+                    android:valueFrom="0.25"
+                    android:valueTo="1"
+                    android:valueType="floatType">
+                    <aapt:attr name="android:interpolator">
+                        <pathInterpolator
+                            android:controlX1="0.2"
+                            android:controlY1="0"
+                            android:controlX2="0"
+                            android:controlY2="1" />
+                    </aapt:attr>
+                </objectAnimator>
+            </set>
+        </aapt:attr>
+    </target>
+</animated-vector>

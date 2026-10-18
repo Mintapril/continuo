@@ -1,0 +1,13 @@
+# Additive local bundle: no provider, credentials, default selection, or existing preset writes.
+# Install into the dedicated Cowork profile. Never select this as a replacement for desktop.
+- insert:
+    - id: preset-cowork-phone
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: cowork-phone
+        name: Cowork
+        description: Restricted native-phone assistant; no shell, code, packages, subagents or MCP.
+        order: 20
+        plugins:
+          - id: cowork-policy-tools-summary
+            name: '@local/dsh-cowork-phone'

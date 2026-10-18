@@ -1,0 +1,271 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { BrokerClient, PHONE_ARGUMENTS, loadAgentSecret, waitForHandback } from '../src/broker.mjs';
+import { phoneTools, ALLOWED_TOOLS, toolTimeoutMs } from '../src/restricted.mjs';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+const root = fileURLToPath(new URL('./', import.meta.url));
+const secret = 'test-only-secret-not-real'.padEnd(40, 'x'), now = 100000;
+const node = (id, editable = false) => ({ id, role: 'EditText', bounds: [0, 0, 100, 20], flags: editable ? 'ce' : 'c' });
+function setup(transform = x => x) {
+  const calls = []; let time = now;
+  const client = new BrokerClient({ secret, now: () => time, transport: async request => {
+    calls.push(request);
+    const t = request.tool;
+    let result = { performed: true };
+    if (t === 'phone.request_intervention') result = { performed: true, interventionId: 'iv-1' };
+    if (t === 'phone.intervention_status') result = { active: false, interventionId: 'iv-1', outcome: 'handed_back' };
+    if (t === 'phone.status') result = { state: 'ready', accessibilityReady: true, screenCaptureReady: true };
+    if (t === 'phone.apps') result = { apps: [{ packageName: 'dev.fixture.app', label: 'fixture', approved: true }] };
+    if (t === 'phone.screenshot') result = { observationId: 'obs', capturedAt: time, width: 100, height: 200, mimeType: 'image/png', base64: 'iVBORw0KGgo=' };
+    if (t === 'phone.ui_tree') result = { observationId: 'obs', capturedAt: time, width: 100, height: 200, title: 'T', package: 'dev.fixture.app', nodes: [node('edit', true), node('btn')], complete: true, advice: '' };
+    if (t === 'phone.read_page') result = { performed: true, text: 'a\nb', pages: 2, reachedEnd: true, title: 'T' };
+    return transform({ protocolVersion: 1, requestId: request.requestId, ok: true, result });
+  } });
+  return { client, calls, advance: delta => time += delta };
+}
+const shoot = async (client, s = 's') => { await client.call(s, 'phone.ui_tree', {}); return client.call(s, 'phone.screenshot', {}); };
+const args = {
+  'phone.status': {}, 'phone.apps': {}, 'phone.start': { packageName: 'dev.fixture.app' }, 'phone.screenshot': {}, 'phone.ui_tree': {},
+  'phone.tap': { observationId: 'obs', x: 1, y: 1 }, 'phone.long_press': { observationId: 'obs', x: 1, y: 1, durationMs: 500 },
+  'phone.swipe': { observationId: 'obs', x1: 0, y1: 0, x2: 50, y2: 50, durationMs: 100 }, 'phone.scroll': { observationId: 'obs', x: 1, y: 1, deltaY: 100 }, 'phone.read_page': { observationId: 'obs', maxPages: 3 },
+  'phone.type_text': { observationId: 'obs', text: 'hello', elementId: 'edit' }, 'phone.key': { observationId: 'obs', key: 'BACK' },
+  'phone.wait': { timeoutMs: 0 }, 'phone.launch_app': { observationId: 'obs', packageName: 'dev.fixture.app' }, 'phone.pause': {}, 'phone.stop': {}, 'phone.request_intervention': {},
+};
+for (const name of Object.keys(PHONE_ARGUMENTS)) test(`${name}: independent valid dispatch and strict unknown-field rejection`, async () => {
+  const { client, calls } = setup();
+  if (args[name].observationId || name === 'phone.screenshot') await client.call('s', 'phone.ui_tree', {});
+  await client.call('s', name, args[name]);
+  assert.equal(calls.at(-1).tool, name); assert.equal(calls.at(-1).sessionId, 's');
+  assert.match(calls.at(-1).requestId, /^[0-9a-f-]{36}$/i);
+  const count = calls.length;
+  await assert.rejects(client.call('s', name, { ...args[name], shell: 'forbidden' })); assert.equal(calls.length, count);
+});
+test('HOME/RECENTS, arbitrary intents, missing observations and out-of-bounds input denied', async () => {
+  const { client, calls } = setup();
+  for (const key of ['HOME', 'RECENTS']) await assert.rejects(client.call('s', 'phone.key', { observationId: 'obs', key }));
+  await assert.rejects(client.call('s', 'phone.launch_app', { packageName: 'not a package' })); // observationId is optional now: the AI screen may be empty
+  await assert.rejects(client.call('s', 'phone.shell', {}));
+  await shoot(client);
+  await assert.rejects(client.call('s', 'phone.tap', { observationId: 'obs', x: 100, y: 0 }));
+  assert.equal(calls.length, 2);
+});
+test('observation single use, cross-session denial and TTL enforced', async () => {
+  const { client, advance } = setup();
+  await shoot(client);
+  await assert.rejects(client.call('other', 'phone.tap', args['phone.tap']));
+  await client.call('s', 'phone.tap', args['phone.tap']);
+  await assert.rejects(client.call('s', 'phone.tap', args['phone.tap']));
+  await shoot(client); advance(60001);
+  await assert.rejects(client.call('s', 'phone.tap', args['phone.tap']));
+});
+test('one physical device: any mutation invalidates observations across all sessions', async () => {
+  const {client}=setup();
+  await shoot(client,'a');await shoot(client,'b');
+  await client.call('a','phone.tap',args['phone.tap']);
+  await assert.rejects(client.call('b','phone.tap',args['phone.tap']),/stale/);
+  await shoot(client,'b');await client.call('a','phone.pause',{});
+  await assert.rejects(client.call('b','phone.tap',args['phone.tap']),/stale/);
+});
+test('all duration, text and wait bounds enforced before dispatch', async () => {
+  for (const [name, overrides] of [['phone.long_press', {durationMs:499}], ['phone.long_press', {durationMs:2001}], ['phone.swipe', {durationMs:99}], ['phone.wait', {timeoutMs:10001}], ['phone.type_text', {text:'a'.repeat(4001)}], ['phone.scroll', {deltaY:0}]]) {
+    const { client, calls } = setup(); await client.call('s', 'phone.ui_tree', {});
+    await assert.rejects(client.call('s', name, {...args[name], ...overrides})); assert.equal(calls.length, 1);
+  }
+});
+test('strict response shape/correlation and false mutation result rejected', async () => {
+  for (const transform of [r => ({...r, requestId:'wrong'}), r => ({...r, protocolVersion:2}), r => ({...r, extra:true}), r => ({...r, result:{performed:false}})]) {
+    await assert.rejects(setup(transform).client.call('s', 'phone.pause', {}));
+  }
+});
+test('decoded screenshot is capped at exactly 8 MiB, not padded base64 length', async () => {
+  const image=Buffer.alloc(8*1024*1024+1);Buffer.from('89504e470d0a1a0a','hex').copy(image);
+  assert.equal(image.toString('base64').length,11_184_812);
+  const {client}=setup(response=>response.result?.nodes?response:({...response,result:{...response.result,base64:image.toString('base64')}}));
+  await client.call('s','phone.ui_tree',{});await assert.rejects(client.call('s','phone.screenshot',{}),/Decoded image exceeds 8 MiB/);
+});
+test('broker transport failures redact details and never retry', async () => {
+  let calls = 0;
+  const client = new BrokerClient({ secret, transport: async () => { calls++; throw new Error(secret); } });
+  await assert.rejects(client.call('s', 'phone.status', {}), error => !error.message.includes(secret)); assert.equal(calls, 1);
+});
+test('trusted local secret format enforced; no model-provided token', async () => {
+  const dir = await mkdtemp(root + 'config-');
+  try {
+    const file = dir + '/broker.json'; await writeFile(file, JSON.stringify({ agentSecret: secret }), { mode: 0o600 });
+    assert.equal(await loadAgentSecret(file), secret);
+    await writeFile(file, JSON.stringify({ agentSecret: secret, url:'http://evil.test' }));
+    await assert.rejects(loadAgentSecret(file));
+  } finally { await rm(dir, { recursive: true }); }
+});
+
+// ---- structured observation, elementId targeting, intervention and USER_CONTROL ----
+const treeResult = (time, nodes = [node('edit', true), node('btn')]) => ({ observationId: 'obs', capturedAt: time, width: 100, height: 200, title: 'T', package: 'dev.fixture.app', nodes, complete: true, advice: '' });
+const envelopeOk = (request, result) => ({ protocolVersion: 1, requestId: request.requestId, ok: true, result });
+const envelopeErr = (request, code) => ({ protocolVersion: 1, requestId: request.requestId, ok: false, error: { code, message: 'native text' } });
+test('ui_tree: new fields are required and strictly validated', async () => {
+  const good = treeResult(now);
+  for (const mutate of [r => { delete r.complete; }, r => { delete r.advice; }, r => { r.complete = 'yes'; }, r => { r.nodes[0].bounds = [0, 0, 100]; }, r => { r.nodes[0].bounds = [0, 0, 100.5, 20]; },
+    r => { delete r.title; }, r => { delete r.nodes[0].bounds; }, r => { r.nodes[0].extra = 1; }, r => { r.nodes[1].id = 'edit'; },
+    r => { r.nodes[0].bounds = [0, 0, 101, 20]; }, r => { r.nodes = Array.from({ length: 2001 }, (_, i) => node('n' + i)); }]) {
+    const copy = structuredClone(good); mutate(copy);
+    const client = new BrokerClient({ secret, now: () => now, transport: async r => envelopeOk(r, copy) });
+    await assert.rejects(client.call('s', 'phone.ui_tree', {}));
+  }
+  const client = new BrokerClient({ secret, now: () => now, transport: async r => envelopeOk(r, { ...good, complete: false, advice: 'Tree is sparse; use phone.screenshot.' }) });
+  assert.equal((await client.call('s', 'phone.ui_tree', {})).complete, false);
+});
+test('tap/long_press by elementId: only after ui_tree, exactly one targeting mode, known id', async () => {
+  for (const name of ['phone.tap', 'phone.long_press']) {
+    const { client, calls } = setup();
+    await client.call('s', 'phone.ui_tree', {});
+    await client.call('s', name, { observationId: 'obs', elementId: 'btn' });
+    assert.equal(calls.at(-1).arguments.elementId, 'btn');
+    for (const bad of [{ x: 1, y: 1, elementId: 'btn' }, { x: 1, elementId: 'btn' }, { elementId: 'nope' }, { x: 1 }, { y: 1 }, {}, { elementId: '' }]) {
+      await client.call('s', 'phone.ui_tree', {}); const count = calls.length;
+      await assert.rejects(client.call('s', name, { observationId: 'obs', ...bad }), `${name} ${JSON.stringify(bad)}`);
+      assert.equal(calls.length, count, 'rejected before dispatch');
+    }
+    // A screenshot does not unbind the element tree: tree -> screenshot -> tap(elementId) is the normal reading flow.
+    const shot = setup(); await shoot(shot.client);
+    const before = shot.calls.length;
+    await shot.client.call('s', name, { observationId: 'obs', elementId: 'btn' });
+    assert.equal(shot.calls.length, before + 1, 'the retained tree observation still targets an element');
+  }
+});
+test('long_press durationMs is optional but bounded when present; type_text elementId must be editable', async () => {
+  const { client, calls } = setup();
+  await client.call('s', 'phone.ui_tree', {}); await client.call('s', 'phone.long_press', { observationId: 'obs', x: 1, y: 1 });
+  assert.equal(calls.at(-1).arguments.durationMs, undefined);
+  await client.call('s', 'phone.ui_tree', {});
+  await assert.rejects(client.call('s', 'phone.long_press', { observationId: 'obs', x: 1, y: 1, durationMs: 2001 }));
+  await client.call('s', 'phone.ui_tree', {});
+  await assert.rejects(client.call('s', 'phone.type_text', { observationId: 'obs', text: 'a', elementId: 'btn' }), /editable/);
+  await client.call('s', 'phone.ui_tree', {}); await client.call('s', 'phone.type_text', { observationId: 'obs', text: '你好', elementId: 'edit' });
+});
+test('request_intervention: optional bounded reason; internal tool accepted by client but not model-visible', async () => {
+  const { client, calls } = setup();
+  await client.call('s', 'phone.request_intervention', {}); await client.call('s', 'phone.request_intervention', { reason: 'password' });
+  for (const reason of ['', 'x'.repeat(121), 'a\0b', 1]) await assert.rejects(client.call('s', 'phone.request_intervention', { reason }));
+  assert.equal(calls.length, 2);
+  assert.deepEqual((await client.call('s', 'phone.intervention_status', {})).outcome, 'handed_back');
+  await assert.rejects(client.call('s', 'phone.intervention_status', { x: 1 }));
+  assert.ok(!Object.hasOwn(PHONE_ARGUMENTS, 'phone.intervention_status'));
+  assert.ok(!ALLOWED_TOOLS.includes('phone.intervention_status'));
+  assert.ok(!phoneTools({}, {}).some(t => t.name === 'phone.intervention_status'));
+  for (const bad of [{ active: true, interventionId: 'i', outcome: 'handed_back' }, { active: false, interventionId: 'i', outcome: 'active' }, { active: false, interventionId: 'i', outcome: 'weird' }]) {
+    const c = new BrokerClient({ secret, transport: async r => envelopeOk(r, bad) });
+    await assert.rejects(c.call('s', 'phone.intervention_status', {}));
+  }
+});
+test('phone.status accepts optional userControl', async () => {
+  const c = new BrokerClient({ secret, transport: async r => envelopeOk(r, { state: 'ready', accessibilityReady: true, screenCaptureReady: true, userControl: true }) });
+  assert.equal((await c.call('s', 'phone.status', {})).userControl, true);
+});
+test('tool timeouts: blockable tools outlast the 15 minute wait, others stay 30 s', () => {
+  for (const name of ['phone.request_intervention', 'phone.screenshot', 'phone.ui_tree', 'phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.type_text', 'phone.key', 'phone.launch_app', 'phone.wait', 'phone.status']) assert.equal(toolTimeoutMs(name), 960000, name);
+  for (const name of ['phone.apps', 'phone.start', 'phone.pause', 'phone.stop', 'cowork.files.read', 'web_fetch']) assert.equal(toolTimeoutMs(name), 30000, name);
+});
+
+function interventionHarness({ statuses = [], userControlTools = [], clock } = {}) {
+  const calls = []; let time = now, userControlLeft = new Map(userControlTools); const queue = [...statuses];
+  const sleeps = [];
+  const client = new BrokerClient({ secret, now: () => time, transport: async request => {
+    calls.push(request.tool);
+    if (request.tool === 'phone.intervention_status') return envelopeOk(request, queue.length > 1 ? queue.shift() : queue[0] ?? { active: false, interventionId: 'i', outcome: 'handed_back' });
+    if ((userControlLeft.get(request.tool) ?? 0) > 0) { userControlLeft.set(request.tool, userControlLeft.get(request.tool) - 1); return envelopeErr(request, 'USER_CONTROL'); }
+    if (request.tool === 'phone.request_intervention') return envelopeOk(request, { performed: true, interventionId: 'i' });
+    if (request.tool === 'phone.ui_tree') return envelopeOk(request, treeResult(time));
+    return envelopeOk(request, { performed: true });
+  } });
+  const sleep = async (ms, signal) => { signal?.throwIfAborted(); sleeps.push(ms); time += ms; };
+  const tools = new Map(phoneTools(client, {}, { sleep, now: () => time }).map(t => [t.name, t]));
+  const exec = (signal = new AbortController().signal) => ({ agent: { session: { id: 's' } }, signal });
+  return { client, calls, sleeps, tools, exec, advance: ms => time += ms };
+}
+const active = { active: true, interventionId: 'i', outcome: 'active' };
+test('request_intervention blocks, polling about every second, until hand-back', async () => {
+  const h = interventionHarness({ statuses: [active, active, { active: false, interventionId: 'i', outcome: 'handed_back' }] });
+  const result = await h.tools.get('phone.request_intervention').execute({ reason: 'type password' }, h.exec());
+  assert.deepEqual(h.calls, ['phone.request_intervention', 'phone.intervention_status', 'phone.intervention_status', 'phone.intervention_status']);
+  assert.deepEqual(h.sleeps, [1000, 1000]);
+  assert.equal(result.performed, true); assert.equal(result.outcome, 'handed_back'); assert.match(result.note, /observe again/);
+  assert.deepEqual(Object.keys(result).sort(), ['note', 'outcome', 'performed']);
+});
+test('request_intervention reports native cancelled/expired outcomes and expires after 15 minutes', async () => {
+  const cancelled = interventionHarness({ statuses: [{ active: false, interventionId: 'i', outcome: 'cancelled' }] });
+  assert.equal((await cancelled.tools.get('phone.request_intervention').execute({}, cancelled.exec())).outcome, 'cancelled');
+  const h = interventionHarness({ statuses: [active] });
+  const result = await h.tools.get('phone.request_intervention').execute({}, h.exec());
+  assert.equal(result.outcome, 'expired');
+  const polls = h.calls.filter(c => c === 'phone.intervention_status').length;
+  assert.ok(polls >= 900 && polls <= 902, `polls ${polls}`);
+});
+test('request_intervention wait ends on abort without further native calls', async () => {
+  const h = interventionHarness({ statuses: [active] }); const controller = new AbortController();
+  const hooks = { sleep: (ms, signal) => new Promise((_, reject) => { controller.abort(); reject(signal.reason); }) };
+  const tools = new Map(phoneTools(h.client, {}, hooks).map(t => [t.name, t]));
+  await assert.rejects(tools.get('phone.request_intervention').execute({}, h.exec(controller.signal)));
+  assert.equal(h.calls.filter(c => c === 'phone.intervention_status').length, 1);
+  // real sleep also aborts promptly
+  const abort2 = new AbortController(); const started = Date.now();
+  const waiting = waitForHandback(async () => ({ active: true, outcome: 'active' }), abort2.signal);
+  setTimeout(() => abort2.abort(new Error('stop')), 20);
+  await assert.rejects(waiting, /stop/); assert.ok(Date.now() - started < 900);
+});
+test('USER_CONTROL on tap: waits for hand-back, returns not-performed notice, never re-issues', async () => {
+  const h = interventionHarness({ userControlTools: [['phone.tap', 1]], statuses: [active, { active: false, interventionId: 'i', outcome: 'handed_back' }] });
+  await h.client.call('s', 'phone.ui_tree', {});
+  const result = await h.tools.get('phone.tap').execute({ observationId: 'obs', elementId: 'btn' }, h.exec());
+  assert.deepEqual(result, { performed: false, userControlled: true, note: 'The user took control of the screen and handed it back; your action was NOT performed and the screen changed. Observe again before acting.' });
+  assert.equal(h.calls.filter(c => c === 'phone.tap').length, 1);
+  assert.equal(h.calls.filter(c => c === 'phone.intervention_status').length, 2);
+  await assert.rejects(h.client.call('s', 'phone.tap', { observationId: 'obs', x: 1, y: 1 }), /Observation missing/, 'observation consumed');
+});
+test('USER_CONTROL on ui_tree: waits, re-issues once and returns the normal result', async () => {
+  const h = interventionHarness({ userControlTools: [['phone.ui_tree', 1]], statuses: [{ active: false, interventionId: 'i', outcome: 'handed_back' }] });
+  const result = await h.tools.get('phone.ui_tree').execute({}, h.exec());
+  assert.equal(result.observationId, 'obs'); assert.equal(h.calls.filter(c => c === 'phone.ui_tree').length, 2);
+  // a second USER_CONTROL on the re-issue surfaces (no loop)
+  const again = interventionHarness({ userControlTools: [['phone.ui_tree', 2]] });
+  await assert.rejects(again.tools.get('phone.ui_tree').execute({}, again.exec()), error => error.code === 'USER_CONTROL');
+  assert.equal(again.calls.filter(c => c === 'phone.ui_tree').length, 2);
+});
+test('USER_CONTROL on other mutating tools yields not-performed; other errors still propagate', async () => {
+  for (const [name, args] of [['phone.swipe', { observationId: 'obs', x1: 0, y1: 0, x2: 5, y2: 5, durationMs: 100 }], ['phone.key', { observationId: 'obs', key: 'BACK' }], ['phone.scroll', { observationId: 'obs', x: 1, y: 1, deltaY: 5 }], ['phone.launch_app', { observationId: 'obs', packageName: 'dev.fixture.app' }], ['phone.type_text', { observationId: 'obs', text: 'a' }], ['phone.long_press', { observationId: 'obs', x: 1, y: 1 }]]) {
+    const h = interventionHarness({ userControlTools: [[name, 1]] });
+    await h.client.call('s', 'phone.ui_tree', {});
+    const result = await h.tools.get(name).execute(args, h.exec());
+    assert.equal(result.performed, false, name); assert.equal(result.userControlled, true);
+    assert.equal(h.calls.filter(c => c === name).length, 1, name);
+  }
+  const wait = interventionHarness({ userControlTools: [['phone.wait', 1]] });
+  assert.deepEqual(await wait.tools.get('phone.wait').execute({ timeoutMs: 0 }, wait.exec()), { performed: true });
+  const denied = new BrokerClient({ secret, transport: async r => envelopeErr(r, 'APP_DENIED') });
+  const tools = new Map(phoneTools(denied, {}).map(t => [t.name, t]));
+  await assert.rejects(tools.get('phone.pause').execute({}, { agent: { session: { id: 's' } }, signal: new AbortController().signal }), error => error.code === 'BROKER_REJECTED');
+});
+test('mutation output schema accepts native {performed:true} and the user-controlled notice only', () => {
+  const tool = phoneTools({}, {}).find(t => t.name === 'phone.tap');
+  assert.deepEqual(tool.output.schema.required, ['performed']);
+  assert.deepEqual(Object.keys(tool.output.schema.properties).sort(), ['note', 'performed', 'userControlled']);
+});
+test('screenshot is refused in code until phone.ui_tree was read; every action, wait or pause renews the requirement', async () => {
+  const { client, calls } = setup();
+  await assert.rejects(client.call('s', 'phone.screenshot', {}), error => error.code === 'TREE_REQUIRED' && /phone_ui_tree first/.test(error.message));
+  assert.equal(calls.length, 0, 'refused before any native dispatch');
+  await client.call('s', 'phone.status', {}); await client.call('s', 'phone.apps', {});
+  await assert.rejects(client.call('s', 'phone.screenshot', {}), /TREE_REQUIRED|ui_tree first/);
+  await shoot(client);
+  await client.call('s', 'phone.screenshot', {});                       // the tree stays valid until the screen changes
+  await client.call('s', 'phone.ui_tree', {}); await client.call('s', 'phone.tap', args['phone.tap']);
+  await assert.rejects(client.call('s', 'phone.screenshot', {}), error => error.code === 'TREE_REQUIRED');
+  await client.call('s', 'phone.ui_tree', {}); await client.call('s', 'phone.wait', { timeoutMs: 500 });
+  await assert.rejects(client.call('s', 'phone.screenshot', {}), error => error.code === 'TREE_REQUIRED');
+  await shoot(client, 'other'); await client.call('other', 'phone.pause', {});
+  await assert.rejects(client.call('s', 'phone.screenshot', {}), error => error.code === 'TREE_REQUIRED', 'one device: another session\'s change renews it for all');
+});
+test('native TREE_REQUIRED refusal maps to the same reason', async () => {
+  const client = new BrokerClient({ secret, now: () => 100000, transport: async r => ({ protocolVersion: 1, requestId: r.requestId, ok: false, error: { code: 'TREE_REQUIRED', message: 'x' } }) });
+  await assert.rejects(client.call('s', 'phone.status', {}), error => error.code === 'TREE_REQUIRED' && /phone_ui_tree first/.test(error.message));
+});

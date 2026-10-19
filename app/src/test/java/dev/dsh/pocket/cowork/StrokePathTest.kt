@@ -94,4 +94,50 @@ class StrokePathTest {
         // elapsedRealtime is never behind uptime: a timestamp from that clock must not skip checks.
         assertTrue("a time ahead of now is another clock", StrokePath.checkDue(now, now + 1))
     }
+    @Test fun beforeTheDownTheLiftIsCoveredWhenOneCheckCoversTheStroke() {
+        val now = 500_000L
+        assertFalse("a 20 ms tap right after the caller's check needs no other", StrokePath.checkDue(now, now - 5, now + 20, false))
+        assertTrue("the caller's check would be too old at the lift: check before the DOWN", StrokePath.checkDue(now, now - 70, now + 20, false))
+        assertFalse("a check now would not cover a long stroke: it checks while the finger is down", StrokePath.checkDue(now, now - 70, now + 300, false))
+        assertTrue("CHECK_MS still forces it", StrokePath.checkDue(now, now - StrokePath.CHECK_MS, now + 300, false))
+        assertTrue("0 still forces it", StrokePath.checkDue(now, 0, now + 20, false))
+    }
+    @Test fun whileDownTheLiftIsCoveredBeforeItsLastMove() {
+        val now = 500_000L
+        assertFalse("the lift is far: only the CHECK_MS rule", StrokePath.checkDue(now, now - 50, now + StrokePath.LIFT_LEAD_MS, true))
+        assertTrue("the last check would be too old at the lift", StrokePath.checkDue(now, now - 50, now + StrokePath.LIFT_LEAD_MS - 1, true))
+        assertTrue("a check that ends this far from the lift does not cover it: again", StrokePath.checkDue(now, now, now + StrokePath.LIFT_LEAD_MS - 1, true))
+        assertFalse("one that ends here covers it", StrokePath.checkDue(now, now, now + StrokePath.CHECK_MS - StrokePath.LIFT_SLACK_MS - 1, true))
+        assertTrue(StrokePath.checkDue(now, now - 20, now + StrokePath.LIFT_LATE_MS, true))
+        assertFalse("nearer than LIFT_LATE_MS a check would end after the lift", StrokePath.checkDue(now, now - 20, now + StrokePath.LIFT_LATE_MS - 1, true))
+        assertFalse("the lift is now: only the CHECK_MS rule", StrokePath.checkDue(now, now - StrokePath.CHECK_MS + 1, now, true))
+        assertTrue(StrokePath.checkDue(now, now - StrokePath.CHECK_MS, now, true))
+    }
+
+    /** ProfileWorkspace.stroke() for one moving finger without holds, as a timeline: [age] ms since the caller's check,
+     *  each full check takes [check] ms (StrokePath.checkDue decides, repeated while due), the DOWN is injected in 3 ms,
+     *  frames sleep 16 ms and the last one until the movement's end, each MOVE is injected in [move] ms. Returns the time
+     *  from the last MOVE sample (the movement's end) to the UP, and the age of the last full check at the UP. */
+    private fun timeline(durationMs: Int, age: Long, check: Long, move: Long): Pair<Long, Long> {
+        var t = 500_000L; var checked = t - age
+        fun strokeCheck(lift: Long, down: Boolean) { while (StrokePath.checkDue(t, checked, lift, down)) { t += check; checked = t } }
+        strokeCheck(t + durationMs, false)
+        t += 3
+        val end = t + durationMs
+        strokeCheck(end, true)
+        do { t += minOf(16L, maxOf(0L, end - t)); strokeCheck(end, true); val last = t >= end; t += move } while (!last)
+        strokeCheck(t, true)
+        return Pair(t - end, t - checked)
+    }
+    @Test fun aFlingKeepsItsVelocity() {
+        // Android takes a pointer that has not moved for 40 ms as stopped and drops the fling velocity at the UP.
+        for (d in StrokePath.MIN_DURATION_MS..1000) for (age in 0L until StrokePath.CHECK_MS) {
+            val (gap, last) = timeline(d, age, check = 90, move = 2)
+            assertTrue("$d ms stroke, caller's check $age ms old: $gap ms from the last MOVE to the UP", gap < 40)
+            assertTrue("$d ms stroke, caller's check $age ms old: last check $last ms before the UP", last < StrokePath.CHECK_MS)
+        }
+        // Slow checks and MOVEs that wait a whole frame can cost the fling, never the check before the lift.
+        for (d in StrokePath.MIN_DURATION_MS..1000) for (age in 0L until StrokePath.CHECK_MS)
+            assertTrue(timeline(d, age, check = 130, move = 17).second < StrokePath.CHECK_MS)
+    }
 }

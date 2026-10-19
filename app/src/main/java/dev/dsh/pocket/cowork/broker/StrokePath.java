@@ -27,6 +27,24 @@ public final class StrokePath {
      *  CHECK_MS have passed since the last one ended at {@code checked}. 0 forces it, and so does a time ahead of
      *  {@code now} (another clock), so a wrong timestamp can only add a check, never skip one. */
     public static boolean checkDue(long now,long checked){return checked<=0||checked>now||now-checked>=CHECK_MS;}
+    /** The last events of a stroke take up to this long after the lift a stroke plans: the last MOVE is injected with
+     *  WAIT_FOR_FINISH, and an app takes a batched MOVE at its next frame (60 Hz). */
+    public static final int LIFT_SLACK_MS=16;
+    /** While the fingers are down, the check that covers the lift starts at most this long before it, and not later
+     *  than LIFT_LATE_MS before it. A check takes about 90 ms, so it ends before the last MOVE; Android takes a pointer
+     *  that has not moved for 40 ms as stopped (VelocityTracker ASSUME_POINTER_STOPPED_TIME), so a check between the
+     *  last MOVE and the UP would turn a fling into a stop. Nearer the lift a check would end after it: then only the
+     *  CHECK_MS rule applies, which checks only when the guarantee needs it. */
+    public static final int LIFT_LEAD_MS=150,LIFT_LATE_MS=70;
+    /** {@link #checkDue(long,long)}, and also when the last check would be CHECK_MS old at the stroke's lift ({@code lift},
+     *  uptime, LIFT_SLACK_MS added for the last events) and now is the time to cover it: before the DOWN
+     *  ({@code down} false) when a check now covers the whole stroke, so a short stroke runs after one check; while the
+     *  fingers are down when the lift is LIFT_LATE_MS to LIFT_LEAD_MS away. A lift that is now ({@code down} true) leaves
+     *  only the CHECK_MS rule. */
+    public static boolean checkDue(long now,long checked,long lift,boolean down){
+        long left=lift-now;
+        return checkDue(now,checked)||lift+LIFT_SLACK_MS-checked>=CHECK_MS&&(down?left>=LIFT_LATE_MS&&left<LIFT_LEAD_MS:left+LIFT_SLACK_MS<CHECK_MS);
+    }
     /** One touch sample: {@code fraction} of the movement time at which the finger is at (x, y). */
     public record Sample(double fraction,float x,float y){}
     private final float[] xs,ys;

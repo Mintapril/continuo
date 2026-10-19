@@ -72,14 +72,19 @@ class BrokerSourceTest {
 
     /** A phone_gesture stroke skips the full ownership check before its first event only because the caller has just
      *  made the same one (StrokePath.checkDue). Everything else stays: the window comparison before each later stroke,
-     *  takeover and cancellation every frame, UID-targeted input on the owned display, the target check before the lift. */
+     *  takeover and cancellation every frame, UID-targeted input on the owned display, a target check less than CHECK_MS
+     *  before the lift. That check no longer sits between the last MOVE and the UP: a forced one there (about 90 ms)
+     *  held the finger still long enough for Android to drop the fling velocity, and made every press longer. */
     @Test fun gestureStrokesKeepTheirChecks() {
         val workspace = code("ProfileWorkspace.java")
         val stroke = body(workspace, "public synchronized void stroke(")
-        val forced = Regex("""strokeCheck\(\s*uid\s*,\s*interrupted\s*,\s*0\s*\)""").findAll(stroke).toList()
-        assertEquals("one forced full check per stroke", 1, forced.size)
-        val lift = stroke.indexOf("MotionEvent.ACTION_UP")
-        assertTrue("the forced check runs after the last MOVE, right before the lift", forced[0].range.first > stroke.lastIndexOf("ACTION_MOVE") && forced[0].range.first < lift && forced[0].range.first < stroke.indexOf("ACTION_POINTER_UP"))
+        val checks = Regex("""strokeCheck\(\s*uid\s*,\s*interrupted\s*,\s*(\w+)\s*,([^;]*),\s*(true|false)\s*\)""").findAll(stroke).toList()
+        assertTrue("every check counts from the last full check; none is forced", checks.size >= 3 && checks.all { it.groupValues[1] == "checked" })
+        assertEquals("all checks of a stroke go through strokeCheck with its lift", checks.size, Regex("""strokeCheck\(""").findAll(stroke).count())
+        val lift = stroke.indexOf("MotionEvent.ACTION_UP"); val last = checks.last()
+        assertTrue("the lift's own check follows the last MOVE and takes the lift as now (only the CHECK_MS rule)", last.range.first > stroke.lastIndexOf("ACTION_MOVE") && last.range.first < lift && last.range.first < stroke.indexOf("ACTION_POINTER_UP") && last.groupValues[2].trim() == "SystemClock.uptimeMillis()" && last.groupValues[3] == "true")
+        assertTrue("the hold before the lift passes its check time on", Regex("""checked\s*=\s*rest\(\s*uid\s*,\s*holdEndMs""").containsMatchIn(stroke))
+        assertTrue("the last frame ends on the movement's end", Regex("""SystemClock\.sleep\(\s*Math\.max\(\s*0\s*,\s*Math\.min\(\s*16\s*,\s*end\s*-\s*SystemClock\.uptimeMillis\(\)\s*\)\s*\)\s*\)""").containsMatchIn(stroke))
         val injections = Regex("""ProfileInput\.fingers\(\s*(\w+)\s*,\s*(\w+)\s*,\s*(\w+)\s*,""").findAll(stroke).toList()
         assertTrue("stroke injects nothing?", injections.size >= 4)
         for (m in injections) assertEquals("every event targets the admitted UID on the owned display", listOf("id", "user", "uid"), m.groupValues.drop(1))

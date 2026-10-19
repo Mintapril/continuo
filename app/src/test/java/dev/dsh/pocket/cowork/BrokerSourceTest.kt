@@ -77,7 +77,7 @@ class BrokerSourceTest {
      *  held the finger still long enough for Android to drop the fling velocity, and made every press longer. */
     @Test fun gestureStrokesKeepTheirChecks() {
         val workspace = code("ProfileWorkspace.java")
-        val stroke = body(workspace, "public synchronized void stroke(")
+        val stroke = body(workspace, "public synchronized long stroke(")
         val checks = Regex("""strokeCheck\(\s*uid\s*,\s*interrupted\s*,\s*(\w+)\s*,([^;]*),\s*(true|false)\s*\)""").findAll(stroke).toList()
         assertTrue("every check counts from the last full check; none is forced", checks.size >= 3 && checks.all { it.groupValues[1] == "checked" })
         assertEquals("all checks of a stroke go through strokeCheck with its lift", checks.size, Regex("""strokeCheck\(""").findAll(stroke).count())
@@ -108,6 +108,23 @@ class BrokerSourceTest {
         val guard = gesture.indexOf("workspace.guard()"); val changed = gesture.indexOf("\"WINDOW_CHANGED\""); val call = gesture.indexOf("workspace.stroke(")
         assertTrue("a later stroke's time follows guard() and the window comparison", guard in 0 until changed && changed < stamps.last().range.first && stamps.last().range.first < call)
         assertTrue("stroke() gets that time", Regex("""workspace\.stroke\([^;]*,\s*checked\s*\)\s*;""").containsMatchIn(gesture))
+    }
+
+    /** A tap and a stroke that goes down near it within 300 ms are a double tap for Android. Since presses last as long
+     *  as declared, two taps in one phone_gesture came that close: the later stroke waits until DOUBLE_TAP_MS have passed
+     *  since the app had the tap's UP, counted in the call's time budget and ending after the checks before the stroke. */
+    @Test fun nearbyTapsStayTwoTaps() {
+        val stroke = body(code("ProfileWorkspace.java"), "public synchronized long stroke(")
+        assertTrue("stroke() returns when the app had the UP", stroke.lastIndexOf("return SystemClock.uptimeMillis();") > stroke.lastIndexOf("MotionEvent.ACTION_UP"))
+        val gesture = body(code("BrokerMain.java"), "private JSONObject gesture(")
+        assertTrue("the wait counts from that time", Regex("""lifted\s*=\s*workspace\.stroke\(""").containsMatchIn(gesture))
+        val wait = Regex("""notBefore\s*=\s*StrokePath\.doubleTap\(\s*fingers\[i-1]\s*,\s*fingers\[i]\s*,[^;]*\?\s*lifted\s*\+\s*StrokePath\.DOUBLE_TAP_MS\s*\+\s*1\s*:\s*0\s*;""").find(gesture)
+        assertTrue("strictly more than DOUBLE_TAP_MS after a tap, only when the next stroke would make a double tap", wait != null)
+        val before = gesture.indexOf("notBefore-checks-SystemClock.uptimeMillis()"); val limit = gesture.indexOf("\"GESTURE_TIME_LIMIT\"")
+        assertTrue("most of the wait comes before the time limit check, so it counts in the call's budget", before in 0 until limit)
+        val last = Regex("""\bchecked\s*=\s*SystemClock\.uptimeMillis\(\)""").findAll(gesture).last().range.first
+        val after = gesture.indexOf("SystemClock.sleep(Math.max(0,notBefore-checked))")
+        assertTrue("the rest of it ends after the checks, right before the stroke", after > last && after < gesture.indexOf("workspace.stroke("))
     }
 
     /** The native tool sets and the plugin's tool tables must name the same agent tools. */

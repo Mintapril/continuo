@@ -572,7 +572,8 @@ public final class BrokerMain {
     }
     /** Finger strokes along paths (phone_gesture: drawing, curved or multi-part swipes, long-press drags, two-finger
      *  pinch and rotate), bound to one observation and one admitted UID like a swipe. Strokes run in order with the
-     *  fingers lifted for GAP_MS between them. Before each later stroke the window set must still be the observed one (a
+     *  fingers lifted for GAP_MS between them, after a tap for more than DOUBLE_TAP_MS when the next stroke goes down near
+     *  it (two taps, not a double tap). Before each later stroke the window set must still be the observed one (a
      *  stroke that opened a dialog, menu or page stops the rest) and the stroke must fit the call's wall-clock budget; a
      *  user takeover interrupts even a running stroke. The screen content is not compared: drawing changes it on
      *  purpose. Results follow phone_batch: a refusal before the first stroke is an ordinary refusal; after it the reply
@@ -592,30 +593,39 @@ public final class BrokerMain {
         treeRead=false;treeIncomplete=false;
         String before=workspace.lastTreeSignature();
         workspace.requireForeground(workspace.targetPackage());
+        long begun=SystemClock.uptimeMillis();
         String structure=workspace.fingerprint();
         // When the last full check (ownership, target UID) ended, on the stroke's uptime clock: a stroke does not repeat it.
-        long checked=SystemClock.uptimeMillis();
+        long checked=SystemClock.uptimeMillis(),checks=checked-begun;
         gate.consume(session,a.optString("observationId"),structure,SystemClock.elapsedRealtime());
         int uid=workspace.gestureTarget();
         JSONObject result=performed();
         event("phone.gesture","running");
         long deadline=SystemClock.elapsedRealtime()+StrokePath.WALL_MS;
+        int touchSlop=StrokePath.px(ProfileWorkspace.touchSlopDp(),ProfileWorkspace.DPI),doubleTapSlop=StrokePath.px(StrokePath.DOUBLE_TAP_SLOP_DP,ProfileWorkspace.DPI);
+        long lifted=0;
         int i=0;
         for(;i<strokes.length();i++){
             JSONObject stroke=strokes.getJSONObject(i);
             boolean injecting=false;
             try{
                 if(i>0){
-                    SystemClock.sleep(StrokePath.GAP_MS);
+                    // After a tap, a stroke that goes down near it waits until DOUBLE_TAP_MS have passed since the app had
+                    // the tap's UP: GestureDetector would take the two for a double tap. Most of the wait
+                    // comes before the checks (as long as they took last time), so the stroke starts from a recent check.
+                    long notBefore=StrokePath.doubleTap(fingers[i-1],fingers[i],touchSlop,doubleTapSlop)?lifted+StrokePath.DOUBLE_TAP_MS+1:0;
+                    SystemClock.sleep(Math.max(StrokePath.GAP_MS,notBefore-checks-SystemClock.uptimeMillis()));
                     // A takeover first: the user's screen is not checked as if the model held it.
                     if(takeover.active()){result.put("stoppedAt",i).put("stopReason","USER_CONTROL");break;}
                     if(SystemClock.elapsedRealtime()+stroke.getInt("durationMs")+stroke.getInt("holdStartMs")+stroke.getInt("holdEndMs")>deadline){result.put("stoppedAt",i).put("stopReason","GESTURE_TIME_LIMIT");break;}
+                    long start=SystemClock.uptimeMillis();
                     workspace.guard();gate.requireActive(session);
                     if(!structure.equals(workspace.strokeFingerprint())){result.put("stoppedAt",i).put("stopReason","WINDOW_CHANGED");break;}
-                    checked=SystemClock.uptimeMillis();
+                    checked=SystemClock.uptimeMillis();checks=checked-start;
+                    SystemClock.sleep(Math.max(0,notBefore-checked));
                 }
                 injecting=true;
-                workspace.stroke(uid,fingers[i],stroke.getInt("durationMs"),stroke.getInt("holdStartMs"),stroke.getInt("holdEndMs"),takeover::active,checked);
+                lifted=workspace.stroke(uid,fingers[i],stroke.getInt("durationMs"),stroke.getInt("holdStartMs"),stroke.getInt("holdEndMs"),takeover::active,checked);
             }catch(Exception e){
                 ActionGate.Denied denied=e instanceof ActionGate.Denied?(ActionGate.Denied)e:null;
                 String code=denied==null?"PLATFORM_ERROR":denied.code;

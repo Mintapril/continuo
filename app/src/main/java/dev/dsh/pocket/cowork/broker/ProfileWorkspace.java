@@ -68,6 +68,11 @@ public final class ProfileWorkspace implements AutoCloseable {
             if(mw>0&&mh>0){int h=(int)Math.round(720.0*mh/mw);h=Math.max(1280,Math.min(2000,h))&~1;W=720;H=h;DPI=Math.max(120,Math.round(m.densityDpi*720f/mw));}
         }catch(Exception e){System.err.println("main screen size unavailable; using "+W+"x"+H);}
     }
+    /** The touch slop apps use, in dp: config_viewConfigurationTouchSlop (devices may change it), else AOSP's. */
+    static float touchSlopDp(){
+        try{android.content.res.Resources r=android.content.res.Resources.getSystem();return r.getDimension(r.getIdentifier("config_viewConfigurationTouchSlop","dimen","android"))/r.getDisplayMetrics().density;}
+        catch(RuntimeException e){return StrokePath.TOUCH_SLOP_DP;}
+    }
     public Context context(){return context;}
     public int profileUserId(){return profile.userId();}
     public long profileSerial(){return profile.serial();}
@@ -523,8 +528,9 @@ public final class ProfileWorkspace implements AutoCloseable {
      *  the uptime when the caller's own full check ended (fingerprint before the stroke), 0 if none. So the first event
      *  follows a full check made at most CHECK_MS earlier without repeating one that just ran (see strokeCheck). The
      *  check that covers the lift runs before the DOWN or before the last MOVE (StrokePath.checkDue), never between the
-     *  last MOVE and the UP, so a fling keeps its velocity and a press lasts as declared. Any failure cancels the touch. */
-    public synchronized void stroke(int uid,int[][] fingers,int durationMs,int holdStartMs,int holdEndMs,java.util.function.BooleanSupplier interrupted,long checked)throws Exception{
+     *  last MOVE and the UP, so a fling keeps its velocity and a press lasts as declared. Any failure cancels the touch.
+     *  Returns the uptime when the app had handled the UP (the injection waits for it). */
+    public synchronized long stroke(int uid,int[][] fingers,int durationMs,int holdStartMs,int holdEndMs,java.util.function.BooleanSupplier interrupted,long checked)throws Exception{
         int id=displayId(),user=profile.userId(),n=fingers.length;
         StrokePath[] paths=new StrokePath[n];float[] x=new float[n],y=new float[n];boolean moves=false;
         for(int p=0;p<n;p++){
@@ -563,6 +569,7 @@ public final class ProfileWorkspace implements AutoCloseable {
             for(int p=n-1;p>=0;p--){ProfileInput.fingers(id,user,uid,down,p==0?MotionEvent.ACTION_UP:pointer(MotionEvent.ACTION_POINTER_UP,p),new long[]{SystemClock.uptimeMillis()},new float[][]{x},new float[][]{y},p+1);touching=p;}
             complete=true;
         }finally{if(!complete&&touching>0)ProfileInput.fingers(id,user,uid,down,MotionEvent.ACTION_CANCEL,new long[]{SystemClock.uptimeMillis()},new float[][]{x},new float[][]{y},touching);}
+        return SystemClock.uptimeMillis();
     }
     private static int pointer(int action,int index){return action|(index<<MotionEvent.ACTION_POINTER_INDEX_SHIFT);}
     /** Keeps a stroke's fingers still for {@code ms}, checking every frame; the fingers lift {@code after} ms later.

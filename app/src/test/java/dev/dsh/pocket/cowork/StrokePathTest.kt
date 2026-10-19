@@ -114,6 +114,20 @@ class StrokePathTest {
         assertTrue(StrokePath.checkDue(now, now - StrokePath.CHECK_MS, now, true))
     }
 
+    @Test fun twoNearbyTapsWouldBeADoubleTap() {
+        // At 291 dpi (the phone measured in test-evidence/gesture-gap): touch slop 15 px, double-tap slop 182 px.
+        val touch = StrokePath.px(StrokePath.TOUCH_SLOP_DP.toFloat(), 291); val slop = StrokePath.px(StrokePath.DOUBLE_TAP_SLOP_DP.toFloat(), 291)
+        assertEquals(15, touch); assertEquals(182, slop)
+        val dot = arrayOf(intArrayOf(144, 165))
+        assertTrue("dots 60 px apart", StrokePath.doubleTap(dot, arrayOf(intArrayOf(204, 165)), touch, slop))
+        assertTrue("the same point", StrokePath.doubleTap(dot, dot, touch, slop))
+        assertTrue("181 px apart", StrokePath.doubleTap(dot, arrayOf(intArrayOf(144 + 181, 165)), touch, slop))
+        assertFalse("182 px apart: outside the slop", StrokePath.doubleTap(dot, arrayOf(intArrayOf(144 + 182, 165)), touch, slop))
+        assertTrue("a tap may wobble within the touch slop", StrokePath.doubleTap(arrayOf(intArrayOf(144, 165, 159, 165, 150, 170)), arrayOf(intArrayOf(204, 165)), touch, slop))
+        assertFalse("a line that left the touch slop is no tap", StrokePath.doubleTap(arrayOf(intArrayOf(144, 165, 160, 165, 144, 165)), arrayOf(intArrayOf(204, 165)), touch, slop))
+        assertFalse("a second finger cancels the tap", StrokePath.doubleTap(arrayOf(intArrayOf(144, 165), intArrayOf(300, 165)), arrayOf(intArrayOf(204, 165)), touch, slop))
+        assertTrue("any next stroke goes down with its first finger", StrokePath.doubleTap(dot, arrayOf(intArrayOf(150, 170, 600, 900), intArrayOf(500, 500)), touch, slop))
+    }
     /** ProfileWorkspace.stroke() for one moving finger without holds, as a timeline: [age] ms since the caller's check,
      *  each full check takes [check] ms (StrokePath.checkDue decides, repeated while due), the DOWN is injected in 3 ms,
      *  frames sleep 16 ms and the last one until the movement's end, each MOVE is injected in [move] ms. Returns the time

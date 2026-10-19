@@ -45,6 +45,23 @@ public final class StrokePath {
         long left=lift-now;
         return checkDue(now,checked)||lift+LIFT_SLACK_MS-checked>=CHECK_MS&&(down?left>=LIFT_LATE_MS&&left<LIFT_LEAD_MS:left+LIFT_SLACK_MS<CHECK_MS);
     }
+    /** Android's double tap (ViewConfiguration): the second press goes down at most DOUBLE_TAP_MS after the first tap's
+     *  UP and within DOUBLE_TAP_SLOP_DP of its DOWN; a tap stays within the touch slop, TOUCH_SLOP_DP unless the device
+     *  configures it (config_viewConfigurationTouchSlop). Large screens (xlarge, 1.5 times the slop) are not phone sized. */
+    public static final int DOUBLE_TAP_MS=300,DOUBLE_TAP_SLOP_DP=100,TOUCH_SLOP_DP=8;
+    /** {@code dp} in pixels at {@code dpi}, rounded as ViewConfiguration does. */
+    public static int px(float dp,int dpi){return (int)(dp*dpi/160f+0.5f);}
+    /** Whether stroke {@code next} would make a double tap with stroke {@code previous} (fingers as in a stroke, screen
+     *  pixels) if it went down within DOUBLE_TAP_MS of previous's UP: previous is a tap (one finger, as a second finger
+     *  cancels taps, that never leaves {@code touchSlop} of where it went down) and next goes down within
+     *  {@code doubleTapSlop} of it (GestureDetector.isConsideredDoubleTap). A finger is farthest from its start on a vertex. */
+    public static boolean doubleTap(int[][] previous,int[][] next,int touchSlop,int doubleTapSlop){
+        if(previous.length!=1)return false;
+        int[] p=previous[0];
+        for(int i=2;i<p.length;i+=2){long dx=p[i]-p[0],dy=p[i+1]-p[1];if(dx*dx+dy*dy>(long)touchSlop*touchSlop)return false;}
+        long dx=next[0][0]-p[0],dy=next[0][1]-p[1];
+        return dx*dx+dy*dy<(long)doubleTapSlop*doubleTapSlop;
+    }
     /** One touch sample: {@code fraction} of the movement time at which the finger is at (x, y). */
     public record Sample(double fraction,float x,float y){}
     private final float[] xs,ys;

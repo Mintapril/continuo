@@ -10,7 +10,7 @@ import java.lang.reflect.*;
 import java.util.*;
 
 /** Keeps the third-party apps of the verified work profile without a right to open screens from the background (rule:
- * {@link PopupPermissionPolicy}). Runs at broker start, on every package change in the profile and every 10 s as drift
+ * {@link PopupPermissionPolicy}). Runs at broker start, on every install session completed in the profile and every 10 s as drift
  * repair (a permission granted again later is closed again). Only the two app-op modes are written (the overlay one is
  * skipped where the policy counts it as denied already); apps, data and every other permission are unchanged. Each change is logged once to the root-only broker.log. */
 final class BackgroundPopupGate {

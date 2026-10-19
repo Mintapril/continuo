@@ -40,6 +40,7 @@ foreach ($entry in $classpath) { if (!(Test-Path -LiteralPath $entry)) { throw "
     dev.dsh.pocket.cowork.TaskLifecycleTest `
     dev.dsh.pocket.cowork.SecureWindowSnapshotTest `
     dev.dsh.pocket.cowork.LauncherEntrySweepTest `
+    dev.dsh.pocket.cowork.InstallWatchTest `
     dev.dsh.pocket.cowork.StrayTaskSweepTest `
     dev.dsh.pocket.cowork.PopupPermissionPolicyTest `
     dev.dsh.pocket.cowork.StrokePathTest `

@@ -35,6 +35,28 @@ class BrokerSourceTest {
         assertEquals(problems.joinToString("\n"), 0, problems.size)
     }
 
+    /** The root broker (UID 0, started by app_process, no app record) cannot register the usual package listeners on
+     *  Android 16 (see ProfileWorkspace.watchInstalls): a LauncherApps callback throws "Calling package name mismatch"
+     *  because no package has UID 0, registerReceiver returns null without registering anything, and package-monitor
+     *  callbacks skip UIDs outside the visibility allow list (application UIDs only). The install watch registered the
+     *  first one from the initial commit on and only ever logged its failure; it uses a PackageInstaller session callback. */
+    @Test fun noPackageListenerTheRootBrokerCannotRegister() {
+        val forbidden = mapOf(
+            "LauncherApps callback" to Regex("""\bLauncherApps\s*\.\s*Callback\b"""),
+            "broadcast receiver" to Regex("""\bregisterReceiver\w*\s*\("""),
+            "package-monitor callback" to Regex("""\bregisterPackageMonitorCallback\b"""),
+        )
+        val problems = ArrayList<String>()
+        var sessionWatch = false
+        for (file in sources()) {
+            val code = file.readText().replace(Regex("""(?s)/\*.*?\*/"""), "").replace(Regex("""//[^\n]*"""), "")
+            for ((what, pattern) in forbidden) if (pattern.containsMatchIn(code)) problems += "${file.name}: $what"
+            if (file.name == "ProfileWorkspace.java" && code.contains(".registerSessionCallback(")) sessionWatch = true
+        }
+        assertEquals(problems.joinToString("\n"), 0, problems.size)
+        assertTrue("the install watch must register a PackageInstaller session callback", sessionWatch)
+    }
+
     /** The native tool sets and the plugin's tool tables must name the same agent tools. */
     @Test fun toolInventoryMatchesThePlugin() {
         val gate = File(root, "ActionGate.java").readText()

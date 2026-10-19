@@ -34,7 +34,7 @@ public final class ProfileWorkspace implements AutoCloseable {
     private final ProfileStructure tree;
     private final Object frameLock=new Object();
     private Handler drainHandler;
-    private LauncherApps.Callback installs;
+    private PackageInstaller.SessionCallback installs;
     private volatile int viewers;
     private java.nio.ByteBuffer rowBuffer;
     private long userDown,userCheck;
@@ -790,29 +790,36 @@ public final class ProfileWorkspace implements AutoCloseable {
      * last sweep. Runs at 1 Hz and while an owned display is open, so an install into the profile has no window in
      * which the personal launcher can put an icon of it on the home screen. Takes only the launcher-hider lock. */
     public void hideNewInstalls(){try{launchers.hideUnseen();}catch(Exception e){System.err.println("launcher install sweep failed: "+e.getClass().getSimpleName());}}
-    /** Hide an app that appeared in the work profile as soon as the system reports the package change, instead of
-     * waiting for the next sweep. Best effort: the sweep is the guarantee. */
+    /** Sweep the work profile as soon as an install into it completes (rule: {@link InstallWatch}), instead of waiting for
+     * the next sweep. Best effort: the sweep is the guarantee. The root broker (UID 0, no app process) cannot use the
+     * usual package listeners on Android 16: LauncherApps.registerCallback requires the UID of the calling package to be
+     * the caller's and no package has UID 0 (the system context's "android" is UID 1000: "Calling package name
+     * mismatch"); Context.registerReceiver registers nothing for a caller without an app record; package-monitor
+     * callbacks reach only the UIDs on a package's visibility allow list, which holds application UIDs only. A
+     * PackageInstaller session callback needs just the cross-user right and package visibility, both granted to root.
+     * Not seen, so left to the sweeps: an install without a session (install-existing into the profile) and an update
+     * committed by a session of the personal user. */
     private void watchInstalls(){
         try{
-            LauncherApps service=profile.context().getSystemService(LauncherApps.class);
-            if(service==null)return;
-            installs=new LauncherApps.Callback(){
-                @Override public void onPackageAdded(String name,UserHandle user){if(isProfile(user))sweep(name);}
-                @Override public void onPackageRemoved(String name,UserHandle user){if(isProfile(user))sweep(name);}
-                @Override public void onPackageChanged(String name,UserHandle user){if(isProfile(user))sweep(name);}
-                @Override public void onPackagesAvailable(String[] names,UserHandle user,boolean replacing){if(isProfile(user))sweep("");}
-                @Override public void onPackagesUnavailable(String[] names,UserHandle user,boolean replacing){if(isProfile(user))sweep("");}
+            PackageInstaller installer=profile.context().getPackageManager().getPackageInstaller();
+            installs=new PackageInstaller.SessionCallback(){
+                @Override public void onCreated(int session){installEvent(InstallWatch.Event.CREATED,session);}
+                @Override public void onBadgingChanged(int session){installEvent(InstallWatch.Event.BADGING_CHANGED,session);}
+                @Override public void onActiveChanged(int session,boolean active){installEvent(InstallWatch.Event.ACTIVE_CHANGED,session);}
+                @Override public void onProgressChanged(int session,float progress){installEvent(InstallWatch.Event.PROGRESS_CHANGED,session);}
+                @Override public void onFinished(int session,boolean success){installEvent(InstallWatch.finished(success),session);}
             };
-            service.registerCallback(installs,drainHandler);
+            installer.registerSessionCallback(installs,drainHandler);
+            System.err.println("work-profile install watch: package-installer sessions of user "+profile.userId());
         }catch(Exception e){System.err.println("work-profile install watch unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
     }
-    private void sweep(String pkg){
-        try{int done=launchers.hideUnseen();if(done>0)System.err.println("install watch hid "+done+" launcher entr"+(done==1?"y":"ies")+(pkg.isEmpty()?"":" of "+pkg));}
+    private void installEvent(InstallWatch.Event event,int session){
+        if(!InstallWatch.sweeps(event))return;
+        System.err.println("install watch: work-profile session "+session+" installed");
+        try{int done=launchers.hideUnseen();if(done>0)System.err.println("install watch hid "+done+" launcher entr"+(done==1?"y":"ies")+" after session "+session);}
         catch(Exception e){System.err.println("launcher install sweep failed: "+e.getClass().getSimpleName());}
         closeBackgroundPopups(); // an app just installed into the profile gets no background pop-up right either
     }
-    /** UserHandle.getIdentifier() is a hidden API: hashCode() returns exactly the user id. */
-    private boolean isProfile(UserHandle user){return user!=null&&user.hashCode()==profile.userId();}
     /** Closes the display only if it still belongs to `execution` (an ordered async close never hits a successor). */
     public synchronized void closeDisplay(String execution){if(execution.equals(displayExecution))closeDisplay();}
     public synchronized void closeDisplay(){displayExecution="";userUid=-1;unlockedDisplay=false;LiveStream stream=live;live=null;if(stream!=null)stream.close();tree.disconnect();cancellation.end();generation++;displayIdentity=null;launched.clear();try{if(display!=null)display.release();}finally{display=null;if(reader!=null)reader.close();reader=null;}try{launchers.hideRevealed();launchers.hideUnseen();}catch(Exception hideFailure){}}

@@ -167,7 +167,9 @@ test('a stopped gesture says which strokes happened', async () => {
   result = await run({ ...stopped, stopReason: 'CONTROL_INTERRUPTED', uncertain: true });
   assert.match(result.note, /Stroke 3 was cut off midway and may be partly drawn/);
   assert.match((await run({ completed: 3, stoppedAt: 3, stopReason: 'USER_CONTROL' })).note, /stroke 4 was not\. The user took over the screen/);
+  assert.match((await run({ ...stopped, stopReason: 'GESTURE_TIME_LIMIT' })).note, /\(GESTURE_TIME_LIMIT\): strokes 1-2 were performed.* ran out of time before this stroke/);
   assert.equal((await run({ ...stopped, stopReason: 'native secret text' })).stopReason, 'BROKER_ERROR', 'unknown codes are never reflected');
+  assert.equal((await run({ ...stopped, stopReason: 'hasOwnProperty' })).stopReason, 'BROKER_ERROR');
   assert.equal((await run({ completed: 4 })).note, undefined, 'a complete gesture has no note');
   for (const bad of [{ ...stopped, completed: 4 }, { ...stopped, completed: 0, stoppedAt: 0 }, { completed: 5 }, { completed: 2, stoppedAt: 1, stopReason: 'WINDOW_CHANGED' }, { completed: 3, uncertain: true }, { completed: 4, stoppedAt: 4 }]) {
     await assert.rejects(run(bad), /Inconsistent gesture result|completed must be/, JSON.stringify(bad));

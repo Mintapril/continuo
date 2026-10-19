@@ -570,7 +570,8 @@ public final class BrokerMain {
     /** Finger strokes along paths (phone_gesture: drawing, curved or multi-part swipes, long-press drags), bound to one
      *  observation and one admitted UID like a swipe. Strokes run in order with the finger lifted for GAP_MS between
      *  them; before each later stroke the window set must still be the observed one (a stroke that opened a dialog,
-     *  menu or page stops the rest), and a user takeover interrupts even a running stroke. The screen content is not
+     *  menu or page stops the rest) and the stroke must fit the call's wall-clock budget, and a user takeover
+     *  interrupts even a running stroke. The screen content is not
      *  compared: drawing changes it on purpose. Results follow phone_batch: a refusal before the first stroke is an
      *  ordinary refusal; after it the reply is performed:true with completed and, when stopped, stoppedAt/stopReason
      *  (uncertain: the stopped stroke was cut off midway), so the model never redraws strokes that already happened. */
@@ -590,6 +591,7 @@ public final class BrokerMain {
         int uid=workspace.gestureTarget();
         JSONObject result=performed();
         event("phone.gesture","running");
+        long deadline=SystemClock.elapsedRealtime()+StrokePath.WALL_MS;
         int i=0;
         for(;i<strokes.length();i++){
             JSONObject stroke=strokes.getJSONObject(i);
@@ -599,6 +601,7 @@ public final class BrokerMain {
                     SystemClock.sleep(StrokePath.GAP_MS);
                     // A takeover first: the user's screen is not checked as if the model held it.
                     if(takeover.active()){result.put("stoppedAt",i).put("stopReason","USER_CONTROL");break;}
+                    if(SystemClock.elapsedRealtime()+stroke.getInt("durationMs")+stroke.getInt("holdStartMs")+stroke.getInt("holdEndMs")>deadline){result.put("stoppedAt",i).put("stopReason","GESTURE_TIME_LIMIT");break;}
                     workspace.guard();gate.requireActive(session);
                     if(!structure.equals(workspace.fingerprint())){result.put("stoppedAt",i).put("stopReason","WINDOW_CHANGED");break;}
                 }

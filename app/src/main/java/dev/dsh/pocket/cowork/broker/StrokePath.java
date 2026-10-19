@@ -11,6 +11,9 @@ import java.util.*;
 public final class StrokePath {
     /** Wire limits, shared by ToolContract and the plugin. The total keeps a call inside the plugin's 25 s request. */
     public static final int MAX_STROKES=32,MAX_POINTS=3000,MIN_DURATION_MS=20,MAX_DURATION_MS=10000,MAX_HOLD_MS=3000,GAP_MS=60,MAX_TOTAL_MS=15000;
+    /** Wall-clock budget of one call's strokes. The checks between strokes take time MAX_TOTAL_MS does not count; a stroke
+     *  that would end after this is not started, so the reply (with settle and observation) beats the 25 s request. */
+    public static final long WALL_MS=19000;
     /** One touch sample: {@code fraction} of the movement time at which the finger is at (x, y). */
     public record Sample(double fraction,float x,float y){}
     private final float[] xs,ys;

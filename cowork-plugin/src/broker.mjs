@@ -167,6 +167,7 @@ const BATCH_STOP_HINT = Object.freeze({
 const GESTURE_STOP_HINT = Object.freeze({
   WINDOW_CHANGED: 'The previous stroke opened or closed a window (dialog, menu, new page).',
   USER_CONTROL: 'The user took over the screen.',
+  GESTURE_TIME_LIMIT: 'The screen reacted slowly, so the call ran out of time before this stroke.',
 });
 const BATCH_FIELDS = Object.freeze({ tap: ['tool', 'elementId'], long_press: ['tool', 'elementId'], type_text: ['tool', 'elementId', 'text'], key: ['tool', 'key'] });
 // Refusals raised by argument or element validation, before a single event reached the display.
@@ -342,7 +343,7 @@ export class BrokerClient {
         if (result.stopReason === undefined) check(result.stoppedAt === undefined && result.uncertain === undefined && result.completed === total, 'Inconsistent gesture result', 'BROKER_PROTOCOL');
         else {
           check(result.stoppedAt === result.completed && result.completed < total, 'Inconsistent gesture result', 'BROKER_PROTOCOL');
-          const code = ERROR_CODES.has(result.stopReason) || result.stopReason === 'WINDOW_CHANGED' ? result.stopReason : 'BROKER_ERROR';
+          const code = ERROR_CODES.has(result.stopReason) || Object.hasOwn(GESTURE_STOP_HINT, result.stopReason) ? result.stopReason : 'BROKER_ERROR';
           const next = result.stoppedAt + 1;
           result.stopReason = code;
           result.note = [`Gesture stopped at stroke ${next} of ${total} (${code}): ${result.completed === 1 ? 'stroke 1 was' : `strokes 1-${result.completed} were`} performed, stroke ${next}${next < total ? ' and later ones were' : ' was'} not.`,

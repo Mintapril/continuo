@@ -44,6 +44,32 @@ class ToolContractTest {
             denied("phone.batch","""{"observationId":"one","steps":$steps}""")
         denied("phone.batch","""{"steps":[{"tool":"tap","elementId":"n1"},{"tool":"tap","elementId":"n2"}]}""")
     }
+    private fun stroke(points:String,duration:Int=200,start:Int=0,end:Int=0)="""{"points":[$points],"durationMs":$duration,"holdStartMs":$start,"holdEndMs":$end}"""
+    private fun gesture(vararg strokes:String)="""{"observationId":"one","strokes":[${strokes.joinToString(",")}]}"""
+    @Test fun gestureWireForm(){
+        valid("phone.gesture",gesture(stroke("0,0,719,1999,360,800")))
+        valid("phone.gesture",gesture(stroke("30,40",20),stroke("10,10,20,20",10000,3000,1500)))
+        valid("phone.gesture",gesture(*Array(32){stroke("1,1,2,2",360)}))
+        valid("phone.gesture",gesture(stroke((0 until 3000).joinToString(","){"${it%700},${it%1900}"},1000)))
+    }
+    @Test fun gestureLimitsAndShape(){
+        denied("phone.gesture","""{"observationId":"one","strokes":[]}""")
+        denied("phone.gesture",gesture(*Array(33){stroke("1,1",20)}))
+        denied("phone.gesture",gesture(stroke((0 until 3001).joinToString(","){"${it%700},${it%1900}"},1000)))
+        denied("phone.gesture",gesture(stroke("1,1,2")));denied("phone.gesture",gesture(stroke("")))
+        denied("phone.gesture",gesture(stroke("720,0")));denied("phone.gesture",gesture(stroke("0,2000")));denied("phone.gesture",gesture(stroke("-1,0")))
+        denied("phone.gesture",gesture(stroke("1.5,2")));denied("phone.gesture",gesture(stroke("\"1\",2")))
+        denied("phone.gesture",gesture(stroke("1,1",19)));denied("phone.gesture",gesture(stroke("1,1",10001)))
+        denied("phone.gesture",gesture(stroke("1,1",200,3001)));denied("phone.gesture",gesture(stroke("1,1",200,0,-1)))
+        // 2 x (10000 + 3000 + 3000) ms is far over the 15 s a call may hold the screen.
+        denied("phone.gesture",gesture(stroke("1,1",10000,3000),stroke("1,1",10000,0,3000)))
+        denied("phone.gesture",gesture(stroke("1,1",7480),stroke("1,1",7481))) // 60 ms lift between them: 15021 ms
+        valid("phone.gesture",gesture(stroke("1,1",7470),stroke("1,1",7470)))
+        denied("phone.gesture","""{"observationId":"one","strokes":[{"points":[1,1],"durationMs":200,"holdStartMs":0}]}""")
+        denied("phone.gesture","""{"observationId":"one","strokes":[{"points":[1,1],"durationMs":200,"holdStartMs":0,"holdEndMs":0,"path":"M1 1"}]}""")
+        denied("phone.gesture","""{"strokes":[${stroke("1,1")}]}""")
+        denied("phone.gesture","""{"observationId":"one","strokes":[${stroke("1,1")}],"viewBox":[0,0,1,1]}""")
+    }
     @Test fun interventionReasonIsBounded(){
         valid("phone.request_intervention","""{"reason":"请输入验证码"}""");valid("phone.intervention_status","{}")
         denied("phone.request_intervention","""{"reason":""}""");denied("phone.request_intervention","""{"reason":"${"x".repeat(121)}"}""");denied("phone.intervention_status","""{"x":1}""")

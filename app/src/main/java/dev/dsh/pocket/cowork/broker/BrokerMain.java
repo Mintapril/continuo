@@ -42,7 +42,7 @@ public final class BrokerMain {
     /** Turn a transition refusal into an actionable one; a refusal that paused the session keeps its own code. */
     private static ActionGate.Denied settling(ActionGate.Denied e){return RefusalPolicy.reported(e);}
     /** Observation and input tools the model may not use while the user controls the screen. */
-    private static final Set<String> USER_CONTROL_BLOCKED=Set.of("phone.screenshot","phone.ui_tree","phone.tap","phone.long_press","phone.swipe","phone.scroll","phone.read_page","phone.type_text","phone.key","phone.launch_app","phone.wait","phone.batch");
+    private static final Set<String> USER_CONTROL_BLOCKED=Set.of("phone.screenshot","phone.ui_tree","phone.tap","phone.long_press","phone.swipe","phone.scroll","phone.read_page","phone.type_text","phone.key","phone.launch_app","phone.wait","phone.batch","phone.gesture");
     private final Takeover takeover=new Takeover();
     private final java.util.concurrent.atomic.AtomicInteger streams=new java.util.concurrent.atomic.AtomicInteger();
     private volatile boolean taskManaged=false;
@@ -452,6 +452,7 @@ public final class BrokerMain {
             return observeAfter(session,performed(),before,true);
         }
         if(tool.equals("phone.batch"))return batch(session,a);
+        if(tool.equals("phone.gesture"))return gesture(session,a);
         if(!ActionGate.INPUTS.contains(tool))ActionGate.fail("TOOL_DENIED","Tool not implemented");
         treeRead=false;treeIncomplete=false; // any input changes the screen: a fresh phone.ui_tree is required before the next screenshot
         String before=workspace.lastTreeSignature(); // what the model last read, for the changed flag of the reply
@@ -565,6 +566,59 @@ public final class BrokerMain {
         // The user holds the screen: nothing is read until the hand-back.
         if(result.optString("stopReason").equals("USER_CONTROL"))return result.put("observationError","USER_CONTROL");
         return observeAfter(session,result,before,settle);
+    }
+    /** Finger strokes along paths (phone_gesture: drawing, curved or multi-part swipes, long-press drags), bound to one
+     *  observation and one admitted UID like a swipe. Strokes run in order with the finger lifted for GAP_MS between
+     *  them; before each later stroke the window set must still be the observed one (a stroke that opened a dialog,
+     *  menu or page stops the rest), and a user takeover interrupts even a running stroke. The screen content is not
+     *  compared: drawing changes it on purpose. Results follow phone_batch: a refusal before the first stroke is an
+     *  ordinary refusal; after it the reply is performed:true with completed and, when stopped, stoppedAt/stopReason
+     *  (uncertain: the stopped stroke was cut off midway), so the model never redraws strokes that already happened. */
+    private JSONObject gesture(String session,JSONObject a)throws Exception{
+        JSONArray strokes=a.getJSONArray("strokes");
+        // Every point is on this display before anything is consumed or injected, so a bad stroke refuses the whole call.
+        int[][] points=new int[strokes.length()][];
+        for(int i=0;i<points.length;i++){
+            JSONArray p=strokes.getJSONObject(i).getJSONArray("points");points[i]=new int[p.length()];
+            for(int j=0;j<p.length();j++){points[i][j]=p.getInt(j);if(points[i][j]>=(j%2==0?ProfileWorkspace.W:ProfileWorkspace.H))ActionGate.fail("INVALID_GESTURE","Gesture bounds invalid");}
+        }
+        treeRead=false;treeIncomplete=false;
+        String before=workspace.lastTreeSignature();
+        workspace.requireForeground(workspace.targetPackage());
+        String structure=workspace.fingerprint();
+        gate.consume(session,a.optString("observationId"),structure,SystemClock.elapsedRealtime());
+        int uid=workspace.gestureTarget();
+        JSONObject result=performed();
+        event("phone.gesture","running");
+        int i=0;
+        for(;i<strokes.length();i++){
+            JSONObject stroke=strokes.getJSONObject(i);
+            boolean injecting=false;
+            try{
+                if(i>0){
+                    SystemClock.sleep(StrokePath.GAP_MS);
+                    // A takeover first: the user's screen is not checked as if the model held it.
+                    if(takeover.active()){result.put("stoppedAt",i).put("stopReason","USER_CONTROL");break;}
+                    workspace.guard();gate.requireActive(session);
+                    if(!structure.equals(workspace.fingerprint())){result.put("stoppedAt",i).put("stopReason","WINDOW_CHANGED");break;}
+                }
+                injecting=true;
+                workspace.stroke(uid,points[i],stroke.getInt("durationMs"),stroke.getInt("holdStartMs"),stroke.getInt("holdEndMs"),takeover::active);
+            }catch(Exception e){
+                ActionGate.Denied denied=e instanceof ActionGate.Denied?(ActionGate.Denied)e:null;
+                String code=denied==null?"PLATFORM_ERROR":denied.code;
+                // Same pause policy as phone_batch; the user taking over is a normal flow, never a pause.
+                if(!code.equals("USER_CONTROL")&&(denied==null?injecting:!survives(denied))&&!gate.paused())safePause(code);
+                if(i==0)throw denied==null?e:settling(denied);
+                result.put("stoppedAt",i).put("stopReason",denied==null?code:settling(denied).code);
+                if(injecting)result.put("uncertain",true);
+                break;
+            }
+        }
+        result.put("completed",i);
+        // The user holds the screen: nothing is read until the hand-back.
+        if(result.optString("stopReason").equals("USER_CONTROL"))return result.put("observationError","USER_CONTROL");
+        return observeAfter(session,result,before,true);
     }
     /** Inputs return the settled screen, so the model continues from the reply instead of calling phone_ui_tree next
      *  (measured on a real session: 167 of 553 model steps were exactly that call). The observation is a full ui_tree

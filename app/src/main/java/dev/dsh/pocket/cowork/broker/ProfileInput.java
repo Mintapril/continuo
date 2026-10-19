@@ -40,6 +40,15 @@ final class ProfileInput {
         event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
         try{inject(event,display,userId,uid,mode);}finally{event.recycle();}
     }
+    /** One MOVE carrying several samples in time order (the earlier ones as history), so the app receives every point
+     *  of a phone_gesture stroke, not only the latest per frame. */
+    static void moves(int display,int userId,int uid,long down,long[] times,float[] xs,float[] ys)throws Exception{
+        if(display<=0||userId<=0||uid<0||uid/100000!=userId)ActionGate.fail("APP_DENIED","Input target is outside the profile");
+        MotionEvent event=MotionEvent.obtain(down,times[0],MotionEvent.ACTION_MOVE,xs[0],ys[0],0);
+        for(int i=1;i<times.length;i++)event.addBatch(times[i],xs[i],ys[i],1f,1f,0);
+        event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        try{inject(event,display,userId,uid,WAIT_FOR_FINISH);}finally{event.recycle();}
+    }
     /** Key events the virtual keyboard map produces for one text character, or null when the
      * character cannot be expressed without an IME (for example CJK). Pure; testable on the JVM only
      * through the Android stub, so callers must treat null as TEXT_UNSUPPORTED. */

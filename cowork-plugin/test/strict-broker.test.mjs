@@ -21,6 +21,7 @@ function setup(transform = x => x) {
     if (t === 'phone.ui_tree') result = { observationId: 'obs', capturedAt: time, width: 100, height: 200, title: 'T', package: 'dev.fixture.app', nodes: [node('edit', true), node('btn')], complete: true, advice: '' };
     if (t === 'phone.read_page') result = { performed: true, text: 'a\nb', pages: 2, reachedEnd: true, title: 'T' };
     if (t === 'phone.batch') result = { performed: true, completed: request.arguments.steps.length };
+    if (t === 'phone.gesture') result = { performed: true, completed: request.arguments.strokes.length };
     return transform({ protocolVersion: 1, requestId: request.requestId, ok: true, result });
   } });
   return { client, calls, advance: delta => time += delta };
@@ -33,6 +34,7 @@ const args = {
   'phone.type_text': { observationId: 'obs', text: 'hello', elementId: 'edit' }, 'phone.key': { observationId: 'obs', key: 'BACK' },
   'phone.wait': { timeoutMs: 0 }, 'phone.launch_app': { observationId: 'obs', packageName: 'dev.fixture.app' }, 'phone.pause': {}, 'phone.stop': {}, 'phone.request_intervention': {},
   'phone.batch': { observationId: 'obs', steps: [{ tool: 'type_text', elementId: 'edit', text: 'a' }, { tool: 'tap', elementId: 'btn' }] },
+  'phone.gesture': { observationId: 'obs', strokes: [{ path: 'M 10 10 L 50 50' }] },
 };
 for (const name of Object.keys(PHONE_ARGUMENTS)) test(`${name}: independent valid dispatch and strict unknown-field rejection`, async () => {
   const { client, calls } = setup();
@@ -165,7 +167,7 @@ test('phone.status accepts optional userControl', async () => {
   assert.equal((await c.call('s', 'phone.status', {})).userControl, true);
 });
 test('tool timeouts: blockable tools outlast the 15 minute wait, others stay 30 s', () => {
-  for (const name of ['phone.request_intervention', 'phone.screenshot', 'phone.ui_tree', 'phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.type_text', 'phone.key', 'phone.launch_app', 'phone.wait', 'phone.batch', 'phone.status']) assert.equal(toolTimeoutMs(name), 960000, name);
+  for (const name of ['phone.request_intervention', 'phone.screenshot', 'phone.ui_tree', 'phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.type_text', 'phone.key', 'phone.launch_app', 'phone.wait', 'phone.batch', 'phone.gesture', 'phone.status']) assert.equal(toolTimeoutMs(name), 960000, name);
   for (const name of ['phone.apps', 'phone.start', 'phone.pause', 'phone.stop', 'cowork.files.read', 'web_fetch']) assert.equal(toolTimeoutMs(name), 30000, name);
 });
 
@@ -234,7 +236,7 @@ test('USER_CONTROL on ui_tree: waits, re-issues once and returns the normal resu
   assert.equal(again.calls.filter(c => c === 'phone.ui_tree').length, 2);
 });
 test('USER_CONTROL on other mutating tools yields not-performed; other errors still propagate', async () => {
-  for (const [name, args] of [['phone.swipe', { observationId: 'obs', x1: 0, y1: 0, x2: 5, y2: 5, durationMs: 100 }], ['phone.key', { observationId: 'obs', key: 'BACK' }], ['phone.scroll', { observationId: 'obs', x: 1, y: 1, deltaY: 5 }], ['phone.launch_app', { observationId: 'obs', packageName: 'dev.fixture.app' }], ['phone.type_text', { observationId: 'obs', text: 'a' }], ['phone.long_press', { observationId: 'obs', x: 1, y: 1 }], ['phone.batch', { observationId: 'obs', steps: [{ tool: 'tap', elementId: 'btn' }, { tool: 'key', key: 'BACK' }] }]]) {
+  for (const [name, args] of [['phone.swipe', { observationId: 'obs', x1: 0, y1: 0, x2: 5, y2: 5, durationMs: 100 }], ['phone.key', { observationId: 'obs', key: 'BACK' }], ['phone.scroll', { observationId: 'obs', x: 1, y: 1, deltaY: 5 }], ['phone.launch_app', { observationId: 'obs', packageName: 'dev.fixture.app' }], ['phone.type_text', { observationId: 'obs', text: 'a' }], ['phone.long_press', { observationId: 'obs', x: 1, y: 1 }], ['phone.batch', { observationId: 'obs', steps: [{ tool: 'tap', elementId: 'btn' }, { tool: 'key', key: 'BACK' }] }], ['phone.gesture', { observationId: 'obs', strokes: [{ path: 'M1 1 L5 5' }] }]]) {
     const h = interventionHarness({ userControlTools: [[name, 1]] });
     await h.client.call('s', 'phone.ui_tree', {});
     const result = await h.tools.get(name).execute(args, h.exec());

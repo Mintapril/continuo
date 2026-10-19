@@ -4,6 +4,7 @@ import { readFile, realpath, lstat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { check, fail, validate, object, str, bool, int, integer, boundedString, CoworkError } from './validation.mjs';
+import { planGesture } from './gesture-path.mjs';
 
 export const BROKER_URL = 'http://127.0.0.1:3091/v1/tool';
 export const OBSERVATION_TTL_MS = 60_000;
@@ -25,6 +26,7 @@ const ERROR_CODES = new Set([
   'OUT_OF_BOUNDS', 'BUSY', 'TIMEOUT', 'INTERNAL_ERROR', 'APP_NOT_APPROVED',
 ]);
 const observed = { observationId: str };
+const num = { type: 'number' };
 export const PHONE_ARGUMENTS = Object.freeze({
   'phone.status': object(), 'phone.apps': object(),
   'phone.start': object({ packageName: str }, []),
@@ -42,12 +44,14 @@ export const PHONE_ARGUMENTS = Object.freeze({
   'phone.launch_app': object({ ...observed, packageName: str }, ['packageName']),
   // 2..5 element inputs planned from one tree observation, a key (ENTER/BACK) only as the last step; checked in BrokerClient.
   'phone.batch': object({ ...observed, steps: { type: 'array', items: object({ tool: { type: 'string', enum: ['tap', 'long_press', 'type_text', 'key'] }, elementId: str, text: str, key: { type: 'string', enum: ['ENTER', 'BACK'] } }, ['tool']) } }),
+  // 1..32 finger strokes, each one touch along SVG path data; flattened into the native wire form by planGesture.
+  'phone.gesture': object({ ...observed, strokes: { type: 'array', items: object({ path: str, durationMs: int, holdStartMs: int, holdEndMs: int }, ['path']) }, viewBox: { type: 'array', items: num }, area: { type: 'array', items: int } }, ['observationId', 'strokes']),
   'phone.pause': object(), 'phone.stop': object(), 'phone.request_intervention': object({ reason: str }, []),
 });
 // Native-only tools: accepted by BrokerClient but never registered with, or visible to, the model.
 export const INTERNAL_ARGUMENTS = Object.freeze({ 'phone.intervention_status': object() });
 // Tools natively rejected with USER_CONTROL while the user controls the screen; their wrappers wait for hand-back.
-export const USER_CONTROL_TOOLS = Object.freeze(['phone.screenshot', 'phone.ui_tree', 'phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.read_page', 'phone.type_text', 'phone.key', 'phone.launch_app', 'phone.wait', 'phone.batch']);
+export const USER_CONTROL_TOOLS = Object.freeze(['phone.screenshot', 'phone.ui_tree', 'phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.read_page', 'phone.type_text', 'phone.key', 'phone.launch_app', 'phone.wait', 'phone.batch', 'phone.gesture']);
 // Read-only observations are re-issued once after hand-back; everything else must be re-planned by the model.
 export const REISSUE_AFTER_HANDBACK = Object.freeze(['phone.status', 'phone.apps', 'phone.screenshot', 'phone.ui_tree', 'phone.wait']);
 export const HANDBACK_MAX_MS = 15 * 60_000, HANDBACK_POLL_MS = 1000;
@@ -62,7 +66,7 @@ const TREE_RESULT = object({ ...metadata, title: str, package: str, nodes: { typ
 // Inputs that return the settled screen as `observation` (exactly a phone.ui_tree result), so the model continues from
 // the reply instead of observing again. changed: differs from the screen last read; settled:false: still changing when
 // read; observationError: the input was performed but the screen could not be read (the plugin adds a note).
-export const OBSERVED_AFTER = Object.freeze(['phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.type_text', 'phone.key', 'phone.wait', 'phone.batch']);
+export const OBSERVED_AFTER = Object.freeze(['phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.type_text', 'phone.key', 'phone.wait', 'phone.batch', 'phone.gesture']);
 const afterInput = { changed: bool, settled: bool, observationError: str, observation: TREE_RESULT };
 // Native result of the inputs above; RECENTS answers with a note and no observation.
 const OBSERVED_PERFORMED = object({ performed: { type: 'boolean', const: true }, note: str, ...afterInput }, ['performed']);
@@ -77,6 +81,8 @@ export const PHONE_RESULTS = Object.freeze({
   'phone.read_page': object({ performed: { type: 'boolean', const: true }, text: str, pages: int, reachedEnd: bool, title: str }, ['performed', 'text', 'pages', 'reachedEnd']),
   // completed: steps performed; a stopped batch adds stoppedAt (= completed) and stopReason, uncertain when that step's input may have partly happened.
   'phone.batch': object({ performed: { type: 'boolean', const: true }, completed: int, stoppedAt: int, stopReason: str, uncertain: bool, note: str, ...afterInput }, ['performed', 'completed']),
+  // Same shape for strokes: completed strokes performed; uncertain when the stopped stroke was cut off midway.
+  'phone.gesture': object({ performed: { type: 'boolean', const: true }, completed: int, stoppedAt: int, stopReason: str, uncertain: bool, note: str, ...afterInput }, ['performed', 'completed']),
   // Native result only; the model-visible result is built by the blocking wrapper in restricted.mjs.
   'phone.request_intervention': object({ performed: { type: 'boolean', const: true }, interventionId: str }),
 });
@@ -157,6 +163,10 @@ const BATCH_STOP_HINT = Object.freeze({
   NODE_STALE: 'The next target no longer showed what was observed (moved, gone, or other content).',
   HIGH_IMPACT_SINGLE: 'That step must run on its own: it sends, pays, deletes, confirms, grants, buys or publishes, its target has no label to judge it by, or it is ENTER outside a search field.',
   BATCH_TIME_LIMIT: 'The batch took too long; the screen reacts slowly.',
+});
+const GESTURE_STOP_HINT = Object.freeze({
+  WINDOW_CHANGED: 'The previous stroke opened or closed a window (dialog, menu, new page).',
+  USER_CONTROL: 'The user took over the screen.',
 });
 const BATCH_FIELDS = Object.freeze({ tap: ['tool', 'elementId'], long_press: ['tool', 'elementId'], type_text: ['tool', 'elementId', 'text'], key: ['tool', 'key'] });
 // Refusals raised by argument or element validation, before a single event reached the display.
@@ -244,6 +254,7 @@ export class BrokerClient {
       check(new Set(targets).size === targets.length, 'Each element may be the target of only one step in a batch');
       check(text <= 8000, 'phone_batch text is limited to 8000 characters in total');
     }
+    let wire; // what the native broker receives when it differs from the model's arguments
     if (args.observationId !== undefined) {
       boundedString(args.observationId, 256, 'observationId');
       // Element ids belong to the retained phone_ui_tree observation: a screenshot taken afterwards does not take
@@ -258,6 +269,8 @@ export class BrokerClient {
       check(obs && obs.observationId === args.observationId && this.now() - obs.capturedAt >= -1000 && this.now() - obs.capturedAt <= OBSERVATION_TTL_MS, 'Observation missing, stale, consumed, or from another session; observe again', 'STALE_OBSERVATION');
       for (const key of ['x', 'x1', 'x2']) if (args[key] !== undefined) integer(args[key], 0, obs.width - 1, key);
       for (const key of ['y', 'y1', 'y2']) if (args[key] !== undefined) integer(args[key], 0, obs.height - 1, key);
+      // Path problems are explained here, before the observation is consumed: natively they are only a code.
+      if (name === 'phone.gesture') wire = { observationId: args.observationId, strokes: planGesture(args, obs.width, obs.height) };
       if (elements.length) {
         check(Array.isArray((treeObs ?? obs).nodes), 'elementId requires a phone_ui_tree observation; screenshot observations have no elements');
         for (const [id, editable] of elements) check((treeObs ?? obs).nodes.some(n => n.id === id && (!editable || (n.flags ?? '').includes('e'))),
@@ -275,7 +288,7 @@ export class BrokerClient {
       }
     } else if (!['phone.status', 'phone.apps', 'phone.screenshot', 'phone.ui_tree', 'phone.intervention_status'].includes(name) && !(name === 'phone.key' && args.key === 'RECENTS')) { this.#observations.clear(); this.#tree.clear(); }
     const requestId = this.uuid();
-    const envelope = { protocolVersion: 1, requestId, sessionId, tool: name, arguments: args };
+    const envelope = { protocolVersion: 1, requestId, sessionId, tool: name, arguments: wire ?? args };
     // Native start/launch may wait up to 8 s for a slow app plus display setup; the request must outlive it.
     const timeout = AbortSignal.timeout(25_000);
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -321,6 +334,20 @@ export class BrokerClient {
           result.note = [`Batch stopped before step ${next} of ${total} (${code}): ${result.completed === 1 ? 'step 1 was' : `steps 1-${result.completed} were`} performed, the rest were not.`,
             result.uncertain ? `Step ${next} may have partly happened: check the screen before repeating it.` : '',
             BATCH_STOP_HINT[code] ?? REFUSAL_HINT[code] ?? '', 'Continue from the returned screen with single steps.'].filter(Boolean).join(' ');
+        }
+      }
+      if (name === 'phone.gesture') {
+        const total = args.strokes.length;
+        integer(result.completed, 1, total, 'completed');
+        if (result.stopReason === undefined) check(result.stoppedAt === undefined && result.uncertain === undefined && result.completed === total, 'Inconsistent gesture result', 'BROKER_PROTOCOL');
+        else {
+          check(result.stoppedAt === result.completed && result.completed < total, 'Inconsistent gesture result', 'BROKER_PROTOCOL');
+          const code = ERROR_CODES.has(result.stopReason) || result.stopReason === 'WINDOW_CHANGED' ? result.stopReason : 'BROKER_ERROR';
+          const next = result.stoppedAt + 1;
+          result.stopReason = code;
+          result.note = [`Gesture stopped at stroke ${next} of ${total} (${code}): ${result.completed === 1 ? 'stroke 1 was' : `strokes 1-${result.completed} were`} performed, stroke ${next}${next < total ? ' and later ones were' : ' was'} not.`,
+            result.uncertain ? `Stroke ${next} was cut off midway and may be partly drawn: look at the screen before drawing it again.` : '',
+            GESTURE_STOP_HINT[code] ?? REFUSAL_HINT[code] ?? '', 'Continue from the returned screen and send only the strokes that are still missing.'].filter(Boolean).join(' ');
         }
       }
       if (result.observationError !== undefined) {

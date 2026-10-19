@@ -490,6 +490,51 @@ public final class ProfileWorkspace implements AutoCloseable {
             ProfileInput.motion(id,profile.userId(),uid,down,SystemClock.uptimeMillis(),MotionEvent.ACTION_UP,x2,y2);complete=true;
         }finally{if(!complete)ProfileInput.motion(id,profile.userId(),uid,down,SystemClock.uptimeMillis(),MotionEvent.ACTION_CANCEL,x2,y2);}
     }
+    /** Target of a phone_gesture, admitted once for all of its strokes (consumes the observation binding like a swipe). */
+    public synchronized int gestureTarget()throws Exception{int uid=verifiedUid;verifiedUid=-1;return uid<0?admit():uid;}
+    /** One finger contact of phone_gesture along a polyline (flat x,y pairs, see {@link StrokePath}), bound to the admitted
+     *  UID: DOWN on the first point, rest holdStartMs, follow the line at constant speed for durationMs (a single point is
+     *  pressed for durationMs), rest holdEndMs, UP on the last point. Every frame re-checks the display, the target UID
+     *  and {@code interrupted} (the user took over the screen); any failure cancels the touch. */
+    public synchronized void stroke(int uid,int[] points,int durationMs,int holdStartMs,int holdEndMs,java.util.function.BooleanSupplier interrupted)throws Exception{
+        int id=displayId();
+        for(int i=0;i<points.length;i+=2)if(points[i]<0||points[i]>=W||points[i+1]<0||points[i+1]>=H)ActionGate.fail("INVALID_GESTURE","Gesture bounds invalid");
+        StrokePath path=new StrokePath(points);
+        strokeCheck(uid,interrupted);
+        long down=SystemClock.uptimeMillis();boolean complete=false;float x=path.firstX(),y=path.firstY();
+        try{
+            ProfileInput.motion(id,profile.userId(),uid,down,down,MotionEvent.ACTION_DOWN,x,y);
+            rest(uid,holdStartMs,interrupted);
+            if(path.length()<=0)rest(uid,durationMs,interrupted);
+            else{
+                long start=SystemClock.uptimeMillis(),sent=start;double done=0;
+                while(done<1){
+                    SystemClock.sleep(16);strokeCheck(uid,interrupted);
+                    long now=SystemClock.uptimeMillis();double f=Math.min(1,(now-start)/(double)durationMs);
+                    java.util.List<StrokePath.Sample> samples=path.between(done,f);done=f;
+                    if(samples.isEmpty())continue;
+                    int n=samples.size();long[] times=new long[n];float[] xs=new float[n],ys=new float[n];
+                    for(int k=0;k<n;k++){
+                        StrokePath.Sample s=samples.get(k);
+                        times[k]=sent=Math.max(sent,Math.min(now,start+Math.round(s.fraction()*durationMs)));xs[k]=s.x();ys[k]=s.y();
+                    }
+                    ProfileInput.moves(id,profile.userId(),uid,down,times,xs,ys);x=xs[n-1];y=ys[n-1];
+                }
+            }
+            rest(uid,holdEndMs,interrupted);
+            strokeCheck(uid,interrupted);
+            ProfileInput.motion(id,profile.userId(),uid,down,SystemClock.uptimeMillis(),MotionEvent.ACTION_UP,x,y);complete=true;
+        }finally{if(!complete)ProfileInput.motion(id,profile.userId(),uid,down,SystemClock.uptimeMillis(),MotionEvent.ACTION_CANCEL,x,y);}
+    }
+    /** Keeps a stroke's finger still for {@code ms}, checking every frame. */
+    private void rest(int uid,int ms,java.util.function.BooleanSupplier interrupted)throws Exception{
+        long until=SystemClock.uptimeMillis()+ms;
+        for(long left=ms;left>0;left=until-SystemClock.uptimeMillis()){SystemClock.sleep(Math.min(16,left));strokeCheck(uid,interrupted);}
+    }
+    private void strokeCheck(int uid,java.util.function.BooleanSupplier interrupted)throws Exception{
+        if(interrupted.getAsBoolean())ActionGate.fail("USER_CONTROL","The user took over the screen");
+        guard();if(targetWait().uid()!=uid)ActionGate.fail("APP_DENIED","Input target changed");
+    }
     /** Scroll gesture with feedback: the reply says whether the visible content really moved, so a silent no-op
      *  (wrong point, end of page, non-scrollable area) is never reported as a plain success. Without x/y the centre
      *  of the largest scrollable region of the latest ui_tree is used. */

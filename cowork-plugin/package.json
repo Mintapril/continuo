@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Restricted native-phone Cowork preset for DSH 0.2.0-rc.2",
   "exports": { ".": "./src/restricted.mjs", "./package.json": "./package.json" },
-  "files": ["src/auth.mjs", "src/task-lifecycle.mjs", "src/restricted.mjs", "src/validation.mjs", "src/broker.mjs", "src/bounded-files.mjs", "src/web.mjs", "cordis.patch.yml", "README.md", "PROTOCOL.md"],
+  "files": ["src/auth.mjs", "src/task-lifecycle.mjs", "src/restricted.mjs", "src/validation.mjs", "src/broker.mjs", "src/gesture-path.mjs", "src/bounded-files.mjs", "src/web.mjs", "cordis.patch.yml", "README.md", "PROTOCOL.md"],
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
   "engines": { "node": ">=22" },
   "scripts": { "test": "node --test test/strict-*.test.mjs" },

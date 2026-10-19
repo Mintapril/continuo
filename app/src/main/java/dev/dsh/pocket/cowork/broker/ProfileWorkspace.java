@@ -52,6 +52,9 @@ public final class ProfileWorkspace implements AutoCloseable {
         context=(Context)at.getMethod("getSystemContext").invoke(thread);
         sizeFromMainScreen();profile=new ProfileContext(context);launchers=new LauncherHider(profile);tree=new ProfileStructure(profile);windows=new WindowOwnershipProbe();try{windows.awaitInitial();}catch(IllegalStateException e){System.err.println("window snapshot not yet available at start; every operation re-checks it");}drain.start();drainHandler=new Handler(drain.getLooper());watchInstalls();
         changedPackages(); // baseline of the 1 Hz change read, taken before the start-up sweep below
+        // Drift repair of the launcher entries (e.g. an app installed back before this start): housekeeping repairs it only
+        // while no owned display exists, and the standing display is created right after this constructor.
+        launchers.reconcile();
         try{popups=new BackgroundPopupGate(context,profile);popups.enforce();}catch(Exception e){System.err.println("background pop-up gate unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
     }
     private volatile BackgroundPopupGate popups;

@@ -68,7 +68,7 @@ All fields are required unless explicitly marked optional. `{}` means no propert
 | `phone.status` | `{}` | Status object below |
 | `phone.apps` | `{}` | App list below |
 | `phone.start` | `packageName` (optional; the AI screen is a standing display, phone.start is not required) | `{ "performed": true }` |
-| `phone.screenshot` | `{}` | Screenshot below |
+| `phone.screenshot` | `{}`, or a zoom: `region` `[left, top, right, bottom]` (integer screen pixels, right/bottom exclusive, at least 8 a side) and `scale` (1–8). The model may omit `scale`; the adapter sends the largest that fits | Screenshot below |
 | `phone.ui_tree` | `{}` | UI tree below |
 | `phone.tap` | `observationId`, and either `x`+`y` or `elementId` (a node of the latest `phone.ui_tree`) | `{ "performed": true }` + settled screen (below) |
 | `phone.long_press` | `observationId`, either `x`+`y` or `elementId`, optional `durationMs` (500–2,000) | `{ "performed": true }` + settled screen |
@@ -123,6 +123,8 @@ Coordinates are **virtual-display physical pixels** in this observation, not mai
 ### Screenshot
 
 Screenshot adds exactly `mimeType` (`image/png`, `image/jpeg` or `image/webp`) and `base64` (nonempty canonical base64, at most 11,184,812 characters, approximately 8 MiB decoded). Native code must provide the actual image format and matching dimensions. The adapter admits the image through DSH `attachments.saveImage` and returns a canonical image attachment plus metadata to the model—not a raw base64 text dump. Failed image admission invalidates the observation.
+
+A zoomed screenshot is a PNG of the region enlarged `scale` times with nearest-neighbour pixels, framed by a white band of `margin` (60) pixels on every side with rulers labelled in screen pixels; a side of the image, band included, is at most 1,536 pixels. It adds exactly `region` and `scale` (as requested), `margin`, `imageWidth` and `imageHeight` (`(right − left) × scale + 2 × margin`, likewise for the height, matching the PNG header). `width` and `height` stay those of the display and the observation works as for a full screenshot: screen x = `left + (imageX − margin) / scale`. A plain screenshot carries none of these fields. Limits are shared by `ScreenZoom.java` and `ZOOM` in `src/broker.mjs`.
 
 ### UI tree
 

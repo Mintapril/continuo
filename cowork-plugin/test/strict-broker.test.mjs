@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BrokerClient, PHONE_ARGUMENTS, loadAgentSecret, waitForHandback } from '../src/broker.mjs';
+import { BrokerClient, PHONE_ARGUMENTS, loadAgentSecret, waitForHandback, planZoom, ZOOM } from '../src/broker.mjs';
 import { phoneTools, ALLOWED_TOOLS, toolTimeoutMs } from '../src/restricted.mjs';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('./', import.meta.url));
 const secret = 'test-only-secret-not-real'.padEnd(40, 'x'), now = 100000;
@@ -440,4 +440,73 @@ test('screenshot is refused in code until phone.ui_tree was read; every action, 
 test('native TREE_REQUIRED refusal maps to the same reason', async () => {
   const client = new BrokerClient({ secret, now: () => 100000, transport: async r => ({ protocolVersion: 1, requestId: r.requestId, ok: false, error: { code: 'TREE_REQUIRED', message: 'x' } }) });
   await assert.rejects(client.call('s', 'phone.status', {}), error => error.code === 'TREE_REQUIRED' && /phone_ui_tree first/.test(error.message));
+});
+
+// ---- zoomed screenshots ----
+const png = (width, height) => { const b = Buffer.alloc(33); Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex').copy(b); b.writeUInt32BE(width, 16); b.writeUInt32BE(height, 20); return b.toString('base64'); };
+// What the native broker adds to a screenshot: the requested zoom and its image, or a full-screen PNG.
+const zoomReply = request => {
+  if (!request.arguments.region) return { base64: png(720, 1600) };
+  const { region: [left, top, right, bottom], scale } = request.arguments, imageWidth = (right - left) * scale + 120, imageHeight = (bottom - top) * scale + 120;
+  return { region: [left, top, right, bottom], scale, margin: 60, imageWidth, imageHeight, base64: png(imageWidth, imageHeight) };
+};
+function zoomSetup(reply = zoomReply) {
+  const calls = [];
+  const client = new BrokerClient({ secret, now: () => now, transport: async request => {
+    calls.push(request);
+    const screen = { observationId: `obs-${calls.length}`, capturedAt: now, width: 720, height: 1600 };
+    const result = request.tool === 'phone.ui_tree' ? { ...screen, title: 'T', package: 'dev.fixture.app', nodes: [], complete: false, advice: 'Canvas' }
+      : request.tool === 'phone.screenshot' ? { ...screen, mimeType: 'image/png', ...reply(request) } : { performed: true };
+    return { protocolVersion: 1, requestId: request.requestId, ok: true, result };
+  } });
+  return { client, calls };
+}
+test('planZoom: the largest scale that fits by default, explicit scales up to it, mistakes explained', () => {
+  assert.deepEqual(planZoom({ region: [100, 200, 220, 320] }, 720, 1600), { region: [100, 200, 220, 320], scale: 8 });
+  assert.deepEqual(planZoom({ region: [0, 0, 720, 400] }, 720, 1600), { region: [0, 0, 720, 400], scale: 1 });
+  assert.deepEqual(planZoom({ region: [0, 0, 300, 100], scale: 2 }, 720, 1600), { region: [0, 0, 300, 100], scale: 2 });
+  assert.equal(planZoom({}, 720, 1600), undefined);
+  assert.throws(() => planZoom({ scale: 2 }, 720, 1600), /scale needs a region/);
+  assert.throws(() => planZoom({ region: [0, 0, 10] }, 720, 1600), /region is \[left, top, right, bottom\]/);
+  assert.throws(() => planZoom({ region: [0, 0, 721, 100] }, 720, 1600), /region right must be an integer 8\.\.720/);
+  assert.throws(() => planZoom({ region: [10, 10, 15, 100] }, 720, 1600), /region right must be an integer 18\.\.720/);
+  assert.throws(() => planZoom({ region: [0, 0, 720, 1600] }, 720, 1600), /too large to zoom \(at most 1416 px a side\)/);
+  assert.throws(() => planZoom({ region: [0, 0, 300, 100], scale: 5 }, 720, 1600), /at most 4$/);
+  assert.throws(() => planZoom({ region: [0, 0, 300, 100], scale: 9 }, 720, 1600), /scale must be an integer 1\.\.8/);
+});
+test('a zoomed screenshot sends the resolved zoom and stays an observation of the whole screen', async () => {
+  const { client, calls } = zoomSetup();
+  await client.call('s', 'phone.ui_tree', {});
+  const shot = await client.call('s', 'phone.screenshot', { region: [100, 200, 220, 320] });
+  assert.deepEqual(calls.at(-1).arguments, { region: [100, 200, 220, 320], scale: 8 });
+  assert.deepEqual([shot.width, shot.height, shot.scale, shot.margin, shot.imageWidth, shot.imageHeight], [720, 1600, 8, 60, 1080, 1080]);
+  // Ruler readings are screen pixels: the zoom's observation takes a tap anywhere on the screen.
+  await client.call('s', 'phone.tap', { observationId: shot.observationId, x: 719, y: 1599 });
+  assert.deepEqual(calls.at(-1).arguments, { observationId: shot.observationId, x: 719, y: 1599 });
+  await client.call('s', 'phone.ui_tree', {}); await client.call('s', 'phone.screenshot', {});
+  assert.deepEqual(calls.at(-1).arguments, {}, 'a plain screenshot sends nothing');
+});
+test('a region outside the observed screen is refused before the broker', async () => {
+  const { client, calls } = zoomSetup();
+  await client.call('s', 'phone.ui_tree', {}); const count = calls.length;
+  await assert.rejects(client.call('s', 'phone.screenshot', { region: [600, 1500, 721, 1600] }), /region right must be an integer 608\.\.720/);
+  await assert.rejects(client.call('s', 'phone.screenshot', { region: [0, 0, 100, 100], grid: true }), /arguments\.grid is not allowed/);
+  assert.equal(calls.length, count);
+});
+test('a zoomed reply must be exactly the requested zoom, and a plain one carries none', async () => {
+  const wrong = [r => ({ ...zoomReply(r), scale: 4 }), r => ({ ...zoomReply(r), region: [100, 200, 220, 321] }), r => ({ ...zoomReply(r), margin: 0 }),
+    r => ({ ...zoomReply(r), imageWidth: 1079 }), r => ({ ...zoomReply(r), base64: png(1079, 1080) }), r => { const { region, ...rest } = zoomReply(r); return rest; }];
+  for (const reply of wrong) {
+    const { client } = zoomSetup(reply);
+    await client.call('s', 'phone.ui_tree', {});
+    await assert.rejects(client.call('s', 'phone.screenshot', { region: [100, 200, 220, 320] }), /does not match the request/);
+    await assert.rejects(client.call('s', 'phone.tap', { observationId: 'obs-2', x: 1, y: 1 }), error => error.code === 'STALE_OBSERVATION', 'a refused zoom is never an observation');
+  }
+  const { client } = zoomSetup(r => ({ ...zoomReply(r), scale: 1 }));
+  await client.call('s', 'phone.ui_tree', {});
+  await assert.rejects(client.call('s', 'phone.screenshot', {}), /Unrequested zoom/);
+});
+test('zoom limits are the same in ScreenZoom.java', async () => {
+  const java = await readFile(new URL('../../app/src/main/java/dev/dsh/pocket/cowork/broker/ScreenZoom.java', import.meta.url), 'utf8');
+  assert.match(java, new RegExp(`MAX_SCALE=${ZOOM.maxScale},MIN_SIDE=${ZOOM.minSide},MAX_IMAGE=${ZOOM.maxImage},MARGIN=${ZOOM.margin};`));
 });

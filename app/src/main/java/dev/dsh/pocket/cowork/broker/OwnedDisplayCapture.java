@@ -10,11 +10,14 @@ final class OwnedDisplayCapture {
     static byte[] png(int display)throws Exception{return capture(display,-1,AndroidWorkspace.WIDTH,AndroidWorkspace.HEIGHT);}
     /** Scoped view: other UIDs may be blank. No unfiltered fallback is permitted. */
     static byte[] profilePng(int display,int userId,int targetUid)throws Exception{return profilePng(display,userId,targetUid,AndroidWorkspace.WIDTH,AndroidWorkspace.HEIGHT);}
-    static byte[] profilePng(int display,int userId,int targetUid,int width,int height)throws Exception{
+    static byte[] profilePng(int display,int userId,int targetUid,int width,int height)throws Exception{return profilePng(display,userId,targetUid,width,height,null);}
+    /** With a zoom, the PNG is that region of the same scoped frame, enlarged with rulers (ScreenZoom). */
+    static byte[] profilePng(int display,int userId,int targetUid,int width,int height,ScreenZoom zoom)throws Exception{
         if(userId<=0||targetUid<0||targetUid/100000!=userId)ActionGate.fail("APP_DENIED","Capture UID is outside the verified profile");
-        return capture(display,targetUid,width,height);
+        return capture(display,targetUid,width,height,zoom);
     }
-    private static byte[] capture(int display,int targetUid,int width,int height)throws Exception{
+    private static byte[] capture(int display,int targetUid,int width,int height)throws Exception{return capture(display,targetUid,width,height,null);}
+    private static byte[] capture(int display,int targetUid,int width,int height,ScreenZoom zoom)throws Exception{
         if(display<=0)ActionGate.fail("WRONG_DISPLAY","Only the owned secondary display may be captured");
         Class<?> capture=Class.forName("android.window.ScreenCapture");
         Class<?> args=Class.forName("android.window.ScreenCapture$CaptureArgs");
@@ -39,10 +42,17 @@ final class OwnedDisplayCapture {
             hardware=(Bitmap)bufferType.getMethod("asBitmap").invoke(result);
             if(hardware==null||hardware.getWidth()!=width||hardware.getHeight()!=height)
                 ActionGate.fail("FRAME_UNAVAILABLE","Unexpected owned-display frame dimensions");
-            bitmap=hardware.copy(Bitmap.Config.ARGB_8888,false);ByteArrayOutputStream bytes=new ByteArrayOutputStream();
+            bitmap=hardware.copy(Bitmap.Config.ARGB_8888,false);
+            if(bitmap!=null&&zoom!=null){Bitmap full=bitmap;bitmap=zoomed(full,zoom);full.recycle();}
+            ByteArrayOutputStream bytes=new ByteArrayOutputStream();
             if(bitmap==null||!bitmap.compress(Bitmap.CompressFormat.PNG,100,bytes)||bytes.size()>8*1024*1024)
                 ActionGate.fail("FRAME_UNAVAILABLE","Owned-display frame unavailable or too large");
             return bytes.toByteArray();
         }finally{if(bitmap!=null)bitmap.recycle();if(hardware!=null&&hardware!=bitmap)hardware.recycle();if(buffer!=null)buffer.close();}
+    }
+    private static Bitmap zoomed(Bitmap full,ScreenZoom zoom){
+        int w=zoom.right-zoom.left,h=zoom.bottom-zoom.top;int[] region=new int[w*h];
+        full.getPixels(region,0,w,zoom.left,zoom.top,w,h);
+        return Bitmap.createBitmap(zoom.render(region),zoom.imageWidth(),zoom.imageHeight(),Bitmap.Config.ARGB_8888);
     }
 }

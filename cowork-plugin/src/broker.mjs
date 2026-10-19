@@ -30,7 +30,8 @@ const num = { type: 'number' };
 export const PHONE_ARGUMENTS = Object.freeze({
   'phone.status': object(), 'phone.apps': object(),
   'phone.start': object({ packageName: str }, []),
-  'phone.screenshot': object(), 'phone.ui_tree': object(),
+  // Optional zoom: region [left, top, right, bottom] in screen pixels, scale optional; checked and resolved by planZoom.
+  'phone.screenshot': object({ region: { type: 'array', items: int }, scale: int }, []), 'phone.ui_tree': object(),
   // Exactly one targeting mode (x and y, or elementId) is enforced in BrokerClient; observationId is the only schema-required key.
   'phone.tap': object({ ...observed, x: int, y: int, elementId: str }, ['observationId']),
   'phone.long_press': object({ ...observed, x: int, y: int, elementId: str, durationMs: int }, ['observationId']),
@@ -76,7 +77,8 @@ export const OBSERVED_OUTPUT = object({ performed: bool, userControlled: bool, n
 export const PHONE_RESULTS = Object.freeze({
   'phone.status': object({ state: { type: 'string', enum: ['ready', 'paused', 'stopped', 'unavailable'] }, accessibilityReady: bool, screenCaptureReady: bool, userControl: bool }, ['state', 'accessibilityReady', 'screenCaptureReady']),
   'phone.apps': object({ apps: { type: 'array', items: object({ packageName: str, label: str, approved: bool }) } }),
-  'phone.screenshot': object({ ...metadata, mimeType: { type: 'string', enum: ['image/png', 'image/jpeg', 'image/webp'] }, base64: str }),
+  // A zoomed screenshot adds region, scale, margin and the image size; width/height stay the screen's.
+  'phone.screenshot': object({ ...metadata, mimeType: { type: 'string', enum: ['image/png', 'image/jpeg', 'image/webp'] }, base64: str, region: { type: 'array', items: int }, scale: int, margin: int, imageWidth: int, imageHeight: int }, [...Object.keys(metadata), 'mimeType', 'base64']),
   'phone.ui_tree': TREE_RESULT,
   'phone.scroll': object({ performed: { type: 'boolean', const: true }, moved: bool, note: str, ...afterInput }, ['performed']),
   'phone.read_page': object({ performed: { type: 'boolean', const: true }, text: str, pages: int, reachedEnd: bool, title: str }, ['performed', 'text', 'pages', 'reachedEnd']),
@@ -90,6 +92,33 @@ export const PHONE_RESULTS = Object.freeze({
 export const INTERNAL_RESULTS = Object.freeze({
   'phone.intervention_status': object({ active: bool, interventionId: str, outcome: { type: 'string', enum: ['none', 'active', 'handed_back', 'expired', 'cancelled'] } }),
 });
+
+// Zoomed screenshot limits, the same as ScreenZoom.java: an image side, rulers (margin px a side) included, is at most maxImage.
+export const ZOOM = Object.freeze({ maxScale: 8, minSide: 8, maxImage: 1536, margin: 60 });
+// The native form of a zoomed screenshot ({region, scale}; undefined for a plain one), explained here in words:
+// natively a bad region is only ARGUMENTS_INVALID. Without scale, the largest that fits.
+export function planZoom(args, width, height) {
+  if (args.region === undefined) { check(args.scale === undefined, 'scale needs a region'); return undefined; }
+  check(args.region.length === 4, 'region is [left, top, right, bottom] in screen pixels');
+  const [left, top, right, bottom] = args.region;
+  integer(left, 0, width - ZOOM.minSide, 'region left'); integer(top, 0, height - ZOOM.minSide, 'region top');
+  integer(right, left + ZOOM.minSide, width, 'region right'); integer(bottom, top + ZOOM.minSide, height, 'region bottom');
+  const w = right - left, h = bottom - top, side = ZOOM.maxImage - 2 * ZOOM.margin;
+  const fit = Math.min(ZOOM.maxScale, Math.floor(side / Math.max(w, h)));
+  check(fit >= 1, `region ${w}x${h} is too large to zoom (at most ${side} px a side); use a smaller region or a plain screenshot`);
+  if (args.scale !== undefined) { integer(args.scale, 1, ZOOM.maxScale, 'scale'); check(args.scale <= fit, `scale ${args.scale} makes the image too large for a ${w}x${h} region; at most ${fit}`); }
+  return { region: [left, top, right, bottom], scale: args.scale ?? fit };
+}
+// A zoomed reply is exactly the requested zoom, image size included (the model maps ruler readings with it); a plain
+// screenshot carries none of it.
+function checkZoom(result, zoom) {
+  if (zoom === undefined) return check(['region', 'scale', 'margin', 'imageWidth', 'imageHeight'].every(key => result[key] === undefined), 'Unrequested zoom in screenshot result', 'BROKER_PROTOCOL');
+  const [left, top, right, bottom] = zoom.region, image = Buffer.from(result.base64, 'base64');
+  const width = (right - left) * zoom.scale + 2 * ZOOM.margin, height = (bottom - top) * zoom.scale + 2 * ZOOM.margin;
+  check(result.region?.length === 4 && result.region.every((value, i) => value === zoom.region[i]) && result.scale === zoom.scale && result.margin === ZOOM.margin
+    && result.imageWidth === width && result.imageHeight === height && result.mimeType === 'image/png' && image.length >= 24
+    && image.readUInt32BE(16) === width && image.readUInt32BE(20) === height, 'Zoomed screenshot does not match the request', 'BROKER_PROTOCOL');
+}
 
 export async function loadAgentSecret(configPath = process.env.DSH_COWORK_BROKER_CONFIG ?? path.join(homedir(), '.config', 'dsh', 'cowork-broker.json')) {
   check(path.isAbsolute(configPath), 'Broker config path must be absolute', 'BROKER_CONFIG');
@@ -289,6 +318,8 @@ export class BrokerClient {
         this.#observations.clear();
       }
     } else if (!['phone.status', 'phone.apps', 'phone.screenshot', 'phone.ui_tree', 'phone.intervention_status'].includes(name) && !(name === 'phone.key' && args.key === 'RECENTS')) { this.#observations.clear(); this.#tree.clear(); }
+    // A zoom is checked against the screen last observed (a screenshot always follows a tree); natively against the display.
+    if (name === 'phone.screenshot') { const screen = this.#observations.get(sessionId) ?? this.#tree.get(sessionId); wire = planZoom(args, screen?.width ?? 8192, screen?.height ?? 8192); }
     const requestId = this.uuid();
     const envelope = { protocolVersion: 1, requestId, sessionId, tool: name, arguments: wire ?? args };
     // Native start/launch may wait up to 8 s for a slow app plus display setup; the request must outlive it.
@@ -319,6 +350,7 @@ export class BrokerClient {
       // into an error, or the model would repeat an input that already happened.
       if (OBSERVED_AFTER.includes(name) && Object.hasOwn(reply, 'observation')) ({ observation, ...reply } = reply);
       const result = validate(PHONE_RESULTS[name] ?? INTERNAL_RESULTS[name] ?? (OBSERVED_AFTER.includes(name) ? OBSERVED_PERFORMED : PERFORMED), reply);
+      if (name === 'phone.screenshot') checkZoom(result, wire);
       if (name === 'phone.screenshot' || name === 'phone.ui_tree') this.#admit(sessionId, name, result);
       if (observation !== undefined) {
         try { this.#admit(sessionId, 'phone.ui_tree', validate(TREE_RESULT, observation, 'observation')); result.observation = observation; }

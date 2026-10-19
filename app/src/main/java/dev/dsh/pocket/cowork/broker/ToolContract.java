@@ -67,9 +67,21 @@ public final class ToolContract {
         }
         if(total>StrokePath.MAX_TOTAL_MS)fail();
     }
+    /** phone_screenshot: nothing, or a zoom as the plugin sends it (scale resolved): region [left, top, right, bottom] of
+     *  integer screen pixels and scale 1..MAX_SCALE. ScreenZoom checks the region against the screen and the image size. */
+    private static void screenshot(JSONObject a){
+        fields(a,"","region,scale");
+        if(a.has("region")!=a.has("scale"))fail();
+        if(!a.has("region"))return;
+        if(!(a.opt("region") instanceof JSONArray))fail();
+        JSONArray r=a.optJSONArray("region");if(r.length()!=4)fail();
+        for(int i=0;i<4;i++){Object v=r.opt(i);if(!(v instanceof Number))fail();double d=((Number)v).doubleValue();if(!Double.isFinite(d)||d!=Math.rint(d)||d<0||d>2000)fail();}
+        number(a,"scale",1,ScreenZoom.MAX_SCALE);
+    }
     public static void validate(String tool,JSONObject a){
         switch(tool){
-            case "phone.status":case "phone.apps":case "phone.screenshot":case "phone.ui_tree":case "phone.pause":case "phone.stop":case "phone.intervention_status":fields(a,"","");break;
+            case "phone.status":case "phone.apps":case "phone.ui_tree":case "phone.pause":case "phone.stop":case "phone.intervention_status":fields(a,"","");break;
+            case "phone.screenshot":screenshot(a);break;
             case "phone.request_intervention":fields(a,"","reason");if(a.has("reason"))text(a,"reason",1,120);break;
             case "phone.start":fields(a,"","packageName");if(a.has("packageName"))pkg(a);break;
             case "phone.launch_app":fields(a,"packageName","observationId");if(a.has("observationId"))obs(a);pkg(a);break;

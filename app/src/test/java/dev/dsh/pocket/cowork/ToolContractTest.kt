@@ -84,6 +84,17 @@ class ToolContractTest {
         denied("phone.gesture","""{"strokes":[${stroke("1,1")}]}""")
         denied("phone.gesture","""{"observationId":"one","strokes":[${stroke("1,1")}],"viewBox":[0,0,1,1]}""")
     }
+    @Test fun screenshotZoomWireForm(){
+        // The plugin always sends region and scale together; ScreenZoom checks them against the screen.
+        valid("phone.screenshot","""{"region":[100,200,220,320],"scale":4}""")
+        valid("phone.screenshot","""{"region":[0,0,720,1600],"scale":1}""")
+        denied("phone.screenshot","""{"region":[100,200,220,320]}""");denied("phone.screenshot","""{"scale":2}""")
+        denied("phone.screenshot","""{"region":[100,200,220],"scale":2}""");denied("phone.screenshot","""{"region":[100,200,220,320,1],"scale":2}""")
+        denied("phone.screenshot","""{"region":[100,200.5,220,320],"scale":2}""");denied("phone.screenshot","""{"region":[-1,200,220,320],"scale":2}""")
+        denied("phone.screenshot","""{"region":"100,200,220,320","scale":2}""");denied("phone.screenshot","""{"region":[100,200,220,"320"],"scale":2}""")
+        denied("phone.screenshot","""{"region":[100,200,220,320],"scale":0}""");denied("phone.screenshot","""{"region":[100,200,220,320],"scale":9}""")
+        denied("phone.screenshot","""{"region":[100,200,220,320],"scale":2,"grid":true}""")
+    }
     @Test fun interventionReasonIsBounded(){
         valid("phone.request_intervention","""{"reason":"请输入验证码"}""");valid("phone.intervention_status","{}")
         denied("phone.request_intervention","""{"reason":""}""");denied("phone.request_intervention","""{"reason":"${"x".repeat(121)}"}""");denied("phone.intervention_status","""{"x":1}""")

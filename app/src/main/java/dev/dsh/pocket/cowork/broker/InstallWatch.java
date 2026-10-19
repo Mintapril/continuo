@@ -13,4 +13,27 @@ public final class InstallWatch {
     public static Event finished(boolean success) { return success ? Event.INSTALLED : Event.FAILED; }
 
     public static boolean sweeps(Event event) { return event == Event.INSTALLED; }
+
+    /** Cursor over the profile's PackageManager.getChangedPackages sequence, read once a second. It sees every package
+     * change of the profile, also those without a session of the profile: install-existing into it, an update committed
+     * by a session of the personal user, an uninstall, a component enabled or disabled (the broker's own launcher sweep
+     * included, which costs one redundant check). The first read is the baseline: what changed before the broker
+     * started is covered by its start-up sweep. */
+    public static final class Changes {
+        private int sequence;
+        private boolean started;
+
+        /** The sequence number to read changes from. */
+        public synchronized int from() { return sequence; }
+
+        /** One read: {@code reported} is the sequence number of the result, null when nothing changed for the profile
+         *  since {@link #from()}. True when the profile changed since the previous read. */
+        public synchronized boolean read(Integer reported) {
+            boolean baseline = !started;
+            started = true;
+            if (reported == null) return false;
+            sequence = reported;
+            return !baseline;
+        }
+    }
 }

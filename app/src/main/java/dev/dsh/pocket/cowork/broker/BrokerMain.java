@@ -153,7 +153,8 @@ public final class BrokerMain {
         if(tick%3==0&&toolsInFlight.get()==0)try{workspace.housekeeping();}catch(Exception housekeepingFailure){}
         // While the display is parked (after phone_stop), entries of apps whose last task there closed are hidden again.
         if(tick%3==0&&toolsInFlight.get()==0)try{workspace.hideIdleLaunchers();}catch(Exception idleHideFailure){}
-        // Every 10 s: drift repair of the background pop-up gate. New installs are closed at once by the install watch.
+        // Every 10 s: drift repair of the background pop-up gate. New installs are closed at once by the install watch,
+        // any other package change of the profile within a second by hideNewInstalls.
         if(tick%10==0)try{workspace.closeBackgroundPopups();}catch(Exception popupGateFailure){}
         // 1 Hz: an app installed into the work profile must never stay visible to the personal launcher long enough
         // for an icon of it to land on the home screen (the user's report: icon shows up and only a reboot clears it).

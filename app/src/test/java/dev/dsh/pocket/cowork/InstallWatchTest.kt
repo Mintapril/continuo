@@ -21,4 +21,39 @@ class InstallWatchTest {
     @Test fun onlyAnInstalledSessionSweeps() {
         assertEquals(listOf(Event.INSTALLED), Event.values().filter { InstallWatch.sweeps(it) })
     }
+
+    // The 1 Hz change read (getChangedPackages): null means nothing changed for the profile since from().
+    @Test fun firstReadIsTheBaseline() {
+        val changes = InstallWatch.Changes()
+        assertEquals(0, changes.from())
+        assertFalse(changes.read(17))
+        assertEquals(17, changes.from())
+    }
+    @Test fun aChangeAfterTheBaselineCounts() {
+        val changes = InstallWatch.Changes()
+        changes.read(17)
+        assertTrue(changes.read(20))
+        assertEquals(20, changes.from())
+    }
+    @Test fun nothingChangedKeepsTheCursor() {
+        val changes = InstallWatch.Changes()
+        changes.read(17)
+        assertFalse(changes.read(null))
+        assertEquals(17, changes.from())
+        assertTrue(changes.read(18))
+    }
+    @Test fun profileWithoutEarlierChangesCountsItsFirstOne() {
+        val changes = InstallWatch.Changes()
+        assertFalse(changes.read(null))
+        assertEquals(0, changes.from())
+        assertTrue(changes.read(5))
+    }
+    @Test fun eachChangeCountsOnce() {
+        val changes = InstallWatch.Changes()
+        changes.read(3)
+        assertTrue(changes.read(4))
+        assertFalse(changes.read(null))
+        assertTrue(changes.read(9))
+        assertFalse(changes.read(null))
+    }
 }

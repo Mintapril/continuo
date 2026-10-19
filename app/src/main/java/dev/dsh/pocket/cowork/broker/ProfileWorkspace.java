@@ -788,8 +788,30 @@ public final class ProfileWorkspace implements AutoCloseable {
     }
     /** Fast path from the watchdog: hide the launcher entry of every app that appeared in the work profile since the
      * last sweep. Runs at 1 Hz and while an owned display is open, so an install into the profile has no window in
-     * which the personal launcher can put an icon of it on the home screen. Takes only the launcher-hider lock. */
-    public void hideNewInstalls(){try{launchers.hideUnseen();}catch(Exception e){System.err.println("launcher install sweep failed: "+e.getClass().getSimpleName());}}
+     * which the personal launcher can put an icon of it on the home screen. A package change of the profile since the
+     * previous call (also one the install watch does not see) closes background pop-ups at once instead of at the next
+     * drift repair. Takes only the launcher-hider and pop-up gate locks. */
+    public void hideNewInstalls(){
+        try{launchers.hideUnseen();}catch(Exception e){System.err.println("launcher install sweep failed: "+e.getClass().getSimpleName());}
+        if(packagesChanged())closeBackgroundPopups();
+    }
+    private final InstallWatch.Changes changes=new InstallWatch.Changes();
+    private String changesFailure="";
+    /** Read after the launcher sweep, so an entry it just hid is part of this read and not a change at the next one. */
+    private boolean packagesChanged(){
+        try{
+            ChangedPackages changed=profile.context().getPackageManager().getChangedPackages(changes.from());
+            changesFailure="";
+            if(!changes.read(changed==null?null:changed.getSequenceNumber()))return false;
+            System.err.println("install watch: work-profile packages changed: "+changed.getPackageNames());
+            return true;
+        }catch(Exception e){
+            String why=e.getClass().getSimpleName()+": "+e.getMessage();
+            // Logged once per distinct failure: this runs every second.
+            if(!why.equals(changesFailure)){changesFailure=why;System.err.println("work-profile package change read failed: "+why);}
+            return false;
+        }
+    }
     /** Sweep the work profile as soon as an install into it completes (rule: {@link InstallWatch}), instead of waiting for
      * the next sweep. Best effort: the sweep is the guarantee. The root broker (UID 0, no app process) cannot use the
      * usual package listeners on Android 16: LauncherApps.registerCallback requires the UID of the calling package to be
@@ -797,8 +819,8 @@ public final class ProfileWorkspace implements AutoCloseable {
      * mismatch"); Context.registerReceiver registers nothing for a caller without an app record; package-monitor
      * callbacks reach only the UIDs on a package's visibility allow list, which holds application UIDs only. A
      * PackageInstaller session callback needs just the cross-user right and package visibility, both granted to root.
-     * Not seen, so left to the sweeps: an install without a session (install-existing into the profile) and an update
-     * committed by a session of the personal user. */
+     * Not seen, so left to the change read of {@link #hideNewInstalls} within a second: an install without a session
+     * (install-existing into the profile) and an update committed by a session of the personal user. */
     private void watchInstalls(){
         try{
             PackageInstaller installer=profile.context().getPackageManager().getPackageInstaller();

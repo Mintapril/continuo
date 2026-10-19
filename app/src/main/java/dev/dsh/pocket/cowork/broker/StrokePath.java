@@ -23,6 +23,10 @@ public final class StrokePath {
      *  full check takes about 90 ms, so checking every frame left about 10 frames per second; takeover and cancellation
      *  are still checked every frame, and every event stays UID-targeted by the input dispatcher. */
     public static final int CHECK_MS=100;
+    /** Whether a stroke makes the full ownership check now ({@code now} and {@code checked} on the uptime clock): when
+     *  CHECK_MS have passed since the last one ended at {@code checked}. 0 forces it, and so does a time ahead of
+     *  {@code now} (another clock), so a wrong timestamp can only add a check, never skip one. */
+    public static boolean checkDue(long now,long checked){return checked<=0||checked>now||now-checked>=CHECK_MS;}
     /** One touch sample: {@code fraction} of the movement time at which the finger is at (x, y). */
     public record Sample(double fraction,float x,float y){}
     private final float[] xs,ys;

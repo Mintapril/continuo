@@ -84,4 +84,14 @@ class StrokePathTest {
     @Test fun aGridPointOnTheFrameStartIsNotRepeated() {
         assertArrayEquals(doubleArrayOf(0.75, 1.0), StrokePath.frame(arrayOf(path(0, 0, 100, 0)), 0.5, 1.0, 0.25), 1e-9)
     }
+    @Test fun theFullCheckIsSkippedOnlyRightAfterTheCallersOwn() {
+        val now = 500_000L
+        assertTrue("0 forces the check", StrokePath.checkDue(now, 0))
+        assertFalse("the caller has just checked: the first DOWN does not repeat it", StrokePath.checkDue(now, now - 5))
+        assertFalse(StrokePath.checkDue(now, now - StrokePath.CHECK_MS + 1))
+        assertTrue("CHECK_MS later it is due again", StrokePath.checkDue(now, now - StrokePath.CHECK_MS))
+        assertTrue("a stale check (from before the gap) is repeated", StrokePath.checkDue(now, now - 400))
+        // elapsedRealtime is never behind uptime: a timestamp from that clock must not skip checks.
+        assertTrue("a time ahead of now is another clock", StrokePath.checkDue(now, now + 1))
+    }
 }

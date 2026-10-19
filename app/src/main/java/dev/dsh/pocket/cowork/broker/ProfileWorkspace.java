@@ -432,6 +432,14 @@ public final class ProfileWorkspace implements AutoCloseable {
     }
     /** UID bound by the latest consumed observation; input never re-chooses a target after the race. */
     public synchronized String fingerprint()throws Exception{return structuralFingerprint();}
+    /** fingerprint() before a later stroke of phone_gesture, called right after guard(): the same read, full check and
+     *  re-read, without the leading full check that would repeat guard()'s at once. Binds no input target: the gesture
+     *  admitted its UID before the first stroke, and the structure carries that UID. */
+    public synchronized String strokeFingerprint()throws Exception{
+        ManagedProfileScope.App app=target();String before=structure(app.uid());
+        check(true,false);if(target().uid()!=app.uid()||!before.equals(structure(app.uid())))ActionGate.fail("STALE_OBSERVATION","Profile window changed during observation");
+        return before;
+    }
     public synchronized String fingerprintIdle(){return generation+"|"+displayIdentity+"|"+profile.serial();}
     /** Bind the observation to the exact returned PNG, never two surrounding captures. */
     public synchronized Observation observe(boolean screenshot)throws Exception{
@@ -501,9 +509,11 @@ public final class ProfileWorkspace implements AutoCloseable {
      *  follow their lines together for durationMs (each at its own constant speed; when no finger moves they are pressed
      *  for durationMs), rest holdEndMs and lift on their last points in reverse order (POINTER_UP, then UP). Every frame
      *  checks {@code interrupted} (the user took over the screen) and cancellation; the display and the target UID are
-     *  re-checked before the first and the last event and at least every CHECK_MS in between (see strokeCheck). Any
+     *  re-checked before the last event and at least every CHECK_MS before that, counted from {@code checked}: the
+     *  uptime when the caller's own full check ended (fingerprint before the stroke), 0 if none. So the first event
+     *  follows a full check made at most CHECK_MS earlier without repeating one that just ran (see strokeCheck). Any
      *  failure cancels the touch. */
-    public synchronized void stroke(int uid,int[][] fingers,int durationMs,int holdStartMs,int holdEndMs,java.util.function.BooleanSupplier interrupted)throws Exception{
+    public synchronized void stroke(int uid,int[][] fingers,int durationMs,int holdStartMs,int holdEndMs,java.util.function.BooleanSupplier interrupted,long checked)throws Exception{
         int id=displayId(),user=profile.userId(),n=fingers.length;
         StrokePath[] paths=new StrokePath[n];float[] x=new float[n],y=new float[n];boolean moves=false;
         for(int p=0;p<n;p++){
@@ -511,7 +521,7 @@ public final class ProfileWorkspace implements AutoCloseable {
             for(int i=0;i<points.length;i+=2)if(points[i]<0||points[i]>=W||points[i+1]<0||points[i+1]>=H)ActionGate.fail("INVALID_GESTURE","Gesture bounds invalid");
             paths[p]=new StrokePath(points);x[p]=paths[p].firstX();y[p]=paths[p].firstY();moves|=paths[p].length()>0;
         }
-        long checked=strokeCheck(uid,interrupted,0);
+        checked=strokeCheck(uid,interrupted,checked);
         long down=SystemClock.uptimeMillis();int touching=0;boolean complete=false;
         try{
             // An injection timeout can occur after delivery: every attempted DOWN is covered by the CANCEL below.
@@ -553,7 +563,7 @@ public final class ProfileWorkspace implements AutoCloseable {
     private long strokeCheck(int uid,java.util.function.BooleanSupplier interrupted,long checked)throws Exception{
         if(interrupted.getAsBoolean())ActionGate.fail("USER_CONTROL","The user took over the screen");
         if(cancellation.cancelled())ActionGate.fail("CONTROL_INTERRUPTED","User requested pause or stop");
-        if(SystemClock.uptimeMillis()-checked<StrokePath.CHECK_MS)return checked;
+        if(!StrokePath.checkDue(SystemClock.uptimeMillis(),checked))return checked;
         guard();if(targetWait().uid()!=uid)ActionGate.fail("APP_DENIED","Input target changed");
         return SystemClock.uptimeMillis();
     }

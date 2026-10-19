@@ -591,6 +591,8 @@ public final class BrokerMain {
         String before=workspace.lastTreeSignature();
         workspace.requireForeground(workspace.targetPackage());
         String structure=workspace.fingerprint();
+        // When the last full check (ownership, target UID) ended, on the stroke's uptime clock: a stroke does not repeat it.
+        long checked=SystemClock.uptimeMillis();
         gate.consume(session,a.optString("observationId"),structure,SystemClock.elapsedRealtime());
         int uid=workspace.gestureTarget();
         JSONObject result=performed();
@@ -607,10 +609,11 @@ public final class BrokerMain {
                     if(takeover.active()){result.put("stoppedAt",i).put("stopReason","USER_CONTROL");break;}
                     if(SystemClock.elapsedRealtime()+stroke.getInt("durationMs")+stroke.getInt("holdStartMs")+stroke.getInt("holdEndMs")>deadline){result.put("stoppedAt",i).put("stopReason","GESTURE_TIME_LIMIT");break;}
                     workspace.guard();gate.requireActive(session);
-                    if(!structure.equals(workspace.fingerprint())){result.put("stoppedAt",i).put("stopReason","WINDOW_CHANGED");break;}
+                    if(!structure.equals(workspace.strokeFingerprint())){result.put("stoppedAt",i).put("stopReason","WINDOW_CHANGED");break;}
+                    checked=SystemClock.uptimeMillis();
                 }
                 injecting=true;
-                workspace.stroke(uid,fingers[i],stroke.getInt("durationMs"),stroke.getInt("holdStartMs"),stroke.getInt("holdEndMs"),takeover::active);
+                workspace.stroke(uid,fingers[i],stroke.getInt("durationMs"),stroke.getInt("holdStartMs"),stroke.getInt("holdEndMs"),takeover::active,checked);
             }catch(Exception e){
                 ActionGate.Denied denied=e instanceof ActionGate.Denied?(ActionGate.Denied)e:null;
                 String code=denied==null?"PLATFORM_ERROR":denied.code;

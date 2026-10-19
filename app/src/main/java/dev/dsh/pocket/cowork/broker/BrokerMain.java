@@ -151,11 +151,16 @@ public final class BrokerMain {
     /** Workspace watchdog. Runs outside the control-plane lock and never interleaves with a running tool (which guards itself). */
     private void guardTick(int tick){
         if(tick%3==0&&toolsInFlight.get()==0)try{workspace.housekeeping();}catch(Exception housekeepingFailure){}
+        // While the display is parked (after phone_stop), entries of apps whose last task there closed are hidden again.
+        if(tick%3==0&&toolsInFlight.get()==0)try{workspace.hideIdleLaunchers();}catch(Exception idleHideFailure){}
+        // Every 10 s: drift repair of the background pop-up gate. New installs are closed at once by the install watch.
+        if(tick%10==0)try{workspace.closeBackgroundPopups();}catch(Exception popupGateFailure){}
         // 1 Hz: an app installed into the work profile must never stay visible to the personal launcher long enough
         // for an icon of it to land on the home screen (the user's report: icon shows up and only a reboot clears it).
         try{workspace.hideNewInstalls();}catch(Exception installSweepFailure){}
-        // 1 Hz, also between turns: a work-profile activity that landed on the main screen (started by a service, an
-        // installer or a notification without a display) is moved to the owned display. A running tool does it in its own check.
+        // 1 Hz safety net, also between turns. The sources are closed (parked tasks keep each app's screens on the owned
+        // display, the pop-up gate refuses screens of apps that are not on it); what still lands on the main screen, e.g.
+        // a work-profile notification the user tapped there, is moved to the owned display. A running tool does it in its own check.
         if(toolsInFlight.get()==0)try{workspace.pullBackStrayTasks();}catch(Exception strayTaskFailure){}
         if(gate.owner()==null){if(tick%5==0&&toolsInFlight.get()==0)keepStandingDisplay();return;}
         long now=SystemClock.elapsedRealtime();
@@ -281,14 +286,15 @@ public final class BrokerMain {
     private volatile boolean treeRead;
     static final String TREE_REQUIRED_MESSAGE="Screenshot refused: call phone_ui_tree first and read the UI elements of the current screen. The tree is the primary, cheaper and more precise observation; screenshots are only for screens whose tree is incomplete (complete:false), custom-drawn content (WebView, game, canvas) or information the tree lacks. The requirement renews after every action, wait, or hand-back.";
     /** Revokes the turn immediately (owner, cancellation, approvals). The standing display and whatever is on it stay:
-     *  content is removed only when the model asks for it ({@link #clearDisplay}). Safe from the control plane while a
+     *  content is parked only when the model asks for it ({@link #clearDisplay}). Safe from the control plane while a
      *  tool is running: the running tool sees the cancellation at its next guard. */
     private synchronized void closeWorkspace(){
         if(!workspaceExecutionId.isEmpty())workspace.requestCancellation(workspaceExecutionId);
         treeRead=false;activity.reset();if(takeover.finish("cancelled"))workspace.userRelease();cancellationBinding=new WorkspaceBinding("","");
         if(gate.owner()!=null)gate.stop(gate.owner());approvals.clear();workspaceExecutionId="";screenSettling.reset();
     }
-    /** The one path that clears the standing display: the model called phone.stop. Removes the profile tasks on it. */
+    /** The one path that clears the standing display: the model called phone.stop. The AI desktop covers it; the profile
+     *  tasks stay parked behind it as anchors (see {@link ProfileWorkspace#resetContent}). */
     private synchronized void clearDisplay(){
         String execution=workspaceExecutionId;
         closeWorkspace();
@@ -413,9 +419,9 @@ public final class BrokerMain {
             if(tool.equals("phone.ui_tree")){
                 String observationId=gate.observeTree(session,"empty|"+workspace.fingerprintIdle(),SystemClock.elapsedRealtime());
                 treeRead=true;treeIncomplete=false;
-                return new JSONObject().put("title","").put("package","").put("complete",true).put("nodes",new org.json.JSONArray()).put("width",720).put("height",1608).put("capturedAt",System.currentTimeMillis()).put("advice","The AI screen is empty (nothing open). Call phone_launch_app with an installed package (phone_apps lists them).").put("observationId",observationId);
+                return new JSONObject().put("title","").put("package","").put("complete",true).put("nodes",new org.json.JSONArray()).put("width",720).put("height",1608).put("capturedAt",System.currentTimeMillis()).put("advice","No app is open on the AI screen (it may show the AI desktop, with apps from earlier turns parked behind it). Call phone_launch_app with an installed package (phone_apps lists them); an app that is still running comes back where it was.").put("observationId",observationId);
             }
-            if(tool.equals("phone.screenshot"))ActionGate.fail("APP_UNKNOWN","The AI screen is empty: call phone_launch_app first");
+            if(tool.equals("phone.screenshot"))ActionGate.fail("APP_UNKNOWN","No app is open on the AI screen: call phone_launch_app first");
             if(tool.equals("phone.launch_app")){
                 String pkg=a.getString("packageName");workspace.requirePackage(pkg);treeRead=false;treeIncomplete=false;
                 try{workspace.launch(pkg);activity.launched(pkg,workspace.appLabel(pkg));guardNow();}catch(ActionGate.Denied e){if(!survives(e))safePause(e.code);throw settling(e);}

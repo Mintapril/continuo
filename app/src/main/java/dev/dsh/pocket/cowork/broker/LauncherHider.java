@@ -97,6 +97,12 @@ final class LauncherHider {
         for(String s:new ArrayList<>(revealed)){ComponentName c=ComponentName.unflattenFromString(s);if(c!=null)hide(c);}
         for(String s:new ArrayList<>(using)){ComponentName c=ComponentName.unflattenFromString(s);if(c!=null)hide(c);}
     }
+    /** {@link #hideRevealed()} for a parked display: an app that still has a task on the owned display keeps its entry
+     *  (disabling its live launcher activity would force-finish it and drop the anchor the parked task provides). */
+    synchronized void hideRevealedExcept(Set<String> livePackages){
+        TreeSet<String> entries=new TreeSet<>(revealed);entries.addAll(using);
+        for(String s:LauncherEntrySweep.idle(entries,livePackages)){ComponentName c=ComponentName.unflattenFromString(s);if(c!=null)hide(c);}
+    }
     synchronized void hide(ComponentName c){
         String flat=c.flattenToString();
         revealed.remove(flat);using.remove(flat);

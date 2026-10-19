@@ -27,4 +27,16 @@ public final class LauncherEntrySweep {
         }
         return out;
     }
+
+    /** Entries enabled for a run that may be hidden again while the owned display is parked: those of apps without a
+     *  task left on it. An app that still has one keeps its entry. Components are flattened ("package/class"). */
+    public static List<String> idle(Collection<String> entries, Set<String> livePackages) {
+        ArrayList<String> out = new ArrayList<>();
+        for (String flat : entries) {
+            int slash = flat.indexOf('/');
+            String pkg = slash > 0 ? flat.substring(0, slash) : flat;
+            if (!livePackages.contains(pkg) && !out.contains(flat)) out.add(flat);
+        }
+        return out;
+    }
 }

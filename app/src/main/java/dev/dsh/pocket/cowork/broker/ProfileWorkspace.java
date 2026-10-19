@@ -51,7 +51,11 @@ public final class ProfileWorkspace implements AutoCloseable {
         Class<?> at=Class.forName("android.app.ActivityThread");Object thread=at.getMethod("systemMain").invoke(null);
         context=(Context)at.getMethod("getSystemContext").invoke(thread);
         sizeFromMainScreen();profile=new ProfileContext(context);launchers=new LauncherHider(profile);tree=new ProfileStructure(profile);windows=new WindowOwnershipProbe();try{windows.awaitInitial();}catch(IllegalStateException e){System.err.println("window snapshot not yet available at start; every operation re-checks it");}drain.start();drainHandler=new Handler(drain.getLooper());watchInstalls();
+        try{popups=new BackgroundPopupGate(context,profile);popups.enforce();}catch(Exception e){System.err.println("background pop-up gate unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
     }
+    private volatile BackgroundPopupGate popups;
+    /** See {@link BackgroundPopupGate}: drift repair from the watchdog; new installs are handled by the install watch. */
+    public void closeBackgroundPopups(){BackgroundPopupGate gate=popups;if(gate!=null)gate.enforce();}
     private void sizeFromMainScreen(){
         try{
             android.util.DisplayMetrics m=new android.util.DisplayMetrics();
@@ -113,29 +117,36 @@ public final class ProfileWorkspace implements AutoCloseable {
     public synchronized boolean hasLaunched(){return !launched.isEmpty();}
     /** Ownership/idle check for an empty display: identity and cancellation only, no app window required. */
     public synchronized void guardIdle(){check(false,true);}
-    /** Turn boundary: the display stays, its content goes. Removes the profile tasks shown on it, hides the launcher
-     *  entries revealed for the turn and invalidates every observation. Skipped when a newer owner already took over. */
+    /** phone_stop: the display stays and so do the apps on it. The AI desktop comes to the front and the profile tasks
+     *  are parked behind it instead of removed. A removed task left its app process running (an app store finishing an
+     *  install, a push process) with no activity on the owned display, and Android then puts whatever that app opens
+     *  next without naming a display on the main screen: TaskLaunchParamsModifier falls back to the display of the
+     *  launching process, then of the activity's own process, then of the real caller, and only then to the default
+     *  display. A parked task keeps that anchor, so the system itself places such a screen here. Launcher entries are
+     *  hidden only for apps without a task left here (a live launcher activity would be force-finished); every
+     *  observation is invalidated. Skipped when a newer owner already took over. */
     public synchronized void resetContent(String execution){
         if(!execution.isEmpty()&&!cancellation.current(execution))return;
         userRelease();
         if(display!=null){
-            try{
-                Object atm=Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null);
-                long until=SystemClock.elapsedRealtime()+2000;
-                while(true){
-                    boolean any=false;
-                    for(ActivityManager.RunningTaskInfo t:tasks()){
-                        if(t.getClass().getField("displayId").getInt(t)==displayId()&&t.getClass().getField("userId").getInt(t)==profile.userId()){
-                            any=true;atm.getClass().getMethod("removeTask",int.class).invoke(atm,t.taskId);
-                        }
-                    }
-                    if(!any||SystemClock.elapsedRealtime()>=until)break;
-                    SystemClock.sleep(100);
-                }
-            }catch(Exception e){System.err.println("display content reset failed: "+(e instanceof InvocationTargetException&&e.getCause()!=null?e.getCause():e));}
+            try{if(startDesktop(recentsText())<0)System.err.println("AI desktop refused while parking the display");}
+            catch(Exception e){System.err.println("display park failed: "+(e instanceof InvocationTargetException&&e.getCause()!=null?e.getCause():e));}
         }
         launched.clear();tree.bind(null);generation++;parked=true;cancellation.end();
-        try{launchers.hideRevealed();launchers.hideUnseen();}catch(Exception hideFailure){}
+        try{hideIdleLaunchers();launchers.hideUnseen();}catch(Exception hideFailure){}
+    }
+    /** While parked (after phone_stop, before the next launch): launcher entries of apps whose last task on the owned
+     *  display is gone are hidden again. Under the workspace monitor, so it never races a launch (which leaves the
+     *  parked state first). Called by resetContent and by the watchdog. */
+    public synchronized void hideIdleLaunchers(){
+        if(!parked||displayId()<=0)return;
+        Set<String> live=new HashSet<>();
+        for(ActivityManager.RunningTaskInfo t:tasks())
+            if(taskInt(t,"displayId")==displayId()&&taskInt(t,"userId")==profile.userId()){
+                if(t.baseActivity!=null)live.add(t.baseActivity.getPackageName());
+                if(t.topActivity!=null)live.add(t.topActivity.getPackageName());
+            }
+        launchers.hideRevealedExcept(live);
     }
     public void clearCancellation(String execution){cancellation.clear(execution);}
     public boolean locked(){return context.getSystemService(KeyguardManager.class).isDeviceLocked();}
@@ -358,24 +369,31 @@ public final class ProfileWorkspace implements AutoCloseable {
     /** Virtual HOME: the running app keeps running in the background and the profile desktop takes the display. */
     public synchronized void home()throws Exception{
         parked=false;check(false,true);
-        Intent intent=new Intent(Intent.ACTION_MAIN).setComponent(new ComponentName(DESKTOP,DESKTOP+".HomeActivity")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
-        // The desktop lists what keeps running behind it, so neither the agent nor the human has to ask first. The app
-        // that is foreground right now is exactly the one this HOME pushes to the background.
         String behind=recents();
-        if(!behind.startsWith("The AI screen"))intent.putExtra("recents",behind.replace("\uff0c\u524d\u53f0)","\uff0c\u540e\u53f0)"));
-        ActivityOptions options=ActivityOptions.makeBasic();options.setLaunchDisplayId(displayId());
-        Object am=ActivityManager.class.getMethod("getService").invoke(null);
-        Method start=am.getClass().getMethod("startActivityAsUser",Class.forName("android.app.IApplicationThread"),String.class,Intent.class,String.class,IBinder.class,String.class,int.class,int.class,Class.forName("android.app.ProfilerInfo"),Bundle.class,int.class);
         launched.add(DESKTOP);
-        int started=(Integer)start.invoke(am,null,"com.android.shell",intent,null,null,null,0,0,null,options.toBundle(),profile.userId());
+        int started=startDesktop(behind);
         if(started<0)ActionGate.fail("APP_LAUNCH_DENIED","Profile launch rejected");
         long until=SystemClock.elapsedRealtime()+4000;
         do{try{check(false,true);if(DESKTOP.equals(targetPackage())){guard();return;}}catch(ActionGate.Denied notReady){if(!Set.of("APP_DENIED","APP_UNKNOWN","SECURITY_UNAVAILABLE").contains(notReady.code))throw notReady;}SystemClock.sleep(50);}while(SystemClock.elapsedRealtime()<until);
         ActionGate.fail("LAUNCH_TIMEOUT","The AI desktop has not reached the owned display yet; call phone_wait and then phone_ui_tree");
     }
+    /** Starts the profile desktop on the owned display (HOME, and parking at phone_stop). The desktop lists what keeps
+     *  running behind it, so neither the agent nor the human has to ask first. The app that is foreground right now is
+     *  exactly the one the desktop pushes to the background. */
+    private int startDesktop(String behind)throws Exception{
+        Intent intent=new Intent(Intent.ACTION_MAIN).setComponent(new ComponentName(DESKTOP,DESKTOP+".HomeActivity")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+        if(!behind.startsWith("The AI screen"))intent.putExtra("recents",behind.replace("\uff0c\u524d\u53f0)","\uff0c\u540e\u53f0)"));
+        ActivityOptions options=ActivityOptions.makeBasic();options.setLaunchDisplayId(displayId());
+        Object am=ActivityManager.class.getMethod("getService").invoke(null);
+        Method start=am.getClass().getMethod("startActivityAsUser",Class.forName("android.app.IApplicationThread"),String.class,Intent.class,String.class,IBinder.class,String.class,int.class,int.class,Class.forName("android.app.ProfilerInfo"),Bundle.class,int.class);
+        return (Integer)start.invoke(am,null,"com.android.shell",intent,null,null,null,0,0,null,options.toBundle(),profile.userId());
+    }
     /** Virtual RECENTS: the work-profile tasks on the owned display, newest first, without changing the screen. */
     public synchronized String recents()throws Exception{
         check(false,true);
+        return recentsText();
+    }
+    private String recentsText(){
         StringBuilder text=new StringBuilder();Set<String> seen=new HashSet<>();
         for(ActivityManager.RunningTaskInfo t:tasks()){
             if(taskInt(t,"displayId")!=displayId()||taskInt(t,"userId")!=profile.userId())continue;
@@ -737,6 +755,7 @@ public final class ProfileWorkspace implements AutoCloseable {
     private void sweep(String pkg){
         try{int done=launchers.hideUnseen();if(done>0)System.err.println("install watch hid "+done+" launcher entr"+(done==1?"y":"ies")+(pkg.isEmpty()?"":" of "+pkg));}
         catch(Exception e){System.err.println("launcher install sweep failed: "+e.getClass().getSimpleName());}
+        closeBackgroundPopups(); // an app just installed into the profile gets no background pop-up right either
     }
     /** UserHandle.getIdentifier() is a hidden API: hashCode() returns exactly the user id. */
     private boolean isProfile(UserHandle user){return user!=null&&user.hashCode()==profile.userId();}

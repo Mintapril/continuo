@@ -33,4 +33,12 @@ class LauncherEntrySweepTest {
     @Test fun emptyProfileSweepsNothing() {
         assertEquals(emptyList<String>(),targets())
     }
+    @Test fun parkedAppKeepsItsEntryUntilItsLastTaskIsGone() {
+        val entries=listOf("com.zhihu.android/com.zhihu.android.app.ui.activity.LauncherActivity","com.kiwibrowser.browser/com.google.android.apps.chrome.Main")
+        assertEquals(listOf(entries[1]),LauncherEntrySweep.idle(entries,setOf("com.zhihu.android")))
+        assertEquals(entries,LauncherEntrySweep.idle(entries,emptySet()))
+    }
+    @Test fun idleListsEachEntryOnce() {
+        assertEquals(listOf("p/.A"),LauncherEntrySweep.idle(listOf("p/.A","p/.A"),emptySet()))
+    }
 }

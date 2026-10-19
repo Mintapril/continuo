@@ -172,7 +172,7 @@ Continuo 是一个原生 Android 客户端（Kotlin + Jetpack Compose），连�
 
 - `test-unit.ps1` 默认工具链放在仓库上两级目录的 `tools\android-build\`（JDK、SDK、Gradle），换环境时请先改脚本里的路径。它用 JUnitCore 直接运行测试（绕开 Gradle 测试 worker 在 Unicode 路径下的启动问题），测试类是脚本里显式列出的，新增测试类要加进列表。
 - 请在仓库根目录运行：`BrokerSourceTest` 按当前目录查找 Broker 源码。
-- 当前 277 个 JVM 单元测试，覆盖协议契约、动作闸门、拒绝分类与转场计时、接管状态机、任务生命周期、任务岛策略、会话记录解析等。Broker 依赖 Android 框架，无法在 JVM 上加载，所以可测的逻辑都拆在纯类里。
+- 当前 279 个 JVM 单元测试，覆盖协议契约、动作闸门、拒绝分类与转场计时、接管状态机、任务生命周期、任务岛策略、会话记录解析等。Broker 依赖 Android 框架，无法在 JVM 上加载，所以可测的逻辑都拆在纯类里。
 - 如果 Kotlin 编译守护进程无法创建临时文件（受限环境里会出现 `AccessDeniedException …kotlin-compiler-…alive`），可把 `TEMP`/`TMP` 指向仓库内被忽略的 `.kctmp\`，并给 Gradle 加 `-Pkotlin.compiler.execution.strategy=in-process`。
 
 插件的离线测试（当前 307 个）：

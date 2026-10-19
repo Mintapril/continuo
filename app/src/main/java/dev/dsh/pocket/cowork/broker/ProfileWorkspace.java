@@ -414,9 +414,10 @@ public final class ProfileWorkspace implements AutoCloseable {
         ArrayList<String> owned=new ArrayList<>();for(ProfileWindowPolicy.Window w:windows.awaitSnapshot(1500).windows())if(w.displayId()==displayId())owned.add(w.ownerUid()+":"+w.inputConfig()+":"+Objects.hashCode(w.windowToken()));
         Collections.sort(owned);return generation+"|"+displayIdentity+"|"+profile.serial()+"|"+uid+"|"+owned;
     }
-    private Frame capture()throws Exception{
+    private Frame capture()throws Exception{return capture(null);}
+    private Frame capture(ScreenZoom zoom)throws Exception{
         check(true,false);ManagedProfileScope.App app=target();String before=structure(app.uid());
-        byte[] png=OwnedDisplayCapture.profilePng(displayId(),profile.userId(),app.uid(),W,H);long at=System.currentTimeMillis();
+        byte[] png=OwnedDisplayCapture.profilePng(displayId(),profile.userId(),app.uid(),W,H,zoom);long at=System.currentTimeMillis();
         check(true,false);if(target().uid()!=app.uid()||!before.equals(structure(app.uid())))ActionGate.fail("STALE_OBSERVATION","Profile window changed during capture");
         // Structural identity only: animated pixels must not invalidate every action, but UID/windows must match.
         return new Frame(png,at,before,app.uid());
@@ -455,6 +456,15 @@ public final class ProfileWorkspace implements AutoCloseable {
             }
         }while(SystemClock.elapsedRealtime()<until);
         throw last;
+    }
+    /** phone_screenshot with a region: the same capture, checks and binding as observe(true), of that region enlarged
+     *  with rulers (ScreenZoom). width/height stay the screen's, so coordinates read from the rulers are screen pixels. */
+    public synchronized Observation zoom(int left,int top,int right,int bottom,int scale)throws Exception{
+        ScreenZoom zoom=new ScreenZoom(left,top,right,bottom,scale,W,H);
+        guard();Frame f=capture(zoom);verifiedUid=f.uid();
+        JSONObject result=image(f).put("region",new JSONArray().put(left).put(top).put(right).put(bottom)).put("scale",scale)
+            .put("margin",ScreenZoom.MARGIN).put("imageWidth",zoom.imageWidth()).put("imageHeight",zoom.imageHeight());
+        return new Observation(result,f.fingerprint());
     }
     /** Called after gate.observe: element ids are valid only for this ui_tree observation. */
     public synchronized void bindTree(String observationId){tree.bind(observationId);}

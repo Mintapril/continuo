@@ -431,7 +431,9 @@ public final class BrokerMain {
         }
         if(tool.equals("phone.screenshot")&&!treeRead&&!treeIncomplete)ActionGate.fail("TREE_REQUIRED",TREE_REQUIRED_MESSAGE);
         if(tool.equals("phone.ui_tree")||tool.equals("phone.screenshot")){
-            ProfileWorkspace.Observation observation=workspace.observe(tool.equals("phone.screenshot"));
+            // A region zooms the screenshot: ToolContract checked its form, the workspace checks it against the screen.
+            JSONArray region=a.optJSONArray("region");
+            ProfileWorkspace.Observation observation=region!=null?workspace.zoom(region.getInt(0),region.getInt(1),region.getInt(2),region.getInt(3),a.getInt("scale")):workspace.observe(tool.equals("phone.screenshot"));
             JSONObject result=observation.result();
             String observationId=tool.equals("phone.ui_tree")?gate.observeTree(session,observation.fingerprint(),SystemClock.elapsedRealtime()):gate.observe(session,observation.fingerprint(),SystemClock.elapsedRealtime());
             if(tool.equals("phone.ui_tree")){workspace.bindTree(observationId);treeRead=true;treeIncomplete=!result.optBoolean("complete",true);}

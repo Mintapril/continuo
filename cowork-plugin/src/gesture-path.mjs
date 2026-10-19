@@ -3,7 +3,7 @@
 // in words, because a native refusal reaches the model only as a code. Limits mirror StrokePath.java.
 import { check, boundedString, integer } from './validation.mjs';
 
-export const GESTURE = Object.freeze({ strokes: 32, points: 3000, minDurationMs: 20, maxDurationMs: 10000, maxHoldMs: 3000, gapMs: 60, totalMs: 15000, pathChars: 8000 });
+export const GESTURE = Object.freeze({ strokes: 32, fingers: 2, points: 3000, minDurationMs: 20, maxDurationMs: 10000, maxHoldMs: 3000, gapMs: 60, totalMs: 15000, pathChars: 8000 });
 const TOLERANCE = 0.5; // px the polyline may deviate from the described curve
 const SPEED = 1.2; // px per ms of a stroke without durationMs
 const DOT_MS = 80; // press time of a single point without durationMs
@@ -152,12 +152,12 @@ export function planGesture(args, width, height) {
     map = ([x, y]) => [x * scale + ox, y * scale + oy];
   }
   let points = 0, total = GESTURE.gapMs * (strokes.length - 1);
-  const wire = strokes.map((stroke, index) => {
-    const label = `strokes[${index}].path`;
-    boundedString(stroke.path, GESTURE.pathChars, label);
+  // One finger's path as integer screen points without repeats, and the length the finger travels.
+  const finger = (path, label) => {
+    boundedString(path, GESTURE.pathChars, label);
     const flat = [];
     let length = 0, lx, ly;
-    for (const point of flattenPath(stroke.path, label, TOLERANCE / scale)) {
+    for (const point of flattenPath(path, label, TOLERANCE / scale)) {
       const [fx, fy] = map(point), x = Math.round(fx), y = Math.round(fy);
       check(x >= 0 && x < width && y >= 0 && y < height, `${label} leaves the screen at (${x}, ${y})${viewBox ? ' after mapping viewBox into area' : ''}: x must stay within 0..${width - 1} and y within 0..${height - 1}`);
       if (x === lx && y === ly) continue;
@@ -166,13 +166,21 @@ export function planGesture(args, width, height) {
     }
     points += flat.length / 2;
     check(points <= GESTURE.points, `The strokes flatten to more than ${GESTURE.points} points; simplify them or split the drawing over several phone_gesture calls`);
+    return { flat, length };
+  };
+  const wire = strokes.map((stroke, index) => {
+    check((stroke.path === undefined) !== (stroke.fingers === undefined), `strokes[${index}] takes path (one finger) or fingers (two fingers moving together), exactly one of them`);
+    if (stroke.fingers !== undefined) check(stroke.fingers.length === GESTURE.fingers, `strokes[${index}].fingers takes exactly ${GESTURE.fingers} paths, one per finger; use path for a single finger`);
+    // The fingers move together: each covers its own path in durationMs, so the longest one sets the default pace.
+    const lines = stroke.fingers === undefined ? [finger(stroke.path, `strokes[${index}].path`)] : stroke.fingers.map((path, f) => finger(path, `strokes[${index}].fingers[${f}]`));
+    const length = Math.max(...lines.map(line => line.length));
     const durationMs = stroke.durationMs ?? (length === 0 ? DOT_MS : Math.min(3000, Math.max(150, Math.round(length / SPEED))));
     const holdStartMs = stroke.holdStartMs ?? 0, holdEndMs = stroke.holdEndMs ?? 0;
     integer(durationMs, GESTURE.minDurationMs, GESTURE.maxDurationMs, `strokes[${index}].durationMs`);
     integer(holdStartMs, 0, GESTURE.maxHoldMs, `strokes[${index}].holdStartMs`);
     integer(holdEndMs, 0, GESTURE.maxHoldMs, `strokes[${index}].holdEndMs`);
     total += durationMs + holdStartMs + holdEndMs;
-    return { points: flat, durationMs, holdStartMs, holdEndMs };
+    return { fingers: lines.map(line => line.flat), durationMs, holdStartMs, holdEndMs };
   });
   check(total <= GESTURE.totalMs, `This gesture would take ${total} ms (movement, holds and ${GESTURE.gapMs} ms lifts between strokes); one call may take at most ${GESTURE.totalMs} ms: shorten durations or split it over several phone_gesture calls`);
   return wire;

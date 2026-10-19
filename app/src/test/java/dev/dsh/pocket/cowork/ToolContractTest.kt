@@ -44,13 +44,27 @@ class ToolContractTest {
             denied("phone.batch","""{"observationId":"one","steps":$steps}""")
         denied("phone.batch","""{"steps":[{"tool":"tap","elementId":"n1"},{"tool":"tap","elementId":"n2"}]}""")
     }
-    private fun stroke(points:String,duration:Int=200,start:Int=0,end:Int=0)="""{"points":[$points],"durationMs":$duration,"holdStartMs":$start,"holdEndMs":$end}"""
+    private fun stroke(points:String,duration:Int=200,start:Int=0,end:Int=0)=fingers("[$points]",duration,start,end)
+    private fun fingers(fingers:String,duration:Int=200,start:Int=0,end:Int=0)="""{"fingers":[$fingers],"durationMs":$duration,"holdStartMs":$start,"holdEndMs":$end}"""
     private fun gesture(vararg strokes:String)="""{"observationId":"one","strokes":[${strokes.joinToString(",")}]}"""
     @Test fun gestureWireForm(){
         valid("phone.gesture",gesture(stroke("0,0,719,1999,360,800")))
         valid("phone.gesture",gesture(stroke("30,40",20),stroke("10,10,20,20",10000,3000,1500)))
         valid("phone.gesture",gesture(*Array(32){stroke("1,1,2,2",360)}))
         valid("phone.gesture",gesture(stroke((0 until 3000).joinToString(","){"${it%700},${it%1900}"},1000)))
+        // Two fingers: a pinch, and one finger held still while the other turns around it.
+        valid("phone.gesture",gesture(fingers("[300,800,150,650],[420,900,570,1050]",400)))
+        valid("phone.gesture",gesture(fingers("[360,800],[560,800,500,941,360,1000]",600,100,100)))
+        valid("phone.gesture",gesture(fingers((0 until 2).joinToString(","){"[${(0 until 1500).joinToString(","){k->"${k%700},${k%1900}"}}]"},1000)))
+    }
+    @Test fun gestureFingers(){
+        denied("phone.gesture",gesture(fingers("",200)))
+        denied("phone.gesture",gesture(fingers("[1,1],[2,2],[3,3]")))
+        denied("phone.gesture",gesture(fingers("[1,1],[]")));denied("phone.gesture",gesture(fingers("[1,1],[2]")));denied("phone.gesture",gesture(fingers("[1,1],[720,0]")))
+        denied("phone.gesture",gesture(fingers("[1,1],5")));denied("phone.gesture",gesture(fingers("[[1,1]]")))
+        // The point limit counts every finger.
+        denied("phone.gesture",gesture(fingers((0 until 2).joinToString(","){"[${(0 until 1501).joinToString(","){k->"${k%700},${k%1900}"}}]"},1000)))
+        denied("phone.gesture","""{"observationId":"one","strokes":[{"points":[1,1],"durationMs":200,"holdStartMs":0,"holdEndMs":0}]}""")
     }
     @Test fun gestureLimitsAndShape(){
         denied("phone.gesture","""{"observationId":"one","strokes":[]}""")

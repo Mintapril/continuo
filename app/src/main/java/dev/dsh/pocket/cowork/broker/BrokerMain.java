@@ -567,21 +567,24 @@ public final class BrokerMain {
         if(result.optString("stopReason").equals("USER_CONTROL"))return result.put("observationError","USER_CONTROL");
         return observeAfter(session,result,before,settle);
     }
-    /** Finger strokes along paths (phone_gesture: drawing, curved or multi-part swipes, long-press drags), bound to one
-     *  observation and one admitted UID like a swipe. Strokes run in order with the finger lifted for GAP_MS between
-     *  them; before each later stroke the window set must still be the observed one (a stroke that opened a dialog,
-     *  menu or page stops the rest) and the stroke must fit the call's wall-clock budget, and a user takeover
-     *  interrupts even a running stroke. The screen content is not
-     *  compared: drawing changes it on purpose. Results follow phone_batch: a refusal before the first stroke is an
-     *  ordinary refusal; after it the reply is performed:true with completed and, when stopped, stoppedAt/stopReason
-     *  (uncertain: the stopped stroke was cut off midway), so the model never redraws strokes that already happened. */
+    /** Finger strokes along paths (phone_gesture: drawing, curved or multi-part swipes, long-press drags, two-finger
+     *  pinch and rotate), bound to one observation and one admitted UID like a swipe. Strokes run in order with the
+     *  fingers lifted for GAP_MS between them. Before each later stroke the window set must still be the observed one (a
+     *  stroke that opened a dialog, menu or page stops the rest) and the stroke must fit the call's wall-clock budget; a
+     *  user takeover interrupts even a running stroke. The screen content is not compared: drawing changes it on
+     *  purpose. Results follow phone_batch: a refusal before the first stroke is an ordinary refusal; after it the reply
+     *  is performed:true with completed and, when stopped, stoppedAt/stopReason (uncertain: the stopped stroke was cut
+     *  off midway), so the model never redraws strokes that already happened. */
     private JSONObject gesture(String session,JSONObject a)throws Exception{
         JSONArray strokes=a.getJSONArray("strokes");
         // Every point is on this display before anything is consumed or injected, so a bad stroke refuses the whole call.
-        int[][] points=new int[strokes.length()][];
-        for(int i=0;i<points.length;i++){
-            JSONArray p=strokes.getJSONObject(i).getJSONArray("points");points[i]=new int[p.length()];
-            for(int j=0;j<p.length();j++){points[i][j]=p.getInt(j);if(points[i][j]>=(j%2==0?ProfileWorkspace.W:ProfileWorkspace.H))ActionGate.fail("INVALID_GESTURE","Gesture bounds invalid");}
+        int[][][] fingers=new int[strokes.length()][][];
+        for(int i=0;i<fingers.length;i++){
+            JSONArray stroke=strokes.getJSONObject(i).getJSONArray("fingers");fingers[i]=new int[stroke.length()][];
+            for(int f=0;f<stroke.length();f++){
+                JSONArray p=stroke.getJSONArray(f);int[] points=fingers[i][f]=new int[p.length()];
+                for(int j=0;j<p.length();j++){points[j]=p.getInt(j);if(points[j]>=(j%2==0?ProfileWorkspace.W:ProfileWorkspace.H))ActionGate.fail("INVALID_GESTURE","Gesture bounds invalid");}
+            }
         }
         treeRead=false;treeIncomplete=false;
         String before=workspace.lastTreeSignature();
@@ -606,7 +609,7 @@ public final class BrokerMain {
                     if(!structure.equals(workspace.fingerprint())){result.put("stoppedAt",i).put("stopReason","WINDOW_CHANGED");break;}
                 }
                 injecting=true;
-                workspace.stroke(uid,points[i],stroke.getInt("durationMs"),stroke.getInt("holdStartMs"),stroke.getInt("holdEndMs"),takeover::active);
+                workspace.stroke(uid,fingers[i],stroke.getInt("durationMs"),stroke.getInt("holdStartMs"),stroke.getInt("holdEndMs"),takeover::active);
             }catch(Exception e){
                 ActionGate.Denied denied=e instanceof ActionGate.Denied?(ActionGate.Denied)e:null;
                 String code=denied==null?"PLATFORM_ERROR":denied.code;

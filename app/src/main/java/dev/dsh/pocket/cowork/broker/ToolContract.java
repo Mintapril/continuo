@@ -44,7 +44,8 @@ public final class ToolContract {
         if(text>BATCH_TEXT)fail();
     }
     /** phone_gesture as the plugin sends it (it flattens the model's SVG paths, PROTOCOL.md): 1..MAX_STROKES strokes of
-     *  integer points [x0,y0,x1,y1,...], each with its movement time and holds, within StrokePath's limits. */
+     *  1..MAX_FINGERS fingers, each finger integer points [x0,y0,x1,y1,...], every stroke with its movement time and
+     *  holds, within StrokePath's limits (the point limit counts every finger). */
     private static void gesture(JSONObject a){
         fields(a,"observationId,strokes","");obs(a);
         if(!(a.opt("strokes") instanceof JSONArray))fail();
@@ -53,11 +54,15 @@ public final class ToolContract {
         for(int i=0;i<strokes.length();i++){
             if(!(strokes.opt(i) instanceof JSONObject))fail();
             JSONObject stroke=strokes.optJSONObject(i);
-            fields(stroke,"points,durationMs,holdStartMs,holdEndMs","");
-            if(!(stroke.opt("points") instanceof JSONArray))fail();
-            JSONArray p=stroke.optJSONArray("points");
-            points+=p.length()/2;if(p.length()<2||p.length()%2!=0||points>StrokePath.MAX_POINTS)fail();
-            for(int j=0;j<p.length();j++){Object v=p.opt(j);if(!(v instanceof Number))fail();double d=((Number)v).doubleValue();if(!Double.isFinite(d)||d!=Math.rint(d)||d<0||d>(j%2==0?719:1999))fail();}
+            fields(stroke,"fingers,durationMs,holdStartMs,holdEndMs","");
+            if(!(stroke.opt("fingers") instanceof JSONArray))fail();
+            JSONArray fingers=stroke.optJSONArray("fingers");if(fingers.length()<1||fingers.length()>StrokePath.MAX_FINGERS)fail();
+            for(int f=0;f<fingers.length();f++){
+                if(!(fingers.opt(f) instanceof JSONArray))fail();
+                JSONArray p=fingers.optJSONArray(f);
+                points+=p.length()/2;if(p.length()<2||p.length()%2!=0||points>StrokePath.MAX_POINTS)fail();
+                for(int j=0;j<p.length();j++){Object v=p.opt(j);if(!(v instanceof Number))fail();double d=((Number)v).doubleValue();if(!Double.isFinite(d)||d!=Math.rint(d)||d<0||d>(j%2==0?719:1999))fail();}
+            }
             total+=number(stroke,"durationMs",StrokePath.MIN_DURATION_MS,StrokePath.MAX_DURATION_MS)+number(stroke,"holdStartMs",0,StrokePath.MAX_HOLD_MS)+number(stroke,"holdEndMs",0,StrokePath.MAX_HOLD_MS);
         }
         if(total>StrokePath.MAX_TOTAL_MS)fail();

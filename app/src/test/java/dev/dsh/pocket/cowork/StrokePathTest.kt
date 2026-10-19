@@ -50,4 +50,18 @@ class StrokePathTest {
         assertEquals(100f, q.x()); assertEquals(100f, q.y(), 1e-4f)
     }
     @Test(expected = IllegalArgumentException::class) fun oddCoordinatesAreRejected() { path(1, 2, 3) }
+    @Test fun fingersShareEveryVertexTime() {
+        // A pinch: one finger has a corner halfway, the other moves straight; each sample places both fingers.
+        val a = path(0, 0, 50, 0, 50, 50); val b = path(200, 0, 300, 0)
+        val fractions = StrokePath.frame(arrayOf(a, b), 0.0, 0.75)
+        assertArrayEquals(doubleArrayOf(0.5, 0.75), fractions, 1e-9)
+        assertEquals(250f, b.point(0.5).x(), 1e-4f)
+        assertArrayEquals(doubleArrayOf(0.25, 0.5, 0.75, 1.0), StrokePath.frame(arrayOf(path(0, 0, 10, 0, 20, 0, 30, 0, 40, 0), b), 0.0, 1.0), 1e-9)
+    }
+    @Test fun aStillFingerAddsNoSamples() {
+        val pivot = path(360, 800); val turning = path(560, 800, 360, 1000)
+        assertArrayEquals(doubleArrayOf(0.4), StrokePath.frame(arrayOf(pivot, turning), 0.0, 0.4), 1e-9)
+        assertEquals(360f, pivot.point(0.4).x()); assertEquals(800f, pivot.point(0.4).y())
+        assertEquals(0, StrokePath.frame(arrayOf(pivot, path(1, 1)), 0.0, 1.0).size)
+    }
 }

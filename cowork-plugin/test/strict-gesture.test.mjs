@@ -6,7 +6,7 @@ import { BrokerClient } from '../src/broker.mjs';
 const secret = 'test-only-secret-not-real'.padEnd(40, 'x'), now = 100000;
 const W = 720, H = 1600;
 const plan = (strokes, extra = {}) => planGesture({ observationId: 'obs', strokes, ...extra }, W, H);
-const points = path => plan([{ path }])[0].points;
+const points = path => plan([{ path }])[0].fingers[0];
 const pairs = flat => flat.reduce((out, v, i) => (i % 2 ? out.at(-1).push(v) : out.push([v]), out), []);
 const near = (actual, expected, label) => {
   assert.equal(actual.length, expected.length, `${label}: point count`);
@@ -74,8 +74,8 @@ test('screen points are rounded integers without repeats, and must stay on the s
 test('durations: defaults from the length, explicit values and holds pass through', () => {
   const [dot, short, long, huge, own] = plan([{ path: 'M5 5' }, { path: 'M0 0 L100 0' }, { path: 'M0 0 L600 0' }, { path: 'M0 0 L700 0 L700 1500 L0 1500 L0 0 L700 1500' }, { path: 'M0 0 L10 0', durationMs: 20, holdStartMs: 800, holdEndMs: 300 }]);
   assert.deepEqual([dot.durationMs, short.durationMs, long.durationMs, huge.durationMs], [80, 150, 500, 3000]);
-  assert.deepEqual(own, { points: [0, 0, 10, 0], durationMs: 20, holdStartMs: 800, holdEndMs: 300 });
-  assert.deepEqual(Object.keys(dot), ['points', 'durationMs', 'holdStartMs', 'holdEndMs']);
+  assert.deepEqual(own, { fingers: [[0, 0, 10, 0]], durationMs: 20, holdStartMs: 800, holdEndMs: 300 });
+  assert.deepEqual(Object.keys(dot), ['fingers', 'durationMs', 'holdStartMs', 'holdEndMs']);
   assert.throws(() => plan([{ path: 'M0 0', durationMs: 19 }]), /durationMs must be an integer 20\.\.10000/);
   assert.throws(() => plan([{ path: 'M0 0', holdStartMs: 3001 }]), /holdStartMs/);
   assert.throws(() => plan([{ path: 'M0 0', holdEndMs: -1 }]), /holdEndMs/);
@@ -92,10 +92,10 @@ test('per-call limits: strokes, total time with the lifts, flattened points, pat
   assert.throws(() => plan([{ path: 'M0 0 ' + 'l0 0 '.repeat(1600) }]), /1\.\.8000 characters/);
 });
 test('viewBox and area: uniform scale, centred, edge pixels included', () => {
-  assert.deepEqual(plan([{ path: 'M0 0 L10 10' }], { viewBox: [0, 0, 10, 10], area: [100, 200, 201, 301] })[0].points, [100, 200, 200, 300]);
-  assert.deepEqual(plan([{ path: 'M0 0 L10 10' }], { viewBox: [0, 0, 10, 10], area: [0, 0, 201, 101] })[0].points, [50, 0, 150, 100], 'wider area: centred horizontally');
-  assert.deepEqual(plan([{ path: 'M-1 -1' }], { viewBox: [-1, -1, 2, 2], area: [0, 0, 101, 101] })[0].points, [0, 0], 'viewBox origin');
-  const circle = plan([{ path: 'M0 12 A12 12 0 0 1 24 12 A12 12 0 0 1 0 12' }], { viewBox: [0, 0, 24, 24], area: [60, 400, 661, 1001] })[0].points;
+  assert.deepEqual(plan([{ path: 'M0 0 L10 10' }], { viewBox: [0, 0, 10, 10], area: [100, 200, 201, 301] })[0].fingers[0], [100, 200, 200, 300]);
+  assert.deepEqual(plan([{ path: 'M0 0 L10 10' }], { viewBox: [0, 0, 10, 10], area: [0, 0, 201, 101] })[0].fingers[0], [50, 0, 150, 100], 'wider area: centred horizontally');
+  assert.deepEqual(plan([{ path: 'M-1 -1' }], { viewBox: [-1, -1, 2, 2], area: [0, 0, 101, 101] })[0].fingers[0], [0, 0], 'viewBox origin');
+  const circle = plan([{ path: 'M0 12 A12 12 0 0 1 24 12 A12 12 0 0 1 0 12' }], { viewBox: [0, 0, 24, 24], area: [60, 400, 661, 1001] })[0].fingers[0];
   for (const [x, y] of pairs(circle)) assert.ok(Math.abs(Math.hypot(x - 360, y - 700) - 300) <= 0.71, `${x},${y} on the scaled circle`);
   assert.ok(circle.length / 2 > 50, 'the tolerance applies on the screen, not in viewBox units');
   assert.throws(() => plan([{ path: 'M0 0' }], { viewBox: [0, 0, 10, 10] }), /together/);
@@ -103,9 +103,40 @@ test('viewBox and area: uniform scale, centred, edge pixels included', () => {
   assert.throws(() => plan([{ path: 'M0 0' }], { viewBox: [0, 0, 0, 10], area: [0, 0, 10, 10] }), /positive width/);
   assert.throws(() => plan([{ path: 'M0 0' }], { viewBox: [0, 0, 10, 10], area: [0, 0, 721, 10] }), /area must lie on the screen/);
   assert.throws(() => plan([{ path: 'M0 0' }], { viewBox: [0, 0, 10, 10, 3], area: [0, 0, 10, 10] }), /viewBox must be/);
-  assert.deepEqual(plan([{ path: 'M0 0 L10 10' }], { viewBox: [0, 0, 10, 10], area: [710, 0, 720, 10] })[0].points, [710, 0, 719, 9], 'an area at the right edge');
+  assert.deepEqual(plan([{ path: 'M0 0 L10 10' }], { viewBox: [0, 0, 10, 10], area: [710, 0, 720, 10] })[0].fingers[0], [710, 0, 719, 9], 'an area at the right edge');
   // 20 viewBox units at 11.9 px each run past the right edge.
   assert.throws(() => plan([{ path: 'M0 0 L20 0' }], { viewBox: [0, 0, 10, 10], area: [600, 0, 720, 120] }), /leaves the screen at \(838, 0\) after mapping viewBox into area/);
+});
+
+test('two fingers: pinch, rotate and a still pivot move together; the longest path sets the default pace', () => {
+  const [pinch, rotate, pivot] = plan([
+    { fingers: ['M330 770 L180 620', 'M390 830 L540 980'] },
+    { fingers: ['M360 650 A150 150 0 0 1 510 800', 'M360 950 A150 150 0 0 1 210 800'], durationMs: 600 },
+    { fingers: ['M360 800', 'M560 800 A200 200 0 0 1 360 1000'], holdStartMs: 200 },
+  ]);
+  assert.deepEqual(pinch, { fingers: [[330, 770, 180, 620], [390, 830, 540, 980]], durationMs: 177, holdStartMs: 0, holdEndMs: 0 });
+  assert.equal(rotate.durationMs, 600);
+  for (const finger of rotate.fingers) for (const [x, y] of pairs(finger)) assert.ok(Math.abs(Math.hypot(x - 360, y - 800) - 150) <= 0.71, `${x},${y} on the circle`);
+  assert.deepEqual(rotate.fingers.map(f => f.slice(-2)), [[510, 800], [210, 800]], 'a quarter turn clockwise');
+  assert.deepEqual(pivot.fingers[0], [360, 800]);
+  assert.equal(pivot.holdStartMs, 200);
+  assert.ok(Math.abs(pivot.durationMs - Math.PI * 100 / 1.2) <= 2, `${pivot.durationMs} ms: the moving finger sets the pace`);
+});
+test('two-finger mistakes are explained per finger', () => {
+  assert.throws(() => plan([{ fingers: ['M1 1'] }]), /strokes\[0\]\.fingers takes exactly 2 paths/);
+  assert.throws(() => plan([{ fingers: ['M1 1', 'M2 2', 'M3 3'] }]), /exactly 2 paths/);
+  assert.throws(() => plan([{ path: 'M1 1', fingers: ['M1 1', 'M2 2'] }]), /strokes\[0\] takes path \(one finger\) or fingers/);
+  assert.throws(() => plan([{ durationMs: 100 }]), /exactly one of them/);
+  assert.throws(() => plan([{ fingers: ['M1 1', 'M2 2 L800 2'] }]), /strokes\[0\]\.fingers\[1\] leaves the screen at \(800, 2\)/);
+  assert.throws(() => plan([{ fingers: ['M1 1', 'L2 2'] }]), /strokes\[0\]\.fingers\[1\] must start with M/);
+  const half = 'M0 0' + 'h1v1h-1v1'.repeat(375); // 1501 points in 3376 characters
+  assert.throws(() => plan([{ fingers: [half, half], durationMs: 1000 }]), /more than 3000 points/, 'the point limit counts both fingers');
+});
+test('the broker receives both fingers of a stroke', async () => {
+  const { client, calls } = harness();
+  await client.call('s', 'phone.ui_tree', {});
+  await client.call('s', 'phone.gesture', { observationId: 'obs', strokes: [{ fingers: ['M330 770 L180 620', 'M390 830 L540 980'], durationMs: 500 }] });
+  assert.deepEqual(calls.at(-1).arguments.strokes, [{ fingers: [[330, 770, 180, 620], [390, 830, 540, 980]], durationMs: 500, holdStartMs: 0, holdEndMs: 0 }]);
 });
 
 // ---- the broker client ----
@@ -130,10 +161,12 @@ test('the broker receives integer strokes, never the SVG text', async () => {
   assert.deepEqual(Object.keys(sent.arguments), ['observationId', 'strokes']);
   assert.equal(sent.arguments.observationId, 'obs');
   const [curve, line] = sent.arguments.strokes;
-  assert.deepEqual(line, { points: [400, 300, 500, 300], durationMs: 150, holdStartMs: 0, holdEndMs: 0 });
+  assert.deepEqual(line, { fingers: [[400, 300, 500, 300]], durationMs: 150, holdStartMs: 0, holdEndMs: 0 });
   assert.equal(curve.holdStartMs, 600);
-  assert.deepEqual(curve.points.slice(0, 2), [100, 300]); assert.deepEqual(curve.points.slice(-2), [300, 300]);
-  assert.ok(curve.points.every(Number.isInteger) && curve.points.length > 20);
+  const [drawn] = curve.fingers;
+  assert.equal(curve.fingers.length, 1);
+  assert.deepEqual(drawn.slice(0, 2), [100, 300]); assert.deepEqual(drawn.slice(-2), [300, 300]);
+  assert.ok(drawn.every(Number.isInteger) && drawn.length > 20);
 });
 test('the largest gesture still fits the 64 KiB native request body', async () => {
   const { client, calls } = harness();
@@ -141,7 +174,7 @@ test('the largest gesture still fits the 64 KiB native request body', async () =
   // 32 strokes of about 93 points each: x and y with four digits wherever possible.
   const path = i => 'M1000 1000 ' + Array.from({ length: 92 }, (_, k) => `L${k % 2 ? 1999 - i : 1000 + i} ${1000 + 5 * k + i}`).join(' ');
   const big = planGesture({ observationId: 'obs', strokes: Array.from({ length: 32 }, (_, i) => ({ path: path(i), durationMs: 400 })) }, 2000, 2000);
-  assert.ok(big.reduce((n, s) => n + s.points.length / 2, 0) <= GESTURE.points);
+  assert.ok(big.reduce((n, s) => n + s.fingers[0].length / 2, 0) <= GESTURE.points);
   const body = JSON.stringify({ protocolVersion: 1, requestId: '00000000-0000-0000-0000-000000000000', sessionId: 'x'.repeat(256), tool: 'phone.gesture', arguments: { observationId: 'x'.repeat(256), strokes: big } });
   assert.ok(Buffer.byteLength(body) < 65536, `${Buffer.byteLength(body)} bytes`);
   assert.equal(calls.length, 1);

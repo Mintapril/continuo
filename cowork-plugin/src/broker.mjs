@@ -44,8 +44,9 @@ export const PHONE_ARGUMENTS = Object.freeze({
   'phone.launch_app': object({ ...observed, packageName: str }, ['packageName']),
   // 2..5 element inputs planned from one tree observation, a key (ENTER/BACK) only as the last step; checked in BrokerClient.
   'phone.batch': object({ ...observed, steps: { type: 'array', items: object({ tool: { type: 'string', enum: ['tap', 'long_press', 'type_text', 'key'] }, elementId: str, text: str, key: { type: 'string', enum: ['ENTER', 'BACK'] } }, ['tool']) } }),
-  // 1..32 finger strokes, each one touch along SVG path data; flattened into the native wire form by planGesture.
-  'phone.gesture': object({ ...observed, strokes: { type: 'array', items: object({ path: str, durationMs: int, holdStartMs: int, holdEndMs: int }, ['path']) }, viewBox: { type: 'array', items: num }, area: { type: 'array', items: int } }, ['observationId', 'strokes']),
+  // 1..32 strokes, each one touch along SVG path data (path) or two fingers moving together (fingers: two paths);
+  // exactly one of the two is checked and flattened into the native wire form by planGesture.
+  'phone.gesture': object({ ...observed, strokes: { type: 'array', items: object({ path: str, fingers: { type: 'array', items: str }, durationMs: int, holdStartMs: int, holdEndMs: int }, []) }, viewBox: { type: 'array', items: num }, area: { type: 'array', items: int } }, ['observationId', 'strokes']),
   'phone.pause': object(), 'phone.stop': object(), 'phone.request_intervention': object({ reason: str }, []),
 });
 // Native-only tools: accepted by BrokerClient but never registered with, or visible to, the model.

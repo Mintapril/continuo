@@ -40,14 +40,21 @@ final class ProfileInput {
         event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
         try{inject(event,display,userId,uid,mode);}finally{event.recycle();}
     }
-    /** One MOVE carrying several samples in time order (the earlier ones as history), so the app receives every point
-     *  of a phone_gesture stroke, not only the latest per frame. */
-    static void moves(int display,int userId,int uid,long down,long[] times,float[] xs,float[] ys)throws Exception{
+    /** One touch event of a phone_gesture stroke with {@code count} fingers (pointer ids 0..count-1) and samples in time
+     *  order, the earlier ones as history, so the app receives every point of the stroke, not only the latest per frame.
+     *  xs[k][p], ys[k][p]: finger p at sample k. */
+    static void fingers(int display,int userId,int uid,long down,int action,long[] times,float[][] xs,float[][] ys,int count)throws Exception{
         if(display<=0||userId<=0||uid<0||uid/100000!=userId)ActionGate.fail("APP_DENIED","Input target is outside the profile");
-        MotionEvent event=MotionEvent.obtain(down,times[0],MotionEvent.ACTION_MOVE,xs[0],ys[0],0);
-        for(int i=1;i<times.length;i++)event.addBatch(times[i],xs[i],ys[i],1f,1f,0);
-        event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        MotionEvent.PointerProperties[] properties=new MotionEvent.PointerProperties[count];
+        for(int p=0;p<count;p++){properties[p]=new MotionEvent.PointerProperties();properties[p].id=p;properties[p].toolType=MotionEvent.TOOL_TYPE_FINGER;}
+        MotionEvent event=MotionEvent.obtain(down,times[0],action,count,properties,coordinates(xs[0],ys[0],count),0,0,1f,1f,0,0,InputDevice.SOURCE_TOUCHSCREEN,0);
+        for(int k=1;k<times.length;k++)event.addBatch(times[k],coordinates(xs[k],ys[k],count),0);
         try{inject(event,display,userId,uid,WAIT_FOR_FINISH);}finally{event.recycle();}
+    }
+    private static MotionEvent.PointerCoords[] coordinates(float[] x,float[] y,int count){
+        MotionEvent.PointerCoords[] out=new MotionEvent.PointerCoords[count];
+        for(int p=0;p<count;p++){out[p]=new MotionEvent.PointerCoords();out[p].x=x[p];out[p].y=y[p];out[p].pressure=1f;out[p].size=1f;}
+        return out;
     }
     /** Key events the virtual keyboard map produces for one text character, or null when the
      * character cannot be expressed without an IME (for example CJK). Pure; testable on the JVM only

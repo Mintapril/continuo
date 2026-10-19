@@ -7,7 +7,7 @@ Continuo 是一个原生 Android 客户端（Kotlin + Jetpack Compose），连�
 > **项目状态：** 这是一个面向特定设备（一加 Ace 3V，Android 16，ColorOS，KernelSU root）的个人项目，不是开箱即用的通用应用。它依赖 root、手机本机的 DSH 运行环境和一个手动创建的工作资料，部署步骤与设备强相关。第三方真实应用的兼容性只验证过一部分。详见[已知限制](#已知限制)。
 
 - 包名 `dev.dsh.pocket`（沿用旧名 DSH Pocket 以保留数据与授权），当前版本 `0.7.0`（versionCode 9），`minSdk 28` / `targetSdk 36`。
-- 许可证：尚未指定。仅内置字体 JetBrains Mono 遵循 SIL OFL（见 `app/src/main/assets/licenses/`）。
+- 许可证：[MIT](LICENSE)。内置字体 JetBrains Mono 另遵循 SIL OFL（见 `app/src/main/assets/licenses/`）。
 
 ## Cowork：独立副屏
 

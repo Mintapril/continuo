@@ -2,6 +2,7 @@
   "name": "@local/dsh-cowork-phone",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Restricted native-phone Cowork preset for DSH 0.2.0-rc.2",
   "exports": { ".": "./src/restricted.mjs", "./package.json": "./package.json" },

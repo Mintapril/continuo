@@ -52,16 +52,36 @@ class StrokePathTest {
     @Test(expected = IllegalArgumentException::class) fun oddCoordinatesAreRejected() { path(1, 2, 3) }
     @Test fun fingersShareEveryVertexTime() {
         // A pinch: one finger has a corner halfway, the other moves straight; each sample places both fingers.
+        // A step longer than the whole movement adds no grid samples: only the vertices and the frame end.
         val a = path(0, 0, 50, 0, 50, 50); val b = path(200, 0, 300, 0)
-        val fractions = StrokePath.frame(arrayOf(a, b), 0.0, 0.75)
+        val fractions = StrokePath.frame(arrayOf(a, b), 0.0, 0.75, 1.0)
         assertArrayEquals(doubleArrayOf(0.5, 0.75), fractions, 1e-9)
         assertEquals(250f, b.point(0.5).x(), 1e-4f)
-        assertArrayEquals(doubleArrayOf(0.25, 0.5, 0.75, 1.0), StrokePath.frame(arrayOf(path(0, 0, 10, 0, 20, 0, 30, 0, 40, 0), b), 0.0, 1.0), 1e-9)
+        assertArrayEquals(doubleArrayOf(0.25, 0.5, 0.75, 1.0), StrokePath.frame(arrayOf(path(0, 0, 10, 0, 20, 0, 30, 0, 40, 0), b), 0.0, 1.0, 1.0), 1e-9)
     }
     @Test fun aStillFingerAddsNoSamples() {
         val pivot = path(360, 800); val turning = path(560, 800, 360, 1000)
-        assertArrayEquals(doubleArrayOf(0.4), StrokePath.frame(arrayOf(pivot, turning), 0.0, 0.4), 1e-9)
+        assertArrayEquals(doubleArrayOf(0.4), StrokePath.frame(arrayOf(pivot, turning), 0.0, 0.4, 1.0), 1e-9)
         assertEquals(360f, pivot.point(0.4).x()); assertEquals(800f, pivot.point(0.4).y())
-        assertEquals(0, StrokePath.frame(arrayOf(pivot, path(1, 1)), 0.0, 1.0).size)
+        assertEquals("nothing moves: no grid either", 0, StrokePath.frame(arrayOf(pivot, path(1, 1)), 0.0, 1.0, 0.1).size)
+    }
+    @Test fun aStraightLineIsSampledOnASharedTimeGrid() {
+        // An 80 ms line sampled every 8 ms (step 0.1); frames are far apart, the grid continues across them.
+        val line = arrayOf(path(0, 0, 100, 0))
+        assertArrayEquals(doubleArrayOf(0.1, 0.2, 0.3, 0.35), StrokePath.frame(line, 0.0, 0.35, 0.1), 1e-9)
+        assertArrayEquals(doubleArrayOf(0.4, 0.5, 0.6, 0.7, 0.72), StrokePath.frame(line, 0.35, 0.72, 0.1), 1e-9)
+        assertArrayEquals(doubleArrayOf(0.8, 0.9, 1.0), StrokePath.frame(line, 0.72, 1.0, 0.1), 1e-9)
+        assertEquals(30f, line[0].point(0.3).x(), 1e-4f)
+    }
+    @Test fun gridSamplesAndVerticesInterleave() {
+        val corner = arrayOf(path(0, 0, 50, 0, 50, 50))
+        assertArrayEquals(doubleArrayOf(0.2, 0.4, 0.5, 0.6, 0.75), StrokePath.frame(corner, 0.0, 0.75, 0.2), 1e-9)
+        // A pinch of two straight fingers: the grid places both fingers at every sample.
+        val pinch = arrayOf(path(330, 770, 180, 620), path(390, 830, 540, 980))
+        assertArrayEquals(doubleArrayOf(0.25, 0.5, 0.6), StrokePath.frame(pinch, 0.0, 0.6, 0.25), 1e-9)
+        assertEquals(255f, pinch[0].point(0.5).x(), 1e-3f); assertEquals(465f, pinch[1].point(0.5).x(), 1e-3f)
+    }
+    @Test fun aGridPointOnTheFrameStartIsNotRepeated() {
+        assertArrayEquals(doubleArrayOf(0.75, 1.0), StrokePath.frame(arrayOf(path(0, 0, 100, 0)), 0.5, 1.0, 0.25), 1e-9)
     }
 }

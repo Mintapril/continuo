@@ -497,8 +497,9 @@ public final class ProfileWorkspace implements AutoCloseable {
      *  bound to the admitted UID. The fingers go down on their first points (DOWN, then POINTER_DOWN), rest holdStartMs,
      *  follow their lines together for durationMs (each at its own constant speed; when no finger moves they are pressed
      *  for durationMs), rest holdEndMs and lift on their last points in reverse order (POINTER_UP, then UP). Every frame
-     *  re-checks the display, the target UID and {@code interrupted} (the user took over the screen); any failure cancels
-     *  the touch. */
+     *  checks {@code interrupted} (the user took over the screen) and cancellation; the display and the target UID are
+     *  re-checked before the first and the last event and at least every CHECK_MS in between (see strokeCheck). Any
+     *  failure cancels the touch. */
     public synchronized void stroke(int uid,int[][] fingers,int durationMs,int holdStartMs,int holdEndMs,java.util.function.BooleanSupplier interrupted)throws Exception{
         int id=displayId(),user=profile.userId(),n=fingers.length;
         StrokePath[] paths=new StrokePath[n];float[] x=new float[n],y=new float[n];boolean moves=false;
@@ -507,19 +508,19 @@ public final class ProfileWorkspace implements AutoCloseable {
             for(int i=0;i<points.length;i+=2)if(points[i]<0||points[i]>=W||points[i+1]<0||points[i+1]>=H)ActionGate.fail("INVALID_GESTURE","Gesture bounds invalid");
             paths[p]=new StrokePath(points);x[p]=paths[p].firstX();y[p]=paths[p].firstY();moves|=paths[p].length()>0;
         }
-        strokeCheck(uid,interrupted);
+        long checked=strokeCheck(uid,interrupted,0);
         long down=SystemClock.uptimeMillis();int touching=0;boolean complete=false;
         try{
             // An injection timeout can occur after delivery: every attempted DOWN is covered by the CANCEL below.
             for(int p=0;p<n;p++){touching=p+1;ProfileInput.fingers(id,user,uid,down,p==0?MotionEvent.ACTION_DOWN:pointer(MotionEvent.ACTION_POINTER_DOWN,p),new long[]{down},new float[][]{x},new float[][]{y},p+1);}
-            rest(uid,holdStartMs,interrupted);
-            if(!moves)rest(uid,durationMs,interrupted);
+            checked=rest(uid,holdStartMs,interrupted,checked);
+            if(!moves)checked=rest(uid,durationMs,interrupted,checked);
             else{
-                long start=SystemClock.uptimeMillis(),sent=start;double done=0;
+                long start=SystemClock.uptimeMillis(),sent=start;double done=0,step=StrokePath.SAMPLE_MS/(double)durationMs;
                 while(done<1){
-                    SystemClock.sleep(16);strokeCheck(uid,interrupted);
+                    SystemClock.sleep(16);checked=strokeCheck(uid,interrupted,checked);
                     long now=SystemClock.uptimeMillis();double f=Math.min(1,(now-start)/(double)durationMs);
-                    double[] fractions=StrokePath.frame(paths,done,f);done=f;
+                    double[] fractions=StrokePath.frame(paths,done,f,step);done=f;
                     if(fractions.length==0)continue;
                     int m=fractions.length;long[] times=new long[m];float[][] xs=new float[m][n],ys=new float[m][n];
                     for(int k=0;k<m;k++){
@@ -529,21 +530,29 @@ public final class ProfileWorkspace implements AutoCloseable {
                     ProfileInput.fingers(id,user,uid,down,MotionEvent.ACTION_MOVE,times,xs,ys,n);x=xs[m-1];y=ys[m-1];
                 }
             }
-            rest(uid,holdEndMs,interrupted);
-            strokeCheck(uid,interrupted);
+            rest(uid,holdEndMs,interrupted,checked);
+            strokeCheck(uid,interrupted,0);
             for(int p=n-1;p>=0;p--){ProfileInput.fingers(id,user,uid,down,p==0?MotionEvent.ACTION_UP:pointer(MotionEvent.ACTION_POINTER_UP,p),new long[]{SystemClock.uptimeMillis()},new float[][]{x},new float[][]{y},p+1);touching=p;}
             complete=true;
         }finally{if(!complete&&touching>0)ProfileInput.fingers(id,user,uid,down,MotionEvent.ACTION_CANCEL,new long[]{SystemClock.uptimeMillis()},new float[][]{x},new float[][]{y},touching);}
     }
     private static int pointer(int action,int index){return action|(index<<MotionEvent.ACTION_POINTER_INDEX_SHIFT);}
-    /** Keeps a stroke's fingers still for {@code ms}, checking every frame. */
-    private void rest(int uid,int ms,java.util.function.BooleanSupplier interrupted)throws Exception{
+    /** Keeps a stroke's fingers still for {@code ms}, checking every frame; returns when the full check last ran. */
+    private long rest(int uid,int ms,java.util.function.BooleanSupplier interrupted,long checked)throws Exception{
         long until=SystemClock.uptimeMillis()+ms;
-        for(long left=ms;left>0;left=until-SystemClock.uptimeMillis()){SystemClock.sleep(Math.min(16,left));strokeCheck(uid,interrupted);}
+        for(long left=ms;left>0;left=until-SystemClock.uptimeMillis()){SystemClock.sleep(Math.min(16,left));checked=strokeCheck(uid,interrupted,checked);}
+        return checked;
     }
-    private void strokeCheck(int uid,java.util.function.BooleanSupplier interrupted)throws Exception{
+    /** The per-frame check of a stroke. A takeover and a pause or stop are seen within one frame. The full ownership check
+     *  (display, foreign tasks, main-screen protection, foreground UID) takes about 90 ms, so it runs only when CHECK_MS
+     *  have passed since {@code checked} (0 forces it); in between every event is still UID-targeted and display-bound
+     *  by the input dispatcher. Returns when the full check last ran. */
+    private long strokeCheck(int uid,java.util.function.BooleanSupplier interrupted,long checked)throws Exception{
         if(interrupted.getAsBoolean())ActionGate.fail("USER_CONTROL","The user took over the screen");
+        if(cancellation.cancelled())ActionGate.fail("CONTROL_INTERRUPTED","User requested pause or stop");
+        if(SystemClock.uptimeMillis()-checked<StrokePath.CHECK_MS)return checked;
         guard();if(targetWait().uid()!=uid)ActionGate.fail("APP_DENIED","Input target changed");
+        return SystemClock.uptimeMillis();
     }
     /** Scroll gesture with feedback: the reply says whether the visible content really moved, so a silent no-op
      *  (wrong point, end of page, non-scrollable area) is never reported as a plain success. Without x/y the centre

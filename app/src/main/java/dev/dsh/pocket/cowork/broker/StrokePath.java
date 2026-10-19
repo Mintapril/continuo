@@ -7,15 +7,22 @@ import java.util.*;
  * A finger follows a polyline of screen points: the plugin flattens the model's SVG path into it
  * (cowork-plugin/src/gesture-path.mjs). It moves at constant speed along its length. Each frame sends one MOVE whose
  * historical samples are every vertex passed since the previous frame, at the time the finger reached it, so a drawing
- * app receives the exact shape however fast the stroke is, instead of one chord per frame. The fingers of a two-finger
- * stroke (pinch, rotate) move together: each covers its own path in the same time, and a sample of the MOVE places
- * every finger at that moment ({@link #frame}). */
+ * app receives the exact shape however fast the stroke is, instead of one chord per frame. Between vertices a sample is
+ * added every SAMPLE_MS of movement time, so a straight stretch (a pinch, a long line) also moves smoothly when frames
+ * are far apart. The fingers of a two-finger stroke (pinch, rotate) move together: each covers its own path in the same
+ * time, and a sample of the MOVE places every finger at that moment ({@link #frame}). */
 public final class StrokePath {
     /** Wire limits, shared by ToolContract and the plugin. The total keeps a call inside the plugin's 25 s request. */
     public static final int MAX_STROKES=32,MAX_FINGERS=2,MAX_POINTS=3000,MIN_DURATION_MS=20,MAX_DURATION_MS=10000,MAX_HOLD_MS=3000,GAP_MS=60,MAX_TOTAL_MS=15000;
     /** Wall-clock budget of one call's strokes. The checks between strokes take time MAX_TOTAL_MS does not count; a stroke
      *  that would end after this is not started, so the reply (with settle and observation) beats the 25 s request. */
     public static final long WALL_MS=19000;
+    /** Movement time between two touch samples besides the vertices (125 Hz). */
+    public static final int SAMPLE_MS=8;
+    /** Most time between two full ownership checks (display, foreground UID) while a stroke runs. Measured on the phone a
+     *  full check takes about 90 ms, so checking every frame left about 10 frames per second; takeover and cancellation
+     *  are still checked every frame, and every event stays UID-targeted by the input dispatcher. */
+    public static final int CHECK_MS=100;
     /** One touch sample: {@code fraction} of the movement time at which the finger is at (x, y). */
     public record Sample(double fraction,float x,float y){}
     private final float[] xs,ys;
@@ -64,10 +71,13 @@ public final class StrokePath {
         return new Sample(fraction,(float)(xs[i-1]+(xs[i]-xs[i-1])*t),(float)(ys[i-1]+(ys[i]-ys[i-1])*t));
     }
     /** Sample fractions of one frame for fingers that move together (0 <= from <= to <= 1): every vertex any finger
-     *  passes after {@code from}, in order, ending with {@code to}. Empty when no finger moves. */
-    public static double[] frame(StrokePath[] fingers,double from,double to){
+     *  passes after {@code from} and every multiple of {@code step} (SAMPLE_MS as a fraction of the movement time; the
+     *  grid is shared by all frames), in order, ending with {@code to}. Empty when no finger moves. */
+    public static double[] frame(StrokePath[] fingers,double from,double to,double step){
         TreeSet<Double> all=new TreeSet<>();
         for(StrokePath finger:fingers)for(Sample s:finger.between(from,to))all.add(s.fraction());
+        if(all.isEmpty())return new double[0];
+        for(long k=(long)Math.floor(from/step)+1;k*step<to;k++)if(k*step>from)all.add(k*step);
         double[] out=new double[all.size()];int i=0;
         for(double f:all)out[i++]=f;
         return out;

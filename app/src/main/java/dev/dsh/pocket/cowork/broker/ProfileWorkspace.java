@@ -51,7 +51,7 @@ public final class ProfileWorkspace implements AutoCloseable {
         Class<?> at=Class.forName("android.app.ActivityThread");Object thread=at.getMethod("systemMain").invoke(null);
         context=(Context)at.getMethod("getSystemContext").invoke(thread);
         sizeFromMainScreen();profile=new ProfileContext(context);launchers=new LauncherHider(profile);tree=new ProfileStructure(profile);windows=new WindowOwnershipProbe();try{windows.awaitInitial();}catch(IllegalStateException e){System.err.println("window snapshot not yet available at start; every operation re-checks it");}drain.start();drainHandler=new Handler(drain.getLooper());watchInstalls();
-        packagesChanged(); // baseline of the 1 Hz change read, taken before the start-up sweep below
+        changedPackages(); // baseline of the 1 Hz change read, taken before the start-up sweep below
         try{popups=new BackgroundPopupGate(context,profile);popups.enforce();}catch(Exception e){System.err.println("background pop-up gate unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
     }
     private volatile BackgroundPopupGate popups;
@@ -799,27 +799,35 @@ public final class ProfileWorkspace implements AutoCloseable {
     /** Fast path from the watchdog: hide the launcher entry of every app that appeared in the work profile since the
      * last sweep. Runs at 1 Hz and while an owned display is open, so an install into the profile has no window in
      * which the personal launcher can put an icon of it on the home screen. A package change of the profile since the
-     * previous call (also one the install watch does not see) closes background pop-ups at once instead of at the next
-     * drift repair. Takes only the launcher-hider and pop-up gate locks. */
-    public void hideNewInstalls(){
+     * previous call (also one the install watch does not see) hides again the entries we hid of that package that are
+     * visible again (an app uninstalled from the profile and installed back) and closes background pop-ups at once
+     * instead of at the next drift repair. Takes only the launcher-hider and pop-up gate locks. */
+    public void hideNewInstalls(){sweepInstalls(false);}
+    /** {@link #hideNewInstalls}, from the watchdog and the install watch. {@code installed}: an install session of the
+     *  profile just finished, so background pop-ups are closed even when the change read fails. */
+    private void sweepInstalls(boolean installed){
         try{launchers.hideUnseen();}catch(Exception e){System.err.println("launcher install sweep failed: "+e.getClass().getSimpleName());}
-        if(packagesChanged())closeBackgroundPopups();
+        List<String> changed=changedPackages();
+        if(changed!=null)launchers.hideVisibleAgain(changed);
+        if(installed||changed!=null)closeBackgroundPopups();
     }
     private final InstallWatch.Changes changes=new InstallWatch.Changes();
-    private String changesFailure="";
-    /** Read after the launcher sweep, so an entry it just hid is part of this read and not a change at the next one. */
-    private boolean packagesChanged(){
+    private volatile String changesFailure="";
+    /** The packages of the profile that changed since the previous read, null when none ({@link InstallWatch.Changes}).
+     *  Read after the launcher sweep, so an entry it just hid is part of this read and not a change at the next one. */
+    private List<String> changedPackages(){
         try{
             ChangedPackages changed=profile.context().getPackageManager().getChangedPackages(changes.from());
             changesFailure="";
-            if(!changes.read(changed==null?null:changed.getSequenceNumber()))return false;
-            System.err.println("install watch: work-profile packages changed: "+changed.getPackageNames());
-            return true;
+            if(!changes.read(changed==null?null:changed.getSequenceNumber()))return null;
+            List<String> names=changed.getPackageNames();
+            System.err.println("install watch: work-profile packages changed: "+names);
+            return names;
         }catch(Exception e){
             String why=e.getClass().getSimpleName()+": "+e.getMessage();
             // Logged once per distinct failure: this runs every second.
             if(!why.equals(changesFailure)){changesFailure=why;System.err.println("work-profile package change read failed: "+why);}
-            return false;
+            return null;
         }
     }
     /** Sweep the work profile as soon as an install into it completes (rule: {@link InstallWatch}), instead of waiting for
@@ -848,9 +856,9 @@ public final class ProfileWorkspace implements AutoCloseable {
     private void installEvent(InstallWatch.Event event,int session){
         if(!InstallWatch.sweeps(event))return;
         System.err.println("install watch: work-profile session "+session+" installed");
-        try{int done=launchers.hideUnseen();if(done>0)System.err.println("install watch hid "+done+" launcher entr"+(done==1?"y":"ies")+" after session "+session);}
-        catch(Exception e){System.err.println("launcher install sweep failed: "+e.getClass().getSimpleName());}
-        closeBackgroundPopups(); // an app just installed into the profile gets no background pop-up right either
+        // The change read names the installed package, so an entry of an app installed back is hidden again at once too;
+        // an app just installed into the profile gets no background pop-up right either.
+        sweepInstalls(true);
     }
     /** Closes the display only if it still belongs to `execution` (an ordered async close never hits a successor). */
     public synchronized void closeDisplay(String execution){if(execution.equals(displayExecution))closeDisplay();}

@@ -28,6 +28,23 @@ public final class LauncherEntrySweep {
         return out;
     }
 
+    /** Entries we hid that are visible again, among the packages that just changed in the profile: uninstalling an app
+     *  from the profile clears its component states, so installing it back enables an entry that is still on our list
+     *  (which {@link #targets} leaves alone). An entry in use stays, as in {@link #targets}; one that is DISABLED, or
+     *  whose state is unknown (the activity no longer exists), is left alone. Components are flattened ("package/class"). */
+    public static List<String> visibleAgain(Collection<String> owned, Collection<String> changedPackages,
+                                            Set<String> inUse, ToIntFunction<String> state) {
+        ArrayList<String> out = new ArrayList<>();
+        for (String flat : owned) {
+            int slash = flat.indexOf('/');
+            String pkg = slash > 0 ? flat.substring(0, slash) : flat;
+            if (inUse.contains(flat) || !changedPackages.contains(pkg)) continue;
+            if (state.applyAsInt(flat) == DISABLED) continue;
+            out.add(flat);
+        }
+        return out;
+    }
+
     /** Entries enabled for a run that may be hidden again while the owned display is parked: those of apps without a
      *  task left on it. An app that still has one keeps its entry. Components are flattened ("package/class"). */
     public static List<String> idle(Collection<String> entries, Set<String> livePackages) {

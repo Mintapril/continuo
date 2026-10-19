@@ -84,6 +84,29 @@ final class LauncherHider {
             return done;
         }catch(Exception e){System.err.println("launcher install sweep failed: "+e.getClass().getSimpleName()+": "+e.getMessage());return 0;}
     }
+    /** Hide again the entries we hid of the given just-changed packages that are enabled again ({@link
+     * LauncherEntrySweep#visibleAgain}): an app uninstalled from the profile and installed back. {@link #reconcile()}
+     * repairs such drift only while no owned display exists; this is safe with one open for the same reason as
+     * {@link #hideUnseen()}. Returns how many were hidden. */
+    synchronized int hideVisibleAgain(Collection<String> packages){
+        try{
+            if(packages.isEmpty()||Files.exists(OFF))return 0;
+            PackageManager pm=pm();
+            List<String> todo=LauncherEntrySweep.visibleAgain(hidden,packages,using,flat->{
+                ComponentName c=ComponentName.unflattenFromString(flat);
+                if(c==null)return LauncherEntrySweep.DISABLED;
+                try{return pm.getComponentEnabledSetting(c);}catch(Exception unknown){return LauncherEntrySweep.DISABLED;}
+            });
+            int done=0;
+            for(String flat:todo){
+                try{pm.setComponentEnabledSetting(ComponentName.unflattenFromString(flat),PackageManager.COMPONENT_ENABLED_STATE_DISABLED,PackageManager.DONT_KILL_APP);}
+                catch(Exception failed){System.err.println("launcher re-hide failed for "+flat+": "+failed.getClass().getSimpleName());continue;}
+                done++;
+                System.err.println("hid launcher entry of a work-profile app that is visible again: "+flat);
+            }
+            return done;
+        }catch(Exception e){System.err.println("launcher re-hide sweep failed: "+e.getClass().getSimpleName()+": "+e.getMessage());return 0;}
+    }
     /** Enable one of our hidden components so it can be started; returns whether it was ours. Either way the entry is
      * remembered as in use so a concurrent sweep does not disable it while the app runs. */
     synchronized boolean reveal(ComponentName c)throws Exception{

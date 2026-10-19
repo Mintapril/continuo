@@ -51,6 +51,7 @@ public final class ProfileWorkspace implements AutoCloseable {
         Class<?> at=Class.forName("android.app.ActivityThread");Object thread=at.getMethod("systemMain").invoke(null);
         context=(Context)at.getMethod("getSystemContext").invoke(thread);
         sizeFromMainScreen();profile=new ProfileContext(context);launchers=new LauncherHider(profile);tree=new ProfileStructure(profile);windows=new WindowOwnershipProbe();try{windows.awaitInitial();}catch(IllegalStateException e){System.err.println("window snapshot not yet available at start; every operation re-checks it");}drain.start();drainHandler=new Handler(drain.getLooper());watchInstalls();
+        packagesChanged(); // baseline of the 1 Hz change read, taken before the start-up sweep below
         try{popups=new BackgroundPopupGate(context,profile);popups.enforce();}catch(Exception e){System.err.println("background pop-up gate unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
     }
     private volatile BackgroundPopupGate popups;

@@ -17,8 +17,8 @@ public final class InstallWatch {
     /** Cursor over the profile's PackageManager.getChangedPackages sequence, read once a second. It sees every package
      * change of the profile, also those without a session of the profile: install-existing into it, an update committed
      * by a session of the personal user, an uninstall, a component enabled or disabled (the broker's own launcher sweep
-     * included, which costs one redundant check). The first read is the baseline: what changed before the broker
-     * started is covered by its start-up sweep. */
+     * included, which costs one redundant check). The first read is the baseline, taken before the broker's start-up
+     * sweep, which covers what changed earlier. */
     public static final class Changes {
         private int sequence;
         private boolean started;

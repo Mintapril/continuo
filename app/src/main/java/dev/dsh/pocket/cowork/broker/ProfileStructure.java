@@ -253,12 +253,31 @@ final class ProfileStructure implements AutoCloseable {
             AccessibilityNodeInfo root=w.getRoot();if(root==null)continue;
             AccessibilityNodeInfo focus=root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
             if(focus!=null&&focus.isEditable()){
+                // A password node reports masked text: current+text would overwrite the secret with bullets.
+                if(focus.isPassword())ActionGate.fail("SECRET_INPUT","A password field takes typed keys only; this character has no key");
                 CharSequence current=focus.isShowingHintText()||focus.getText()==null?"":focus.getText();
                 Bundle args=new Bundle();args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,current+text);
                 if(focus.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,args))return;
             }
         }
         ActionGate.fail("TEXT_UNSUPPORTED","No focused editable field accepts this text");
+    }
+    /** User-takeover helper: the input-focused editable field of a work-profile window on the owned display, as metadata
+     *  only (password flag, input type, bounds), never its text. Null when no such field has input focus. */
+    synchronized JSONObject focusedField(int displayId)throws Exception{
+        for(AccessibilityWindowInfo w:windows(displayId)){
+            int type=w.getType();
+            if(type!=AccessibilityWindowInfo.TYPE_APPLICATION&&type!=AccessibilityWindowInfo.TYPE_SYSTEM)continue;
+            AccessibilityNodeInfo root=w.getRoot();
+            if(root==null||root.getPackageName()==null)continue;
+            try{profile.app(root.getPackageName().toString());}catch(Exception foreign){continue;}
+            AccessibilityNodeInfo focus=root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+            if(focus==null||!focus.isEditable())continue;
+            Rect b=new Rect();focus.getBoundsInScreen(b);
+            return new JSONObject().put("editable",true).put("password",focus.isPassword()).put("inputType",focus.getInputType()).put("multiLine",focus.isMultiLine())
+                .put("bounds",new JSONArray().put(b.left).put(b.top).put(b.right).put(b.bottom));
+        }
+        return null;
     }
     synchronized void disconnect(){
         nodes.clear();boundObservation="";

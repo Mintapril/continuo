@@ -44,6 +44,8 @@ public final class BrokerMain {
     /** Observation and input tools the model may not use while the user controls the screen. */
     private static final Set<String> USER_CONTROL_BLOCKED=Set.of("phone.screenshot","phone.ui_tree","phone.tap","phone.long_press","phone.swipe","phone.scroll","phone.read_page","phone.type_text","phone.key","phone.launch_app","phone.wait","phone.batch","phone.gesture");
     private final Takeover takeover=new Takeover();
+    /** How often the live view re-reads the focused input field during a takeover (one accessibility query). */
+    private static final long FIELD_POLL_MS=200;
     private final java.util.concurrent.atomic.AtomicInteger streams=new java.util.concurrent.atomic.AtomicInteger();
     private volatile boolean taskManaged=false;
     /** The latest phone_ui_tree could not describe the screen (custom-drawn, truncated): a screenshot is the documented
@@ -783,9 +785,18 @@ public final class BrokerMain {
             frame(out,video.info());
             byte[] first=workspace.initialFrame();if(first!=null)frame(out,LiveStream.message(LiveStream.STILL,first));
             out.flush();video.requestSync();
-            long lastWrite=SystemClock.elapsedRealtime();
+            long lastWrite=SystemClock.elapsedRealtime(),fieldChecked=0;String fieldSent="";
             while(running&&workspace.displayId()>0&&!socket.isClosed()){
-                byte[] next=video.take(250);
+                // While the human controls the screen, tell the viewer which input field has focus (password flag, input
+                // type, bounds; never its text) so it can raise its own keyboard: the owned display's IME policy is HIDE.
+                long now=SystemClock.elapsedRealtime();
+                if(now-fieldChecked>=FIELD_POLL_MS){
+                    fieldChecked=now;JSONObject field=takeover.active()?workspace.userField():null;
+                    String encoded=(field==null?new JSONObject().put("editable",false):field).toString();
+                    if(!encoded.equals(fieldSent)&&!(fieldSent.isEmpty()&&field==null)){frame(out,LiveStream.message(LiveStream.FIELD,encoded.getBytes(StandardCharsets.UTF_8)));out.flush();lastWrite=now;}
+                    fieldSent=encoded;
+                }
+                byte[] next=video.take(FIELD_POLL_MS);
                 if(next!=null){
                     frame(out,next);
                     // Flush only when the queue is drained so a burst leaves in one write, a lone frame immediately.

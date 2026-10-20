@@ -25,6 +25,18 @@ import java.util.concurrent.TimeUnit
 
 data class CoworkApp(val packageName:String,val label:String,val approved:Boolean)
 data class CoworkPreview(val bitmap:Bitmap,val taskId:String,val revision:Long,val capturedAt:Long,val execution:IslandExecution)
+/** The owned display's input-focused field while the user controls it: metadata from the broker, never its text. */
+data class RemoteField(val password:Boolean,val inputType:Int,val multiLine:Boolean,val bounds:IntArray?) {
+    override fun equals(other:Any?)=other is RemoteField&&password==other.password&&inputType==other.inputType&&multiLine==other.multiLine&&bounds.contentEquals(other.bounds)
+    override fun hashCode()=listOf(password,inputType,multiLine,bounds?.contentHashCode()).hashCode()
+    companion object {
+        fun parse(meta:JSONObject):RemoteField? {
+            if(!meta.optBoolean("editable"))return null
+            val box=meta.optJSONArray("bounds")?.takeIf{it.length()==4}?.let{b->IntArray(4){b.optInt(it)}}
+            return RemoteField(meta.optBoolean("password"),meta.optInt("inputType"),meta.optBoolean("multiLine"),box)
+        }
+    }
+}
 data class CoworkControlTarget(val taskId:String,val revision:Long,val execution:IslandExecution) {
     companion object {
         fun from(value:JSONObject)=CoworkControlTarget(value.optString("taskId"),value.optLong("revision",-1),
@@ -57,6 +69,11 @@ object CoworkConnection {
     private var liveJob:Job?=null
     private var liveUsers=0
     @Volatile private var inputChannel:Channel<String>?=null
+    private val focusedField=MutableStateFlow<RemoteField?>(null)
+    /** Input field focused on the owned display during a takeover (null: none, or no live view attached). */
+    val field=focusedField.asStateFlow()
+    /** True while the island shows the takeover full screen: that surface owns the keyboard, not CoworkActivity. */
+    val islandFullScreen=MutableStateFlow(false)
     /** Reference counted: the Activity and the island share one stream (the broker allows a single viewer). */
     fun acquireLive(){
         liveUsers++
@@ -126,9 +143,10 @@ object CoworkConnection {
                             2->LiveVideo.onConfig(bytes.copyOfRange(1,length))
                             3,4->if(length>9)LiveVideo.onUnit(bytes[0].toInt()==3,java.nio.ByteBuffer.wrap(bytes,1,8).long,bytes,9,length-9)
                             5->BitmapFactory.decodeByteArray(bytes,1,length-1)?.let{liveBitmap.value=it}
+                            6->focusedField.value=RemoteField.parse(JSONObject(String(bytes,1,length-1,Charsets.UTF_8)))
                         }
                     }
-                } finally {LiveVideo.requestKeyFrame={};LiveVideo.reset();inputChannel=null;channel.close();writer.cancel()}
+                } finally {LiveVideo.requestKeyFrame={};LiveVideo.reset();inputChannel=null;focusedField.value=null;channel.close();writer.cancel()}
             }        } finally {closer.dispose();runCatching{socket.close()}}
     }
     internal fun controllerUnavailable(message:String) {

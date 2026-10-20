@@ -788,6 +788,12 @@ public final class ProfileWorkspace implements AutoCloseable {
         if(mappable){for(KeyEvent[] unit:units)ProfileInput.character(displayId(),profile.userId(),uid,unit);}
         else tree.appendFocused(displayId(),text);
     }
+    /** The focused work-profile input field during a takeover (metadata only), or null. Outside the workspace lock: the
+     *  live-view thread polls it while the human types, and it must not wait behind their injected input. */
+    public JSONObject userField(){
+        int id=displayId();if(id<=0)return null;
+        try{return tree.focusedField(id);}catch(Exception unreadable){return null;}
+    }
     /** Release any half-finished human gesture (takeover hand-back, expiry, stop). */
     public synchronized void userRelease(){
         if(userUid>=0&&displayId()>0){try{ProfileInput.userMotion(displayId(),profile.userId(),userUid,userDown,SystemClock.uptimeMillis(),MotionEvent.ACTION_CANCEL,userX,userY);}catch(Exception ignored){}}

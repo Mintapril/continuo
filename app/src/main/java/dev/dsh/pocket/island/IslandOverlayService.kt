@@ -34,6 +34,11 @@ import dev.dsh.pocket.cowork.CoworkConnection
 import dev.dsh.pocket.cowork.CoworkLinkState
 import dev.dsh.pocket.cowork.LiveTextureView
 import dev.dsh.pocket.cowork.LiveVideo
+import dev.dsh.pocket.cowork.RemoteKeyboardView
+import dev.dsh.pocket.cowork.RemoteKeystroke
+import android.view.KeyEvent
+import android.view.ViewGroup
+import android.view.WindowInsets
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -74,6 +79,23 @@ class IslandOverlayService : Service() {
     private var requestExpanded = false
     private var fullView: FrameLayout? = null
     private var fullImage: ImageView? = null
+    private var fullVideo: View? = null
+    private var fullParams: WindowManager.LayoutParams? = null
+    /** The manager the full-screen window is attached to: the island's own, or [typingManager] while typing. */
+    private var fullManager: WindowManager? = null
+    // Typing into the owned display during a takeover. Its IME policy is HIDE, so this phone's keyboard types into a
+    // local proxy and committed text goes over the takeover channel. The keyboard is drawn above ordinary overlays
+    // but below the accessibility layer, so while typing the picture moves to the ordinary overlay layer.
+    private var typing = false
+    private var keyboardDismissed = false
+    private var keyboard: RemoteKeyboardView? = null
+    private var typingBar: View? = null
+    private var typingManager: WindowManager? = null
+    private var imeBottom = 0
+    private var imeShown = false
+    private var contentShift = 0f
+    /** Raises the keyboard once the typing window actually holds focus (showSoftInput before that is ignored). */
+    private val typingFocus = android.view.ViewTreeObserver.OnWindowFocusChangeListener { focused -> if (focused && typing) keyboard?.showKeyboard() }
     private var edgeGlow: EdgeGlow? = null
 
     override fun onCreate() {
@@ -104,6 +126,7 @@ class IslandOverlayService : Service() {
         // Intervention is driven by the broker state: whoever starts it (double tap here, the app, or the model asking
         // for help), the full-screen view appears while the person is in control and disappears when control returns.
         scope.launch { CoworkConnection.status.collect { syncIntervention(it) } }
+        scope.launch { CoworkConnection.field.collect { syncTyping() } }
         // Permission, keyguard and foreground-context expiry only; never screenshot/agent-loop driven.
         scope.launch {
             while (isActive) {
@@ -522,11 +545,15 @@ class IslandOverlayService : Service() {
                 return@setOnTouchListener true
             }
             val x = (event.x / v.width * info.width).coerceIn(0f, info.width - 1f)
-            val y = (event.y / v.height * info.height).coerceIn(0f, info.height - 1f)
+            val y = ((event.y + contentShift) / v.height * info.height).coerceIn(0f, info.height - 1f)
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> CoworkConnection.sendTouch("down", x, y)
                 MotionEvent.ACTION_MOVE -> CoworkConnection.sendTouch("move", x, y)
-                MotionEvent.ACTION_UP -> CoworkConnection.sendTouch("up", x, y)
+                MotionEvent.ACTION_UP -> {
+                    CoworkConnection.sendTouch("up", x, y)
+                    // Tapping the screen again (e.g. the same field after the keyboard was put away) may bring it back.
+                    if (keyboardDismissed) { keyboardDismissed = false; v.postDelayed({ syncTyping() }, 300) }
+                }
                 MotionEvent.ACTION_CANCEL -> CoworkConnection.sendTouch("cancel", x, y)
             }
             true
@@ -543,33 +570,59 @@ class IslandOverlayService : Service() {
                 )
             }
         }
+        root.setOnApplyWindowInsetsListener { _, insets ->
+            if (Build.VERSION.SDK_INT >= 30) {
+                val shown = insets.isVisible(WindowInsets.Type.ime())
+                imeBottom = if (shown) insets.getInsets(WindowInsets.Type.ime()).bottom else 0
+                // The keyboard was put away (its own hide key, or BACK): leave typing until the screen is tapped again.
+                if (typing && imeShown && !shown) { keyboardDismissed = true; root.post { syncTyping() } }
+                imeShown = shown
+            }
+            updateShift(); insets
+        }
         fullImage = poster
+        fullVideo = video
         fullView = root
+        val params = fullScreenParams(real.width(), real.height(), overlayWindowType(), focusable = false)
         try {
-            manager.addView(root, WindowManager.LayoutParams(
-                real.width(), real.height(), overlayWindowType(),
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_SECURE or
-                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                PixelFormat.OPAQUE,
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                title = "DSH 任务岛全屏预览"
-                preferredRefreshRate = 120f // follow the highest rate the panel supports
-                if (Build.VERSION.SDK_INT >= 28) layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-            })
+            manager.addView(root, params)
+            fullParams = params; fullManager = manager
         } catch (error: RuntimeException) {
             android.util.Log.w("DshIsland", "full screen failed", error)
-            fullView = null; fullImage = null
+            fullView = null; fullImage = null; fullVideo = null
             return
         }
+        CoworkConnection.islandFullScreen.value = true
         // The colour frame is four thin non-touchable windows (pure decoration, not secure: they show no content).
         edgeGlow = EdgeGlow(context, density).also { it.show(manager, real.width(), real.height(), 120f, overlayWindowType()) }
         syncLive(true)
-        // Windows of one type stack in insertion order: put the island back above the new full-screen window.
+        // Fold the expanded island away at once: it must not sit on top of the full-screen picture.
+        panel?.let { island -> if (expanded) { expanded = false; island.collapseNow() } }
+        raiseIsland()
+        syncTyping()
+    }
+
+    /** Fresh parameters for the full-screen window. A window re-added through another manager must not carry the token
+     *  the previous manager wrote into its parameters, so moving between layers always builds new ones. */
+    private fun fullScreenParams(width: Int, height: Int, type: Int, focusable: Boolean) = WindowManager.LayoutParams(
+        width, height, type,
+        (if (focusable) 0 else WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) or WindowManager.LayoutParams.FLAG_SECURE or
+            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+        PixelFormat.OPAQUE,
+    ).apply {
+        gravity = Gravity.TOP or Gravity.START
+        title = "DSH 任务岛全屏预览"
+        preferredRefreshRate = 120f // follow the highest rate the panel supports
+        if (Build.VERSION.SDK_INT >= 28) layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        softInputMode = if (focusable) WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
+            else WindowManager.LayoutParams.SOFT_INPUT_STATE_UNSPECIFIED
+    }
+
+    /** Windows of one type stack in insertion order: put the island back above a newly added full-screen window. */
+    private fun raiseIsland() {
+        val manager = windowManager ?: return
         panel?.let { island ->
-            // Fold the expanded island away at once: it must not sit on top of the full-screen picture.
-            if (expanded) { expanded = false; island.collapseNow() }
             val params = island.layoutParams
             if (params != null) runCatching {
                 manager.removeViewImmediate(island)
@@ -582,12 +635,130 @@ class IslandOverlayService : Service() {
 
     private fun closeFullScreen() {
         val view = fullView ?: return
-        fullView = null; fullImage = null
+        stopTyping(reattach = false)
+        fullView = null; fullImage = null; fullVideo = null
         edgeGlow?.hide()
         edgeGlow = null
-        runCatching { windowManager?.removeViewImmediate(view) }
+        runCatching { (fullManager ?: windowManager)?.removeViewImmediate(view) }
+        fullManager = null; fullParams = null; keyboardDismissed = false
+        CoworkConnection.islandFullScreen.value = false
         if (liveView == null) syncLive(false)
         panel?.interventionMode = false
+    }
+
+    /** Typing follows the broker: a focused input field on the owned display while the person is in control. */
+    private fun syncTyping() {
+        val root = fullView ?: return
+        val field = CoworkConnection.field.value?.takeIf { CoworkConnection.status.value.optBoolean("userControl") }
+        if (field == null) { keyboardDismissed = false; stopTyping(); return }
+        if (keyboardDismissed) { stopTyping(); return }
+        if (!typing && !startTyping(root)) return
+        keyboard?.remote = field
+        typingBar?.findViewWithTag<TextView>(TYPING_LABEL)?.text =
+            if (field.password) "正在输入副屏的密码框：用本机键盘输入，AI 看不到" else "正在输入副屏的输入框：用本机键盘输入"
+        updateShift()
+    }
+
+    /** The ordinary overlay layer, for the full-screen picture while the keyboard has to be drawn above it. */
+    private fun typingManager(): WindowManager? = typingManager ?: run {
+        val display = getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY) ?: return null
+        val displayContext = createDisplayContext(display)
+        val context = if (Build.VERSION.SDK_INT >= 30) displayContext.createWindowContext(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null) else displayContext
+        context.getSystemService(WindowManager::class.java)?.also { typingManager = it }
+    }
+
+    private fun startTyping(root: FrameLayout): Boolean {
+        val context = overlayContext ?: return false
+        val params = fullParams ?: return false
+        val current = fullManager ?: return false
+        try {
+            if (accessibilityLayer) {
+                val target = typingManager() ?: error("no overlay window manager")
+                current.removeViewImmediate(root)
+                val typingParams = fullScreenParams(params.width, params.height, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, focusable = true)
+                try { target.addView(root, typingParams); fullParams = typingParams; fullManager = target }
+                catch (error: RuntimeException) {
+                    val back = fullScreenParams(params.width, params.height, overlayWindowType(), focusable = false)
+                    current.addView(root, back); fullParams = back; raiseIsland(); throw error
+                }
+            } else {
+                params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+                params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
+                current.updateViewLayout(root, params)
+            }
+        } catch (error: RuntimeException) {
+            android.util.Log.w("DshIsland", "typing window failed", error)
+            fullParams?.let { it.flags = it.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE; it.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_UNSPECIFIED }
+            keyboardDismissed = true
+            return false
+        }
+        val label = TextView(context).apply { tag = TYPING_LABEL; textSize = 13f; setTextColor(Color.WHITE) }
+        val preview = TextView(context).apply { textSize = 15f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD }
+        val proxy = RemoteKeyboardView(context,
+            send = { key -> when (key) { is RemoteKeystroke.Text -> CoworkConnection.sendText(key.text); is RemoteKeystroke.Key -> CoworkConnection.sendKey(key.key) } },
+            refused = { label.text = "密码框只能输入英文字母、数字和符号" },
+            composing = { preview.text = it })
+        proxy.setOnKeyListener { _, code, event ->
+            if (code == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) { keyboardDismissed = true; syncTyping(); true } else false
+        }
+        val texts = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; addView(label); addView(preview) }
+        val bar = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; isClickable = true
+            setPadding(dp(14), dp(8), dp(8), dp(8))
+            background = GradientDrawable().apply { setColor(Color.argb(230, 28, 28, 30)); cornerRadius = dp(18).toFloat() }
+            addView(texts, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(proxy, LinearLayout.LayoutParams(1, 1))
+            addView(pillButton("收起键盘") { keyboardDismissed = true; syncTyping() }, LinearLayout.LayoutParams(dp(96), dp(40)))
+        }
+        val statusId = resources.getIdentifier("status_bar_height", "dimen", "android")
+        val statusBar = if (statusId != 0) resources.getDimensionPixelSize(statusId) else dp(32)
+        root.addView(bar, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP).apply {
+            topMargin = statusBar + dp(60); marginStart = dp(12); marginEnd = dp(12)
+        })
+        typingBar = bar; keyboard = proxy; typing = true; imeShown = false
+        proxy.post { proxy.showKeyboard() }
+        root.viewTreeObserver.addOnWindowFocusChangeListener(typingFocus)
+        return true
+    }
+
+    /** Leave typing; [reattach] puts the picture back on the island's layer and makes it unfocusable again. */
+    private fun stopTyping(reattach: Boolean = true) {
+        if (!typing) return
+        typing = false; imeShown = false; imeBottom = 0
+        fullView?.viewTreeObserver?.removeOnWindowFocusChangeListener(typingFocus)
+        keyboard?.hideKeyboard()
+        typingBar?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        typingBar = null; keyboard = null
+        updateShift()
+        val root = fullView ?: return
+        val params = fullParams ?: return
+        if (!reattach) return
+        runCatching {
+            if (accessibilityLayer && fullManager !== windowManager) {
+                fullManager?.removeViewImmediate(root)
+                val back = fullScreenParams(params.width, params.height, overlayWindowType(), focusable = false)
+                windowManager?.addView(root, back); fullParams = back; fullManager = windowManager
+                raiseIsland()
+            } else {
+                params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_UNSPECIFIED
+                fullManager?.updateViewLayout(root, params)
+            }
+        }.onFailure { android.util.Log.w("DshIsland", "leaving typing failed", it) }
+    }
+
+    /** Keep the focused field above the keyboard by moving the picture up; touches follow the same offset. */
+    private fun updateShift() {
+        val root = fullView
+        val field = CoworkConnection.field.value
+        val info = LiveVideo.info.value
+        var shift = 0f
+        if (typing && root != null && field?.bounds != null && info != null && imeBottom > 0 && root.height > 0) {
+            val bottom = field.bounds[3] / info.height.toFloat() * root.height
+            shift = (bottom + dp(16) - (root.height - imeBottom)).coerceIn(0f, root.height * 0.6f)
+        }
+        contentShift = shift
+        fullImage?.translationY = -shift; fullVideo?.translationY = -shift
     }
     private fun row(context: Context) = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
     private fun cell() = LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(3); marginEnd = dp(3) }
@@ -681,6 +852,7 @@ class IslandOverlayService : Service() {
         /** The full-screen picture must out-rank the island preview as the decoder's output. */
         private const val FULLSCREEN_SINK_PRIORITY = 10
         private const val EDGE_GESTURE_DP = 24
+        private const val TYPING_LABEL = "typing-label"
         private const val GESTURE_REACH_DP = 56
         const val EXTRA_TASK_ID = "dev.dsh.pocket.island.TASK_ID"
         const val EXTRA_REVISION = "dev.dsh.pocket.island.REVISION"

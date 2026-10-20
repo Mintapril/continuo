@@ -12,9 +12,10 @@ import java.util.ArrayDeque;
 /** GPU-to-hardware-encoder path for the live view. The virtual display composes straight into the encoder's
  *  input Surface (no CPU pixel copy, no JPEG); the CPU only moves the already-compressed H.264 access units.
  *  Messages handed to the socket are [type:1][payload]:
- *  CONFIG = SPS/PPS (Annex B), KEY/DELTA = [pts us:8 big-endian][access unit], INFO = JSON, STILL = PNG. */
+ *  CONFIG = SPS/PPS (Annex B), KEY/DELTA = [pts us:8 big-endian][access unit], INFO = JSON, STILL = PNG,
+ *  FIELD = JSON metadata of the focused input field while the user controls the screen (never its text). */
 final class LiveStream implements AutoCloseable {
-    static final int INFO = 1, CONFIG = 2, KEY = 3, DELTA = 4, STILL = 5;
+    static final int INFO = 1, CONFIG = 2, KEY = 3, DELTA = 4, STILL = 5, FIELD = 6;
     private static final int MAX_QUEUE = 90;
     private final int width, height, fps;
     private final ArrayDeque<byte[]> queue = new ArrayDeque<>();

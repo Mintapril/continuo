@@ -43,7 +43,7 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.util.Calendar
 
-internal enum class Screen { HOME, TASKS, SETTINGS, CONNECTION, COWORK, APPEARANCE, RUNTIME, MEMORY, ABOUT }
+internal enum class Screen { HOME, TASKS, AUTOMATION, SETTINGS, CONNECTION, COWORK, APPEARANCE, RUNTIME, MEMORY, ABOUT }
 private val SETTINGS_PAGES = setOf(Screen.CONNECTION, Screen.COWORK, Screen.APPEARANCE, Screen.RUNTIME, Screen.MEMORY, Screen.ABOUT)
 
 @Composable fun PocketApp(vm: PocketViewModel, open: String? = null, consumeOpen: () -> Unit = {}) {
@@ -64,6 +64,7 @@ private val SETTINGS_PAGES = setOf(Screen.CONNECTION, Screen.COWORK, Screen.APPE
                 newTask = { mode -> vm.changeMode(mode); go(Screen.HOME) },
                 tasks = { mode -> vm.changeMode(mode); go(Screen.TASKS) },
                 open = { id -> vm.openSession(id); scope.launch { drawer.close() } },
+                automation = { go(Screen.AUTOMATION) },
                 settings = { go(Screen.SETTINGS) })
         }) {
             Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -72,6 +73,7 @@ private val SETTINGS_PAGES = setOf(Screen.CONNECTION, Screen.COWORK, Screen.APPE
                     else when (target) {
                         Screen.HOME -> Home(vm, openDrawer) { screen = Screen.TASKS }
                         Screen.TASKS -> Tasks(vm, openDrawer) { screen = Screen.HOME }
+                        Screen.AUTOMATION -> AutomationScreen(vm, openDrawer) { text -> vm.draftAutomation(text); screen = Screen.HOME }
                         Screen.SETTINGS -> Settings(vm, openDrawer) { screen = it }
                         Screen.CONNECTION -> ConnectionSettings(vm) { screen = Screen.SETTINGS }
                         Screen.COWORK -> CoworkSettings(vm) { screen = Screen.SETTINGS }
@@ -97,7 +99,7 @@ private val SETTINGS_PAGES = setOf(Screen.CONNECTION, Screen.COWORK, Screen.APPE
 
 // ───────────────────────────── Drawer ─────────────────────────────
 
-@Composable private fun Drawer(vm: PocketViewModel, screen: Screen, newTask: (TaskMode) -> Unit, tasks: (TaskMode) -> Unit, open: (String) -> Unit, settings: () -> Unit) {
+@Composable private fun Drawer(vm: PocketViewModel, screen: Screen, newTask: (TaskMode) -> Unit, tasks: (TaskMode) -> Unit, open: (String) -> Unit, automation: () -> Unit, settings: () -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
     var menu by remember { mutableStateOf<JSONObject?>(null) }
     val pendingAgents = vm.pending.map { it.text("agentId") }.toSet()
@@ -119,6 +121,8 @@ private val SETTINGS_PAGES = setOf(Screen.CONNECTION, Screen.COWORK, Screen.APPE
             DrawerItem("Cowork", Glyph.Cowork, selected = screen == Screen.TASKS && vm.mode == TaskMode.COWORK && vm.selected == null,
                 badge = if (!vm.modeAvailable(TaskMode.COWORK)) "未配置" else null) { tasks(TaskMode.COWORK) }
             DrawerItem("Code", Glyph.Code, selected = screen == Screen.TASKS && vm.mode == TaskMode.CODE && vm.selected == null) { tasks(TaskMode.CODE) }
+            DrawerItem("自动化", Glyph.Clock, selected = screen == Screen.AUTOMATION && vm.selected == null,
+                badge = when (vm.schedules.enabled) { true -> vm.schedules.tasks.count { it.text("status") == "active" }.takeIf { it > 0 }?.toString(); false -> "未启用"; null -> null }) { automation() }
             Text("最近", Modifier.padding(start = 28.dp, top = 18.dp, bottom = 6.dp), style = MaterialTheme.typography.labelMedium, color = Pocket.muted)
             LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)) {
                 items(recents, key = { it.text("sessionId") }) { row ->

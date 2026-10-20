@@ -330,8 +330,11 @@ class Transcript {
                 val role = type.substringBefore('/')
                 val parts = content(message.requiredArray("content"))
                 val source = message.optJSONObject("source")
+                // A due automation task arrives as a user message framed by the host; show what was scheduled.
+                val reminder = if (role == "user" && source?.string("kind") == "schedule") ScheduleFormat.reminderPrompts(parts.text) else null
                 val title = when {
                     body.optBoolean("interrupted") -> "Assistant (interrupted)"
+                    reminder != null -> "自动化任务"
                     role == "system" -> "System instructions"
                     role == "developer" -> "Session update"
                     role == "user" && source?.string("form") == "notice" -> source.string("summary")
@@ -346,8 +349,8 @@ class Transcript {
                 // Injected context is not a message typed by the human. Keep it expandable.
                 // Plugin nudges and compaction checkpoints are written by the runtime, not by the person using the app.
                 val contextRecord = role == "user" && (source?.string("form") in setOf("instructions", "catalog", "snapshot", "notice", "recall") || injectedKind(source))
-                TranscriptRow(key, if (contextRecord) "notice" else role, if (contextRecord) title.ifBlank { "会话上下文" } else title, parts.text, parts.reasoning,
-                    joinDetail(parts.detail, if (contextRecord) "Source: ${json(source)}" else "", if (body.optBoolean("interrupted")) "Interrupted response" else "",
+                TranscriptRow(key, if (contextRecord) "notice" else role, if (contextRecord) title.ifBlank { "会话上下文" } else title, reminder?.joinToString("\n\n") ?: parts.text, parts.reasoning,
+                    joinDetail(parts.detail, if (contextRecord) "Source: ${json(source)}" else "", if (reminder != null) parts.text else "", if (body.optBoolean("interrupted")) "Interrupted response" else "",
                         body.optJSONObject("usage")?.let { "Usage: ${json(it)}" }.orEmpty()),
                     images = parts.images)
             }

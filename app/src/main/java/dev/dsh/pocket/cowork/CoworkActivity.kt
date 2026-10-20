@@ -23,6 +23,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.dsh.pocket.island.*
 import dev.dsh.pocket.ui.PocketTheme
@@ -98,6 +105,15 @@ class CoworkActivity : ComponentActivity() {
                         val liveFrame by CoworkConnection.live.collectAsState()
                         DisposableEffect(Unit){CoworkConnection.acquireLive();onDispose{CoworkConnection.releaseLive()}}
                         var typed by remember { mutableStateOf("") }
+                        // The owned display shows no keyboard (IME policy HIDE): when one of its fields takes focus, this box
+                        // takes the phone's keyboard, unless the island's full-screen takeover is up and owns it.
+                        val remoteField by CoworkConnection.field.collectAsState()
+                        val islandOwnsKeyboard by CoworkConnection.islandFullScreen.collectAsState()
+                        val typedFocus=remember{FocusRequester()}
+                        val softKeyboard=LocalSoftwareKeyboardController.current
+                        val secret=remoteField?.password==true
+                        LaunchedEffect(userControl){if(!userControl)typed=""}
+                        LaunchedEffect(remoteField,userControl,islandOwnsKeyboard){if(userControl&&remoteField!=null&&!islandOwnsKeyboard){runCatching{typedFocus.requestFocus()};softKeyboard?.show()}}
                         var box by remember { mutableStateOf(IntSize.Zero) }
                         Card { Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
                             Text("副屏实时画面",style=MaterialTheme.typography.titleMedium)
@@ -134,8 +150,15 @@ class CoworkActivity : ComponentActivity() {
                                     OutlinedButton(onClick={CoworkConnection.sendKey("ENTER")}){Text("回车")}
                                     OutlinedButton(onClick={CoworkConnection.sendKey("DEL")}){Text("删除")}
                                 }
-                                OutlinedTextField(typed,{typed=it.take(200)},label={Text("输入文字（先点画面中的输入框）")},modifier=Modifier.fillMaxWidth())
-                                OutlinedButton(onClick={if(typed.isNotEmpty()){CoworkConnection.sendText(typed);typed=""}},enabled=typed.isNotEmpty()){Text("发送到副屏")}
+                                OutlinedTextField(typed,{typed=it.take(200)},label={Text(when{secret->"输入密码（副屏密码框已选中，AI 看不到）";remoteField!=null->"输入文字（副屏输入框已选中）";else->"输入文字（先点画面中的输入框）"})},
+                                    visualTransformation=if(secret)PasswordVisualTransformation() else VisualTransformation.None,
+                                    keyboardOptions=if(secret)KeyboardOptions(keyboardType=KeyboardType.Password,autoCorrectEnabled=false) else KeyboardOptions.Default,
+                                    modifier=Modifier.fillMaxWidth().focusRequester(typedFocus))
+                                OutlinedButton(onClick={
+                                    val keys=RemoteTyping.commit(typed,secret)
+                                    if(keys==null)error="密码框只能输入英文字母、数字和符号"
+                                    else{keys.forEach{when(it){is RemoteKeystroke.Text->CoworkConnection.sendText(it.text);is RemoteKeystroke.Key->CoworkConnection.sendKey(it.key)}};typed=""}
+                                },enabled=typed.isNotEmpty()){Text("发送到副屏")}
                                 Text("密码等敏感内容由你自己输入；AI 在接管期间看不到画面也无法操作。",style=MaterialTheme.typography.bodySmall)
                             }
                         } }

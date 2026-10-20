@@ -17,6 +17,21 @@ class BrokerSourceTest {
         return root.listFiles { f -> f.extension == "java" }.orEmpty().sortedBy { it.name }
     }
 
+    /** Takeover typing: the owned display keeps IME policy HIDE (the viewer raises this phone's keyboard instead), the
+     *  focused-field report is metadata only, and a password field never takes a semantic (masked text + new) write. */
+    @Test fun takeoverTypingKeepsTheImeHiddenAndNeverReadsFieldText() {
+        val workspace = File(root, "ProfileWorkspace.java").readText()
+        assertTrue(workspace.contains("setDisplayImePolicy\",int.class,int.class).invoke(wm,displayId(),2)"))
+        val structure = File(root, "ProfileStructure.java").readText()
+        val focused = structure.substringAfter("synchronized JSONObject focusedField(").substringBefore("synchronized void disconnect(")
+        assertTrue(focused.contains("isPassword()"))
+        assertTrue("focused-field report must not read or write text", !focused.contains("getText(") && !focused.contains("ACTION_SET_TEXT"))
+        val append = structure.substringAfter("synchronized void appendFocused(").substringBefore("ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE")
+        assertTrue("appendFocused must refuse password fields before writing", append.contains("if(focus.isPassword())ActionGate.fail(\"SECRET_INPUT\""))
+        val broker = File(root, "BrokerMain.java").readText()
+        assertTrue(broker.contains("JSONObject field=takeover.active()?workspace.userField():null"))
+    }
+
     @Test fun noDuplicateSetElements() {
         val pattern = Regex("""\b(?:Set|Map)\.of\s*\(([^;]*?)\)\s*;""", RegexOption.DOT_MATCHES_ALL)
         val problems = ArrayList<String>()

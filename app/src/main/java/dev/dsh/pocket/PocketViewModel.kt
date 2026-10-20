@@ -187,6 +187,17 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     fun memoryPreviewReclaim() = task { memoryReclaim = memory.reclaim(dryRun = true) }
     fun memoryReclaimNow() = task { memoryReclaim = memory.reclaim(dryRun = false); memory.refresh() }
     fun clearMemorySheets() { memoryInjection = null; memoryReclaim = null }
+
+    // ── DSH 自动化任务（dsh-schedule）──────────────────────────────────────
+    // The host owns the tasks and delivers each due one back into its session; the app switches the bundle on/off,
+    // lists, edits and deletes. Creating stays with the model (no remote create), so "new" drafts a Cowork request.
+    val schedules = ScheduleCenter(api)
+    fun schedulesRefresh() = task { schedules.refresh() }
+    fun schedulesEnable(on: Boolean) = task { notice = schedules.setEnabled(on) }
+    fun scheduleUpdate(entry: JSONObject, title: String?, prompt: String?, change: JSONObject?, saved: () -> Unit) =
+        task { schedules.update(entry, title, prompt, change); notice = "已保存"; saved() }
+    fun scheduleDelete(entry: JSONObject) = task { schedules.delete(entry); notice = "任务已删除" }
+    fun draftAutomation(text: String) { if (selected != null) leaveChat(); changeMode(TaskMode.COWORK); updateDraft(text) }
     fun changeMode(value: TaskMode) {
         mode = value; prefs.edit().putString("mode", value.name).apply()
         if (selected == null) restoreComposer(homeKey(value))
@@ -257,6 +268,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
                             val args = frame.optJSONArray("args") ?: JSONArray()
                             if (event == "api-session/error") notice = args.optString(1, "会话发生错误")
                             if (event.startsWith("api-session/")) refreshSessions()
+                            if (event == "schedule/changed") schedules.reload()
                         }
                     }
                 }

@@ -32,6 +32,8 @@ foreach ($entry in $classpath) { if (!(Test-Path -LiteralPath $entry)) { throw "
     dev.dsh.pocket.data.ProjectionStateTest `
     dev.dsh.pocket.data.RpcRejectedExceptionTest `
     dev.dsh.pocket.data.ModesTest `
+    dev.dsh.pocket.data.ScheduleFormatTest `
+    dev.dsh.pocket.cowork.RemoteTypingTest `
     dev.dsh.pocket.cowork.ActionGateTest `
     dev.dsh.pocket.cowork.ManagedProfileScopeTest `
     dev.dsh.pocket.cowork.ProfileWindowPolicyTest `

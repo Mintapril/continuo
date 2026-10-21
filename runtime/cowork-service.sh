@@ -29,5 +29,18 @@ case "${1:-status}" in
     ;;
   controller-token) cat "$BASE/controller.token";;
   agent-token) cat "$BASE/agent.token";;
+  notify-token)
+    # Shared secret of Continuo's notification webhook (cowork-plugin/src/notify.mjs reads it inside the rootfs).
+    # Created on first use; the umask above keeps it 0600. Separate from the agent and controller tokens.
+    NOTIFY=/data/local/dsh-native/rootfs/root/.config/dsh/cowork-notify.token
+    [ -d "${NOTIFY%/*}" ] || { echo 'DSH config directory missing'; exit 1; }
+    if [ ! -s "$NOTIFY" ]; then
+      TOKEN=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+      case "$TOKEN" in *[!0-9a-f]*|'') echo 'Cannot create notification token'; exit 1;; esac
+      [ "${#TOKEN}" -eq 64 ] || { echo 'Cannot create notification token'; exit 1; }
+      printf '%s' "$TOKEN" > "$NOTIFY.new"
+      mv "$NOTIFY.new" "$NOTIFY"
+    fi
+    cat "$NOTIFY";;
   *) echo 'Unsupported lifecycle action'; exit 2;;
 esac

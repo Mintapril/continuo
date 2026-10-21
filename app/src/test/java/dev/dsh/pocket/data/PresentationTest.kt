@@ -35,6 +35,50 @@ class PresentationTest {
         assertEquals(listOf("t1", "t2"), grouped[0].rows.map { it.key })
         assertEquals(rows, grouped.flatMap { it.rows })
     }
+    private fun turn(prefix: String) = listOf(
+        TranscriptRow("$prefix-u", "user", text = "do it"),
+        TranscriptRow("$prefix-a1", "assistant", text = "let me look", reasoning = "plan"),
+        TranscriptRow("$prefix-t1", "tool"), TranscriptRow("$prefix-t2", "tool"),
+        TranscriptRow("$prefix-n", "notice"),
+        TranscriptRow("$prefix-a2", "assistant", text = "done", reasoning = "check"))
+
+    @Test fun aFinishedTurnKeepsOnlyTheQuestionAndTheAnswer() {
+        val folded = foldedEntries(turn("x"), running = false)
+        assertEquals(listOf("message", "process", "message"), folded.map { it.kind })
+        assertEquals(listOf("x-a1", "x-t1", "x-t2", "x-n", "x-a2"), folded[1].rows.map { it.key.removeSuffix(":thinking") })
+        val answer = folded[2].rows.single()
+        assertEquals("done", answer.text); assertEquals("", answer.reasoning)
+        assertEquals("check", folded[1].rows.last().reasoning); assertEquals("", folded[1].rows.last().text)
+    }
+    @Test fun theTurnStillRunningStaysUnfolded() {
+        val rows = turn("a") + turn("b")
+        val folded = foldedEntries(rows, running = true)
+        assertEquals(listOf("message", "process", "message", "message", "message", "tools", "activity", "message"), folded.map { it.kind })
+        assertEquals(chatEntries(turn("b")), folded.drop(3))
+    }
+    @Test fun failuresStayVisibleAndTheLastAnswerWins() {
+        val rows = listOf(TranscriptRow("u", "user", text = "q"), TranscriptRow("t", "tool"),
+            TranscriptRow("bad", "notice", error = true), TranscriptRow("a1", "assistant", text = "first"),
+            TranscriptRow("t2", "tool"), TranscriptRow("a2", "assistant", text = "last"))
+        val folded = foldedEntries(rows, running = false)
+        assertEquals(listOf("u", "process:t", "bad", "a2"), folded.map { it.key })
+        assertEquals(listOf("t", "a1", "t2"), folded[1].rows.map { it.key })
+    }
+    @Test fun anAnswerWithOnlyItsOwnThinkingIsNotFoldedAgain() {
+        val rows = listOf(TranscriptRow("u", "user", text = "hi"), TranscriptRow("a", "assistant", text = "hello", reasoning = "greet"))
+        assertEquals(chatEntries(rows), foldedEntries(rows, running = false))
+    }
+    @Test fun aTurnWithoutAnAnswerFoldsItsStepsAndKeepsTheQuestion() {
+        val rows = listOf(TranscriptRow("u", "user", text = "q"), TranscriptRow("t", "tool"), TranscriptRow("t2", "tool"))
+        val folded = foldedEntries(rows, running = false)
+        assertEquals(listOf("message", "process"), folded.map { it.kind })
+        assertEquals(listOf("t", "t2"), folded[1].rows.map { it.key })
+    }
+    @Test fun foldingNeverDropsARow() {
+        val rows = turn("a") + turn("b") + listOf(TranscriptRow("c-u", "user", text = "tail"))
+        val kept = foldedEntries(rows, running = false).flatMap { it.rows }.map { it.key.removeSuffix(":thinking") }
+        assertEquals(rows.map { it.key }.toSet(), kept.toSet())
+    }
     @Test fun toolArgumentsNeverHideOutput() {
         val detail = transcriptDetail(TranscriptRow("tool", "tool", text = "actual output", detail = "arguments"))
         assertTrue(detail.contains("actual output")); assertTrue(detail.contains("arguments"))

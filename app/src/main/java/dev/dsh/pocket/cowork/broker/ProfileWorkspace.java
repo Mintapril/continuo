@@ -51,6 +51,7 @@ public final class ProfileWorkspace implements AutoCloseable {
         Class<?> at=Class.forName("android.app.ActivityThread");Object thread=at.getMethod("systemMain").invoke(null);
         context=(Context)at.getMethod("getSystemContext").invoke(thread);
         sizeFromMainScreen();profile=new ProfileContext(context);launchers=new LauncherHider(profile);tree=new ProfileStructure(profile);windows=new WindowOwnershipProbe();try{windows.awaitInitial();}catch(IllegalStateException e){System.err.println("window snapshot not yet available at start; every operation re-checks it");}drain.start();drainHandler=new Handler(drain.getLooper());watchInstalls();
+        try{notifications=new NotificationGrant(profile);}catch(Exception e){System.err.println("notification grant unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
         changedPackages(); // baseline of the 1 Hz change read, taken before the start-up sweep below
         // Drift repair of the launcher entries (e.g. an app installed back before this start): housekeeping repairs it only
         // while no owned display exists, and the standing display is created right after this constructor.
@@ -60,6 +61,9 @@ public final class ProfileWorkspace implements AutoCloseable {
     private volatile BackgroundPopupGate popups;
     /** See {@link BackgroundPopupGate}: drift repair from the watchdog; new installs are handled by the install watch. */
     public void closeBackgroundPopups(){BackgroundPopupGate gate=popups;if(gate!=null)gate.enforce();}
+    private volatile NotificationGrant notifications;
+    /** See {@link NotificationGrant}: only for the packages a change read names, so only apps installed from now on. */
+    private void allowNotifications(List<String> changed){NotificationGrant gate=notifications;if(gate!=null)gate.allow(changed);}
     private void sizeFromMainScreen(){
         try{
             android.util.DisplayMetrics m=new android.util.DisplayMetrics();
@@ -846,15 +850,16 @@ public final class ProfileWorkspace implements AutoCloseable {
      * last sweep. Runs at 1 Hz and while an owned display is open, so an install into the profile has no window in
      * which the personal launcher can put an icon of it on the home screen. A package change of the profile since the
      * previous call (also one the install watch does not see) hides again the entries we hid of that package that are
-     * visible again (an app uninstalled from the profile and installed back) and closes background pop-ups at once
-     * instead of at the next drift repair. Takes only the launcher-hider and pop-up gate locks. */
+     * visible again (an app uninstalled from the profile and installed back), allows notifications of an app it newly
+     * names ({@link NotificationGrant}) and closes background pop-ups at once instead of at the next drift repair. Takes
+     * only the launcher-hider, notification grant and pop-up gate locks. */
     public void hideNewInstalls(){sweepInstalls(false);}
     /** {@link #hideNewInstalls}, from the watchdog and the install watch. {@code installed}: an install session of the
      *  profile just finished, so background pop-ups are closed even when the change read fails. */
     private void sweepInstalls(boolean installed){
         try{launchers.hideUnseen();}catch(Exception e){System.err.println("launcher install sweep failed: "+e.getClass().getSimpleName());}
         List<String> changed=changedPackages();
-        if(changed!=null)launchers.hideVisibleAgain(changed);
+        if(changed!=null){launchers.hideVisibleAgain(changed);allowNotifications(changed);}
         if(installed||changed!=null)closeBackgroundPopups();
     }
     private final InstallWatch.Changes changes=new InstallWatch.Changes();

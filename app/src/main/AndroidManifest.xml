@@ -35,5 +35,12 @@
             </intent-filter>
             <meta-data android:name="android.accessibilityservice" android:resource="@xml/island_accessibility" />
         </service>
+        <service android:name=".notify.NotifyListener" android:exported="true"
+            android:label="Continuo 通知触发"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

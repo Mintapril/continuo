@@ -43,8 +43,8 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.util.Calendar
 
-internal enum class Screen { HOME, TASKS, AUTOMATION, SETTINGS, CONNECTION, COWORK, APPEARANCE, RUNTIME, MEMORY, ABOUT }
-private val SETTINGS_PAGES = setOf(Screen.CONNECTION, Screen.COWORK, Screen.APPEARANCE, Screen.RUNTIME, Screen.MEMORY, Screen.ABOUT)
+internal enum class Screen { HOME, TASKS, AUTOMATION, SETTINGS, CONNECTION, COWORK, NOTIFY, APPEARANCE, RUNTIME, MEMORY, ABOUT }
+private val SETTINGS_PAGES = setOf(Screen.CONNECTION, Screen.COWORK, Screen.NOTIFY, Screen.APPEARANCE, Screen.RUNTIME, Screen.MEMORY, Screen.ABOUT)
 
 @Composable fun PocketApp(vm: PocketViewModel, open: String? = null, consumeOpen: () -> Unit = {}) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
@@ -77,6 +77,7 @@ private val SETTINGS_PAGES = setOf(Screen.CONNECTION, Screen.COWORK, Screen.APPE
                         Screen.SETTINGS -> Settings(vm, openDrawer) { screen = it }
                         Screen.CONNECTION -> ConnectionSettings(vm) { screen = Screen.SETTINGS }
                         Screen.COWORK -> CoworkSettings(vm) { screen = Screen.SETTINGS }
+                        Screen.NOTIFY -> NotifySettings(vm) { screen = Screen.SETTINGS }
                         Screen.APPEARANCE -> AppearanceSettings(vm) { screen = Screen.SETTINGS }
                         Screen.ABOUT -> AboutSettings { screen = Screen.SETTINGS }
                         Screen.RUNTIME -> Runtime(vm) { screen = Screen.SETTINGS }

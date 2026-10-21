@@ -39,6 +39,7 @@ import dev.dsh.pocket.data.TaskMode
 import dev.dsh.pocket.island.IslandAccessibilityService
 import dev.dsh.pocket.island.IslandLayerKeeper
 import dev.dsh.pocket.island.IslandRuntime
+import dev.dsh.pocket.notify.NotifyCenter
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -83,6 +84,9 @@ private fun dshStatus(vm: PocketViewModel) = if (vm.connected) "已连接" else 
     val link by CoworkConnection.connection.collectAsState()
     val island by IslandRuntime.store.snapshots.collectAsState()
     val (executorColor, executorText) = executorSummary(link)
+    val context = LocalContext.current
+    remember { NotifyCenter.init(context) }
+    val notifyOn by NotifyCenter.enabled.collectAsState()
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             CircleButton(Glyph.Menu, "打开菜单", onClick = openDrawer)
@@ -100,6 +104,9 @@ private fun dshStatus(vm: PocketViewModel) = if (vm.connected) "已连接" else 
                     StatusDot(executorColor, pulse = link.connecting); Spacer(Modifier.width(6.dp))
                     Text(if (island.preferences.enabled) "任务岛开" else "任务岛关", style = MaterialTheme.typography.bodyMedium, color = Pocket.muted)
                 })
+                GroupDivider()
+                GroupRow("通知触发", icon = Glyph.Filter, subtitle = if (notifyOn) "已开启：通知经 Jev 判断后唤起 Cowork" else "未开启",
+                    onClick = { navigate(Screen.NOTIFY) })
                 GroupDivider()
                 GroupRow("外观与反馈", icon = Glyph.Palette, value = when (vm.theme) { "light" -> "浅色"; "dark" -> "深色"; else -> "跟随系统" }, onClick = { navigate(Screen.APPEARANCE) })
                 GroupDivider()

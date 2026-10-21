@@ -73,7 +73,8 @@ test('bundle is additive and packages only tested active implementation',async()
   const pkg=JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8'));
   const patch=await fs.readFile(new URL('../cordis.patch.yml',import.meta.url),'utf8');
   assert.equal(pkg.exports['.'],'./src/restricted.mjs');
-  assert.deepEqual(pkg.files.filter(p=>p.startsWith('src/')).sort(),['src/restricted.mjs','src/validation.mjs','src/broker.mjs','src/auth.mjs','src/task-lifecycle.mjs','src/bounded-files.mjs','src/web.mjs','src/gesture-path.mjs'].sort());
+  assert.deepEqual(pkg.files.filter(p=>p.startsWith('src/')).sort(),['src/restricted.mjs','src/validation.mjs','src/broker.mjs','src/auth.mjs','src/task-lifecycle.mjs','src/bounded-files.mjs','src/web.mjs','src/gesture-path.mjs','src/notify.mjs'].sort());
+  assert.equal(pkg.exports['./notify'],'./src/notify.mjs');assert.match(patch,/name: '@deepseek-ai\/dsh-webhook'/);assert.match(patch,/name: '\.\/src\/notify\.mjs'/);
   assert.match(patch,/- insert:/);assert.match(patch,/id: cowork-phone/);
   assert.doesNotMatch(patch,/replace:|remove:|apiKey:|credentials:|provider:|dsh-tool-web/);
   for(const version of Object.values(pkg.peerDependencies))assert.equal(version,'0.2.0-rc.2');
@@ -161,7 +162,7 @@ test('host memory tools (dsh-mneme) are exposed to Cowork; destructive and path-
   const pathed=await execute('memory_save',{memory:{path:'/data/x'}});assert.equal(pathed.isError,true);assert.match(JSON.stringify(pathed),/may not write files/);
   api.remove(agent);lifecycle.dispose();await child.dispose();await preset.dispose();
 });
-test('host automation tools (dsh-schedule) are admitted for the top-level Cowork agent; a reminder-only turn may only list tasks',async()=>{
+test('host automation tools (dsh-schedule) are admitted for the top-level Cowork agent; a turn without a user message may only list tasks',async()=>{
   const ctx=new Context();
   ctx.provide('systemPrompt',{tools:()=>{},section:()=>{},getSectionOrder:()=>0});
   ctx.provide('attachments',{saveImage:async()=>({})});
@@ -190,9 +191,16 @@ test('host automation tools (dsh-schedule) are admitted for the top-level Cowork
   assert.deepEqual(ran,[...SCHEDULE_TOOLS]);
   // A turn only a due reminder started: list, never create, update or delete.
   ran.length=0;turn(2,'schedule','time-context');
-  for(const n of ['schedule_create','schedule_update','schedule_delete']){const r=await execute(n);assert.equal(r.isError,true,n);assert.match(JSON.stringify(r),/scheduled run cannot create, change or delete/);}
+  for(const n of ['schedule_create','schedule_update','schedule_delete']){const r=await execute(n);assert.equal(r.isError,true,n);assert.match(JSON.stringify(r),/unattended run \(a due reminder or a notification\) cannot create, change or delete/);}
   {const r=await execute('schedule_list');assert.equal(r.isError,false,'schedule_list: '+JSON.stringify(r.error));}
   assert.deepEqual(ran,['schedule_list']);
+  // A turn a notification webhook started is just as unattended.
+  ran.length=0;turn(5,'webhook','time-context');
+  for(const n of ['schedule_create','schedule_update','schedule_delete'])assert.equal((await execute(n)).isError,true,n);
+  assert.equal((await execute('schedule_list')).isError,false);assert.deepEqual(ran,['schedule_list']);
+  // No turn/start seen (plugin reloaded mid-turn): the origin is unknown, so writes fail closed.
+  ran.length=0;api.remove(agent);ctx.emit('session/event',agent.session,{type:'agent-preset/selected',data:{agentPreset:'cowork-phone'}});
+  assert.equal((await execute('schedule_create')).isError,true);assert.equal((await execute('schedule_list')).isError,false);assert.deepEqual(ran,['schedule_list']);
   // The user wrote during the reminder's turn: their message may ask for a change.
   ran.length=0;turn(3,'schedule','user');
   assert.equal((await execute('schedule_create')).isError,false);assert.deepEqual(ran,['schedule_create']);

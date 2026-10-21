@@ -64,7 +64,7 @@ import org.json.JSONObject
     val list = rememberLazyListState(); val scope = rememberCoroutineScope()
     var followBottom by remember(vm.selected) { mutableStateOf(true) }
     var lateQuestion by remember(vm.selected) { mutableStateOf<JSONObject?>(null) }
-    val entries = remember(vm.rows) { chatEntries(vm.rows) }
+    val entries = remember(vm.rows, vm.running) { foldedEntries(vm.rows, vm.running) }
     val summary = vm.selectedSummary
     val mode = sessionMode(summary)
     LaunchedEffect(list) { snapshotFlow { list.isScrollInProgress }.collect { moving -> if (moving) followBottom = !list.canScrollForward } }
@@ -107,6 +107,7 @@ import org.json.JSONObject
                 items(entries, key = { it.key }) { entry ->
                     when (entry.kind) {
                         "tools" -> ToolGroup(vm, entry.rows)
+                        "process" -> ProcessGroup(vm, entry.rows)
                         "activity" -> ActivityGroup(entry.rows)
                         else -> MessageRow(vm, entry.rows.single())
                     }
@@ -294,6 +295,34 @@ import org.json.JSONObject
                     color = MaterialTheme.colorScheme.onErrorContainer, maxLines = if (open) Int.MAX_VALUE else 2, overflow = TextOverflow.Ellipsis)
             }
             if (open) SelectionContainer { Text(detail, Modifier.padding(top = 8.dp), fontFamily = Fonts.mono, fontSize = 12.sp, lineHeight = 17.sp, color = MaterialTheme.colorScheme.onErrorContainer) }
+        }
+    }
+}
+
+/** Everything a finished turn did before its answer: thinking, intermediate replies, tool calls, activity records. */
+@Composable private fun ProcessGroup(vm: PocketViewModel, rows: List<TranscriptRow>) {
+    var open by rememberSaveable(rows.first().key) { mutableStateOf(false) }
+    val steps = rows.count { it.role == "tool" }
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.clip(RoundedCornerShape(8.dp)).clickable { open = !open }.padding(vertical = 2.dp, horizontal = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            GlyphIcon(Glyph.Layers, null, size = 15.dp, tint = Pocket.faint); Spacer(Modifier.width(7.dp))
+            Text(if (steps > 0) "处理过程 · $steps 个步骤" else "思考与过程", style = MaterialTheme.typography.labelMedium, color = Pocket.faint)
+            Spacer(Modifier.width(3.dp)); GlyphIcon(if (open) Glyph.ChevronUp else Glyph.ChevronDown, if (open) "收起处理过程" else "展开处理过程", size = 13.dp, tint = Pocket.faint)
+        }
+        AnimatedVisibility(open, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+            Row(Modifier.height(IntrinsicSize.Min).padding(top = 6.dp, start = 4.dp)) {
+                Box(Modifier.width(2.dp).fillMaxHeight().background(Pocket.hairline, CircleShape))
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    chatEntries(rows).forEach { entry ->
+                        when (entry.kind) {
+                            "tools" -> ToolGroup(vm, entry.rows)
+                            "activity" -> ActivityGroup(entry.rows)
+                            else -> MessageRow(vm, entry.rows.single())
+                        }
+                    }
+                }
+            }
         }
     }
 }

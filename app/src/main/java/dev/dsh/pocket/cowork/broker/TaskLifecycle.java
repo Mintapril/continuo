@@ -60,6 +60,11 @@ public final class TaskLifecycle {
         if(active&&command.isEmpty())state=next;
     }
     public synchronized void stopSettled(){if(active)ActionGate.fail("CONTROL_DENIED","Task control must settle first");if(!execution.isEmpty())state="stopped";}
+    /** Whether the AI display is parked (the AI desktop covers it, so no app stays in the foreground there and none
+     *  suppresses its own notifications) when a turn ends: always, except while the turn waits for the user (an
+     *  approval, a pause, a question), whose screen must stay. {@code waitingForUser}: approval pending or paused. */
+    public static boolean parksDisplay(String outcome,boolean waitingForUser){return !waitingForUser&&!"waiting_user".equals(outcome);}
+
     /** Returns true when this call settled the execution. Ending an already settled execution is a no-op. */
     public synchronized boolean end(JSONObject input,boolean waitingForUser){
         exact(input,Set.of("operation","taskId","instanceId","executionId","outcome"));match(input);

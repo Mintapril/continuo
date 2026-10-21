@@ -33,6 +33,7 @@ foreach ($entry in $classpath) { if (!(Test-Path -LiteralPath $entry)) { throw "
     dev.dsh.pocket.data.RpcRejectedExceptionTest `
     dev.dsh.pocket.data.ModesTest `
     dev.dsh.pocket.data.ScheduleFormatTest `
+    dev.dsh.pocket.data.QueuedInputTest `
     dev.dsh.pocket.cowork.RemoteTypingTest `
     dev.dsh.pocket.cowork.ActionGateTest `
     dev.dsh.pocket.cowork.ManagedProfileScopeTest `
@@ -45,6 +46,7 @@ foreach ($entry in $classpath) { if (!(Test-Path -LiteralPath $entry)) { throw "
     dev.dsh.pocket.cowork.InstallWatchTest `
     dev.dsh.pocket.cowork.StrayTaskSweepTest `
     dev.dsh.pocket.cowork.PopupPermissionPolicyTest `
+    dev.dsh.pocket.cowork.NotificationGrantPolicyTest `
     dev.dsh.pocket.cowork.StrokePathTest `
     dev.dsh.pocket.cowork.ScreenZoomTest `
     dev.dsh.pocket.island.IslandExecutionTest `
@@ -57,6 +59,7 @@ foreach ($entry in $classpath) { if (!(Test-Path -LiteralPath $entry)) { throw "
     dev.dsh.pocket.cowork.BatchPolicyTest `
     dev.dsh.pocket.cowork.ActivityLogTest `
     dev.dsh.pocket.island.IslandStoreTest `
-    dev.dsh.pocket.island.IslandPolicyTest
+    dev.dsh.pocket.island.IslandPolicyTest `
+    dev.dsh.pocket.notify.NotifyPolicyTest
 if ($LASTEXITCODE -ne 0) { throw 'JVM regression tests failed' }
 

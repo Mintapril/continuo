@@ -277,8 +277,12 @@ public final class BrokerMain {
         else if(op.equals("end")){
             // Native pause/approval is authoritative; terminal reporting never approves a phone action.
             boolean pending=approvals.pending()!=null;
-            if(tasks.end(a,pending||gate.owner()!=null&&gate.paused())){
-                if(!pending)closeWorkspace();event("task.end",tasks.state());
+            boolean waiting=pending||gate.owner()!=null&&gate.paused();
+            if(tasks.end(a,waiting)){
+                // A finished turn leaves no app in the foreground of the AI display (an app left there counts as visible
+                // and stops posting notifications): the AI desktop covers it, as after phone.stop.
+                if(!pending){if(TaskLifecycle.parksDisplay(a.optString("outcome"),waiting))clearDisplay();else closeWorkspace();}
+                event("task.end",tasks.state());
             }
         }else if(op.equals("ack")){
             if(tasks.acknowledge(a)){closeWorkspace();event("task.control-settled",tasks.state());}

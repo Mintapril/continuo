@@ -13,6 +13,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.dsh.pocket.data.*
+import dev.dsh.pocket.notify.NotifyWire.JEV_CREDENTIAL
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
@@ -198,6 +199,20 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         task { schedules.update(entry, title, prompt, change); notice = "已保存"; saved() }
     fun scheduleDelete(entry: JSONObject) = task { schedules.delete(entry); notice = "任务已删除" }
     fun draftAutomation(text: String) { if (selected != null) leaveChat(); changeMode(TaskMode.COWORK); updateDraft(text) }
+
+    // ── 通知触发的 Jev 判断 ──────────────────────────────────────────────
+    // The Cowork plugin calls Jev with a key from DSH's own credential store; the app only hands the key over once
+    // (credentials/set) and asks whether one is configured. Provider API keys stay inside DSH.
+    var jevConfigured by mutableStateOf<Boolean?>(null); private set
+    fun jevRefresh() = task {
+        val info = api.rpc("credentials/describe", obj("refs" to JSONArray().put(JEV_CREDENTIAL))) as? JSONObject
+        jevConfigured = info?.optJSONObject(JEV_CREDENTIAL)?.optBoolean("configured")
+    }
+    fun jevSave(key: String) = task {
+        require(key.isNotBlank() && key.trim().length <= 512 && key.trim().none { it.isWhitespace() }) { "密钥格式不正确" }
+        api.rpc("credentials/set", obj("ref" to JEV_CREDENTIAL, "value" to key.trim())); notice = "Jev 密钥已保存到 DSH"; jevRefresh()
+    }
+    fun jevClear() = task { api.rpc("credentials/unset", obj("ref" to JEV_CREDENTIAL)); notice = "Jev 密钥已从 DSH 移除"; jevRefresh() }
     fun changeMode(value: TaskMode) {
         mode = value; prefs.edit().putString("mode", value.name).apply()
         if (selected == null) restoreComposer(homeKey(value))
@@ -517,7 +532,10 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
                     if (a.mediaType in listOf("image/png", "image/jpeg", "image/webp", "image/gif")) content.put(obj("type" to "image", "mediaType" to a.mediaType, "data" to data, "name" to a.name))
                     else { val receipt = api.rpc("fileUploads/upload", obj("agentId" to id, "request" to obj("data" to data, "name" to a.name))) as JSONObject; content.put(obj("type" to "file", "receiptId" to receipt.getString("receiptId"))) }
                 }
-                obj("requestId" to UUID.randomUUID().toString(), "sessionId" to id, "mode" to "queue", "content" to content, "clientTimeZone" to TimeZone.getDefault().id).also {
+                // While a turn runs, steer: the running task sees the message at its next step instead of only after
+                // the turn ends (a stopped turn would leave a queued message waiting for the next one).
+                val mode = if (running) "steer" else "queue"
+                obj("requestId" to UUID.randomUUID().toString(), "sessionId" to id, "mode" to mode, "content" to content, "clientTimeZone" to TimeZone.getDefault().id).also {
                     // A disk failure prevents sending. A crash after this commit remains safe to retry.
                     withContext(Dispatchers.IO) { outbox.retain(id, it) }
                 }
@@ -543,7 +561,25 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         }
         if (acknowledged) refreshSessions()
     }
-    fun cancelTurn() = task { selected?.let { api.call("session/cancel", obj("sessionId" to it)) } }
+    fun cancelTurn() = task {
+        val id = selected ?: return@task
+        api.call("session/cancel", obj("sessionId" to id))
+        resumeQueued(id)
+    }
+    /** After a stop, run what was queued now (see [QueuedInput]) instead of one message late. */
+    private suspend fun resumeQueued(id: String) {
+        fun busy() = sessions.firstOrNull { it.text("sessionId") == id }?.optBoolean("running") == true
+        for (attempt in 0 until 20) { refreshSessions(); if (!busy()) break; delay(500) } // the stopped turn settles first
+        if (busy()) return
+        val message = QueuedInput.oldest(projections[id]?.value() ?: return) ?: return
+        val content = QueuedInput.textContent(message) ?: run { notice = "已停止；排队的消息含附件，没有自动继续，请重新发送"; return }
+        try { api.call("session/updateQueue", obj("sessionId" to id, "itemId" to message.text("id"), "action" to obj("kind" to "remove"))) }
+        catch (e: RpcRejectedException) { return } // already taken: the session woke on its own
+        api.call("session/prompt", obj("requestId" to UUID.randomUUID().toString(), "sessionId" to id, "mode" to "steer",
+            "content" to content, "clientTimeZone" to TimeZone.getDefault().id))
+        notice = "已停止，接着处理排队的消息"
+        refreshSessions()
+    }
     fun killJob(id: String) = task { api.call("job/kill", obj("sessionId" to selected, "jobId" to id)) }
     fun answer(event: JSONObject, value: Any) = task {
         require(clientId.isNotBlank()) { "实时连接已失效，请等待问题重新同步。" }

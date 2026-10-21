@@ -26,6 +26,11 @@ class TaskLifecycleTest {
     @Test fun lateOldExecutionCannotCancelSuccessor(){val g=running();g.request("stop");val oldAck=call(g,"ack").put("commandId",g.snapshot(1).getString("commandId"));g.acknowledge(oldAck);g.begin(begin(),4,300);denied("EXECUTION_STALE"){g.acknowledge(oldAck)};assertEquals("running",g.state())}
     @Test fun unknownOutcomesAndPhasesDenied(){val g=running();denied("CONTROL_DENIED"){g.end(call(g,"end").put("outcome","success-from-model"),false)};denied("CONTROL_DENIED"){g.phase("stopped")};denied("CONTROL_DENIED"){g.request("resume")};assertTrue(g.active())}
     @Test fun terminalStopNeverClaimsCompletion(){val g=running();g.end(call(g,"end").put("outcome","waiting_user"),true);g.stopSettled();assertEquals("stopped",g.state());assertFalse(g.active())}
+    @Test fun everyFinishedTurnParksTheDisplayExceptWhileWaitingForTheUser(){
+        listOf("completed","stopped","error").forEach{assertTrue(it,TaskLifecycle.parksDisplay(it,false))}
+        assertFalse(TaskLifecycle.parksDisplay("waiting_user",false))
+        listOf("completed","stopped","error").forEach{assertFalse(it,TaskLifecycle.parksDisplay(it,true))}
+    }
     @Test fun settledEndAndAckAreIdempotentNoOps(){val g=running();assertTrue(g.end(call(g,"end").put("outcome","completed"),false));val before=g.snapshot(9).toString();assertFalse(g.end(call(g,"end").put("outcome","error"),false));assertFalse(g.acknowledge(call(g,"ack").put("commandId","whatever")));assertEquals(before,g.snapshot(9).toString());assertEquals("completed",g.state())}
     @Test fun settledPollIsAnsweredNotDenied(){val g=running();g.end(call(g,"end").put("outcome","completed"),false);g.poll(call(g,"poll"),99999);assertFalse(g.active());assertFalse(g.overdue(99999))}
     @Test fun unacknowledgedStopSelfSettlesAfterGrace(){val g=running();assertTrue(g.request("stop"));assertFalse(g.expire(1000));assertFalse(g.expire(1000+TaskLifecycle.COMMAND_GRACE_MS));assertEquals("stopping",g.state());assertTrue(g.expire(1001+TaskLifecycle.COMMAND_GRACE_MS));assertEquals("stopped",g.state());assertFalse(g.active());assertEquals("",g.command());assertFalse(g.expire(999999));g.begin(begin(),4,200000);assertEquals("running",g.state())}

@@ -11,3 +11,12 @@
         plugins:
           - id: cowork-policy-tools-summary
             name: '@local/dsh-cowork-phone'
+
+    # Notification triggers: Continuo's notification rules reach DSH's webhook runtime through the signed loopback
+    # ingress in src/notify.mjs (127.0.0.1:3082). Each coalesced trigger becomes one unattended Cowork session,
+    # archived when its turn finishes. Conflicts with any other overlay that also mounts @deepseek-ai/dsh-webhook.
+    - id: cowork-webhook-runtime
+      name: '@deepseek-ai/dsh-webhook'
+
+    - id: cowork-notify
+      name: './src/notify.mjs'

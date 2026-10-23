@@ -1,14 +1,11 @@
 package dev.dsh.pocket.cowork
 
-import dev.dsh.pocket.cowork.broker.ScreenNews
 import dev.dsh.pocket.cowork.broker.ScreenWatch
-import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 
 /** New text on the AI screen that the model neither caused nor saw: reported with its next observation (ScreenWatch),
- *  and what a finished turn left unseen goes, through the broker state (ScreenNews), to the notification triggers
- *  (ScreenNewsFeed). */
+ *  and what a finished turn left unseen goes to the notification triggers in the broker (NotifyRelay.screen). */
 class ScreenWatchTest {
     private val chat = listOf("张三", "在吗", "发送")
 
@@ -78,38 +75,5 @@ class ScreenWatchTest {
         assertEquals((6..25).map { "m$it" }, w.observed("qq", lines))
         w.observed("qq", emptyList())
         assertEquals((6..25).map { "m$it" }, w.detach().unseen("qq", lines))
-    }
-
-    @Test fun theBrokerKeepsTheLastNewsCutToTheirNewestLines() {
-        val news = ScreenNews()
-        assertEquals("nothing to post", 0L, news.post("qq", "QQ", listOf(" ", ""), 1))
-        assertEquals(0L, news.post("", "QQ", listOf("x"), 1))
-        for (i in 1..4) assertEquals(i.toLong(), news.post("com.tencent.mobileqq", "QQ", listOf("a$i", "b$i"), 1000L + i))
-        val rows = news.json()
-        assertEquals(ScreenNews.KEEP, rows.length())
-        assertEquals(listOf(2L, 3L, 4L), (0 until rows.length()).map { rows.getJSONObject(it).getLong("seq") })
-        val last = rows.getJSONObject(2)
-        assertEquals("com.tencent.mobileqq", last.getString("package")); assertEquals("QQ", last.getString("app")); assertEquals(1004L, last.getLong("at"))
-        assertEquals(listOf("a4", "b4"), (0 until 2).map { last.getJSONArray("lines").getString(it) })
-        val long = ScreenNews()
-        long.post("qq", "", listOf("x".repeat(500), "y".repeat(200), "z".repeat(300)), 1)
-        val kept = long.json().getJSONObject(0)
-        assertEquals("qq", kept.getString("app"))
-        assertEquals("the newest lines within MAX_CHARS", listOf("y".repeat(200), "z".repeat(300)), (0 until kept.getJSONArray("lines").length()).map { kept.getJSONArray("lines").getString(it) })
-        val huge = ScreenNews().apply { post("qq", "QQ", listOf("h".repeat(700)), 1) }.json().getJSONObject(0).getJSONArray("lines")
-        assertEquals(ScreenNews.MAX_CHARS, huge.getString(0).length)
-    }
-
-    @Test fun theControllerHandsEachEntryOverOncePerBrokerInstanceAndSkipsOldOnes() {
-        val news = ScreenNews()
-        news.post("com.tencent.mobileqq", "QQ", listOf("在吗"), 1_000); news.post("com.tencent.mobileqq", "QQ", listOf("还在吗"), 2_000)
-        val state = JSONObject().put("instanceId", "a").put("screenNews", news.json())
-        assertEquals(listOf(1L, 2L), ScreenNewsFeed.fresh(state, "", 0, 3_000, 10_000).map { it.seq })
-        assertEquals(listOf(ScreenNewsFeed.News(2, "com.tencent.mobileqq", "QQ", listOf("还在吗"), 2_000)), ScreenNewsFeed.fresh(state, "a", 1, 3_000, 10_000))
-        assertTrue(ScreenNewsFeed.fresh(state, "a", 2, 3_000, 10_000).isEmpty())
-        assertEquals("too old: Continuo was not running", listOf(2L), ScreenNewsFeed.fresh(state, "", 0, 11_500, 10_000).map { it.seq })
-        assertEquals(2L, ScreenNewsFeed.lastSeq(state))
-        assertTrue(ScreenNewsFeed.fresh(JSONObject().put("screenNews", news.json()), "", 0, 3_000, 10_000).isEmpty())
-        assertEquals(0L, ScreenNewsFeed.lastSeq(JSONObject()))
     }
 }

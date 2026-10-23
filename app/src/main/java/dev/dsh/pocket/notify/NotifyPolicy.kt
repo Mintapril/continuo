@@ -29,8 +29,13 @@ object NotifyDefaults {
     /** Text left unseen on the AI screen, one line per screen line; the newest end wins the 400 characters an item holds. */
     fun screenText(lines: List<String>): String =
         lines.map { it.replace(UNPRINTABLE, " ").trim() }.filter { it.isNotEmpty() }.joinToString("\n").takeLast(400).trim()
-    /** Screen news older than this (Continuo was not running when the turn ended) wakes nothing. */
-    const val SCREEN_MAX_AGE_MS = 10 * 60_000L
+    /** A locked phone on battery suspends its CPU within seconds; a pending batch would then wait for the next wake-up.
+     *  The CPU stays up until the batch fires plus this long, for sending it and Jev's answer (15 s read timeout). */
+    const val SEND_AWAKE_MS = 60_000L
+    /** After Jev passed a batch: until its Cowork turn has started, when the broker keeps the CPU up for the turn. */
+    const val HANDOFF_AWAKE_MS = 30_000L
+    /** How long to keep the CPU up for a batch that fires at [fireAt]. */
+    fun awakeMs(fireAt: Long, now: Long): Long = (fireAt - now).coerceIn(0, MAX_WAIT_MS) + SEND_AWAKE_MS
 }
 
 /** The parts of one posted notification the batch looks at. Title and text are read only for a watched package.
@@ -58,7 +63,7 @@ object NotifyFilter {
 
 /**
  * Notifications of the Cowork work profile's apps belong to the AI: the broker keeps their channels silent
- * (QuietNotificationGate) and the listener, once it has read one, clears it from the owner's shade. Only the broker's
+ * (QuietNotificationGate) and its notification listener (NotifyBridge), read or not, clears it from the owner's shade. Only the broker's
  * verified profile, only third-party apps other than the profile owner, and never what the system keeps (ongoing,
  * no-clear, foreground service). [system] is null when the notification carries no ApplicationInfo: left alone.
  */

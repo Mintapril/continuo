@@ -29,8 +29,11 @@ fun sessionMode(row: JSONObject?): TaskMode = if (sessionPreset(row) in setOf(Ta
 fun presetTag(row: JSONObject?): String? = sessionPreset(row).takeIf { it.isNotBlank() && it != "cowork" && TaskMode.entries.none { mode -> mode.preset == it } }
 
 enum class SessionFilter(val label: String) {
-    ALL("全部"), NEEDS_INPUT("需要输入"), WORKING("运行中"), COMPLETED("已完成"), ARCHIVED("已归档"),
+    ALL("全部"), NEEDS_INPUT("需要输入"), WORKING("运行中"), COMPLETED("已完成"), APPS("自动运营"), ARCHIVED("已归档"),
 }
+
+/** The standing session the notification trigger keeps for each app (cowork-app-<profile>-<package>): listed only under APPS. */
+fun isAppSession(row: JSONObject): Boolean = row.text("sessionId").startsWith("cowork-app-")
 
 fun needsInput(row: JSONObject, pendingAgents: Set<String>): Boolean = row.text("sessionId") in pendingAgents ||
     values(row)?.optJSONObject("userQuestions")?.objects("active")?.any { it.text("state") == "open" } == true
@@ -39,9 +42,10 @@ fun matchesFilter(row: JSONObject, filter: SessionFilter, archived: Set<String>,
     val isArchived = row.text("sessionId") in archived
     if (filter == SessionFilter.ARCHIVED) return isArchived
     if (isArchived) return false
+    if (isAppSession(row) != (filter == SessionFilter.APPS)) return false
     val running = row.optBoolean("running")
     return when (filter) {
-        SessionFilter.ALL -> true
+        SessionFilter.ALL, SessionFilter.APPS -> true
         SessionFilter.NEEDS_INPUT -> needsInput(row, pendingAgents)
         SessionFilter.WORKING -> running
         SessionFilter.COMPLETED -> !running && !needsInput(row, pendingAgents) && !row.optBoolean("blank")

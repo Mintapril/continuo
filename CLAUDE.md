@@ -44,6 +44,7 @@ node --test test/strict-broker.test.mjs     # 单个文件；--test-name-pattern
 - 模型可见的工具名是下划线形式（`phone_tap`），插件内部和线协议是点号形式（`phone.tap`），由 `modelName()` 转换；`ALLOWED_TOOLS` 是模型可见名。
 - 插件与 APK 的协议必须匹配：一边加了参数另一边会拒绝。改 `broker.mjs` 的参数/结果 schema 时同步改 `ToolContract.java`。
 - 通知入口（`notify.mjs` ↔ App 的 `notify/NotifyPolicy.kt`）：`strict-notify.test.mjs` 的 `VECTOR` 与 `NotifyPolicyTest` 逐字节对账同一个请求体和 MAC；改字段或签名格式要两边一起改（线协议见 PROTOCOL.md「Notification ingress」）。屏幕新内容的条目多一个 `origin: "screen"`（`SCREEN_BODY`）。
+- 会话 ID 要过 Broker 的 `[a-zA-Z0-9_-]{1,100}`（`TaskLifecycle.begin`、`ActionGate.start`），否则这一轮在第一步前就被取消。`strict-notify.test.mjs` 从这两个 Java 文件读出规则核对 `sessionIdOf`。
 - 观察结果里可选的 `appeared`（Broker 的 `ScreenWatch`）由 `broker.mjs` 的 `TREE_RESULT` 校验；旧插件会拒收带它的结果，所以插件和 APK 要一起部署。
 
 ## 架构
@@ -73,21 +74,23 @@ Broker（root，app_process，从已安装 APK 的 dev.dsh.pocket.cowork.broker.
 - `BrokerMain`：HTTP 端点（agent 角色用 `/v1/tool` 调工具、`/v1/task` 申请并轮询每轮租约；controller 角色用 `/v1/control`、`/v1/state`、`/v1/apps`、`/v1/takeover`、`/v1/stream` 等）、任务租约、看门狗。锁纪律写在类注释里：`this` 只保护短暂的控制面状态，绝不跨工作区操作持有；工具调用走 `toolLock`。
 - `ProfileWorkspace`：副屏驱动（创建/保持虚拟显示、注入、截图、手势笔画、保活）。`AndroidWorkspace` 是早期共享用户版本，已不在主流程。
 - `ProfileStructure`：UiAutomation 读树、语义输入、焦点字段元数据。
-- 可在 JVM 上单测的纯逻辑：`ToolContract`（参数校验）、`RefusalPolicy`（哪些拒绝不结束任务）、`TaskLifecycle`、`BrokerAuth`（HMAC）、`StrokePath`、`ScreenZoom`、`BatchPolicy`、`StrayTaskSweep`、`LauncherEntrySweep`、`PopupPermissionPolicy`、`NotificationGrantPolicy`（工作资料新装应用自动允许通知，由 `NotificationGrant` 执行）、`QuietNotificationPolicy`（工作资料应用的通知通道压到最低、不在主屏提醒，由 `QuietNotificationGate` 执行）、`ParkedApps`（副屏重建后恢复停在后面的应用）、`ScreenWatch`（模型思考时副屏上自己冒出来、它没看到的文字：随下一次观察报 `appeared`，一轮结束时剩下的经 `ScreenNews` 交给通知触发）、`ActivityLog` 等。往这些类里放逻辑，Broker 的 Android 依赖部分尽量薄。
+- 可在 JVM 上单测的纯逻辑：`ToolContract`（参数校验）、`RefusalPolicy`（哪些拒绝不结束任务）、`TaskLifecycle`、`BrokerAuth`（HMAC）、`StrokePath`、`ScreenZoom`、`BatchPolicy`、`StrayTaskSweep`、`LauncherEntrySweep`、`PopupPermissionPolicy`、`NotificationGrantPolicy`（工作资料新装应用自动允许通知，由 `NotificationGrant` 执行）、`QuietNotificationPolicy`（工作资料应用的通知通道压到最低、不在主屏提醒，由 `QuietNotificationGate` 执行）、`ParkedApps`（副屏重建后恢复停在后面的应用）、`ScreenWatch`（模型思考时副屏上自己冒出来、它没看到的文字：随下一次观察报 `appeared`，一轮结束时剩下的直接并进通知触发的批次）、`ActivityLog` 等。往这些类里放逻辑，Broker 的 Android 依赖部分尽量薄。
+- `NotifyBridge`：通知触发的读取端。灭屏后 ColorOS 会冻结 Continuo 并扣住它的通知回调，所以由 root 的 Broker 注册系统级通知监听（`registerAsSystemService`，所有用户）。合并、发送、唤醒锁和记录复用 App 包里可在 JVM 上测的 `notify/NotifyRelay`；设置来自 Continuo（`POST /v1/notify-settings`），存在 `BASE/notify-settings.json`。`wakeController` 和 `keepControllerRunning` 会解冻被冻结的 Continuo，好让一轮能拿到控制端心跳开始。
 - `*ProbeMain` 是探测入口，不在主流程。
 
 ### App 里的关键分层
 
 - `data/`：`DshApi`（唯一允许的目标是 `http://127.0.0.1:3080`，`init` 里 `require`），`Transcript`（会话快照归约为 `TranscriptRow`），`Modes`（只有 `COWORK`=`cowork-phone` 与 `CODE`=`standard` 两种预设，没有普通聊天模式），`RuntimeController`（经 `su` 调 `pocket-control.sh` 的固定动作），`MemoryCenter`/`ScheduleCenter`（通过 DSH 自己的插件路由读写 dsh-mneme 记忆与 dsh-schedule 任务），`CredentialVault`。
 - `cowork/`：`CoworkConnection`（单例，controller 通道、实时流、接管输入），`CoworkControllerService`（前台服务，自愈重连），`CoworkStateBridge`（Broker 状态样本按 instance/revision 去旧，喂给任务岛的 `IslandStore`），`LiveVideo`、`RemoteKeyboard`。
+- `data/Modes.kt` 的 `SessionFilter`：应用固定会话（`isAppSession`，ID 以 `cowork-app-` 开头）只在“自动运营”筛选下显示，“全部”和抽屉里的“最近”都不列。
 - `data/Presentation.kt` 的 `foldedEntries`：一轮结束后把思考、工具调用、中间回复折叠成一项，只留用户消息、报错和最后的结论；正在进行的一轮不折叠。
-- `notify/`：通知触发，没有按应用的规则。`NotifyListener`（NotificationListenerService，开关打开且不在排除列表才读内容）、`NotifyCenter`（单例：开关与排除列表、全局批次调度、签名发送到 127.0.0.1:3082）、`NotifyPolicy`（可在 JVM 上测的过滤、去抖合并（等待时间可在设置页选，默认 5 秒）、v2 线格式）。设置页 `ui/NotifySettings.kt`。`data/QueuedInput`：停止后把最早一条排队消息重新 steer 回去（DSH 停止后不会为已排队的消息自动开新一轮）。
+- `notify/`：通知触发，没有按应用的规则。通知由 Broker 读取（`NotifyBridge`），App 里没有通知监听。`NotifyCenter`（单例：开关、排除列表、等待时间，推给 Broker，最近记录从 Broker 状态读）、`NotifyRelay`（Broker 用的批次、发送、唤醒锁与记录，JVM 测试）、`NotifyPolicy`（可在 JVM 上测的过滤、去抖合并（等待时间可在设置页选，默认 5 秒）、v2 线格式）。设置页 `ui/NotifySettings.kt`。`data/QueuedInput`：停止后把最早一条排队消息重新 steer 回去（DSH 停止后不会为已排队的消息自动开新一轮）。
 - `island/`：`IslandRuntime`（单例入口）、`IslandOverlayService`（悬浮窗）、`IslandAccessibilityService`（只用来抬高窗口层级，不读内容）、`IslandPillView`。
 - `ui/`：Compose 界面；`PocketViewModel` 是唯一的 ViewModel。
 
 ### 插件（`cowork-plugin/`）
 
-入口 `src/restricted.mjs`，通过 `cordis.patch.yml` 注册预设 `cowork-phone`。限制落在 `tools.guard()` 和空的继承工具掩码上，不只是系统提示词。`broker.mjs` 是线协议适配器（参数/结果 schema、观察 TTL、错误码表），`task-lifecycle.mjs` 持有每轮的原生租约并在 Broker 下达 pause/stop 时取消 DSH 回合（这就是会话里出现 "Turn aborted" 的来源），`gesture-path.mjs` 把 SVG 路径展平成折线。`notify.mjs` 是同一 bundle 里的第二个插件（宿主层，不在预设里）：通知入口、Jev 判断（判断不了就不唤起）、按应用分开的合并队列；每个应用一个固定的 `cowork-phone` 会话（`cowork-app-<资料>-<包名>`，插件直接用 DSH 的会话服务创建或恢复，不归档），通过的批次插进它正在跑的一轮，或在副屏空闲时作为它的新一轮。`src/index.mjs`、`bridge.mjs`、`files.mjs`、`policy.mjs` 是旧代码，不在 `package.json` 的 `files` 里。
+入口 `src/restricted.mjs`，通过 `cordis.patch.yml` 注册预设 `cowork-phone`。限制落在 `tools.guard()` 和空的继承工具掩码上，不只是系统提示词。`broker.mjs` 是线协议适配器（参数/结果 schema、观察 TTL、错误码表），`task-lifecycle.mjs` 持有每轮的原生租约并在 Broker 下达 pause/stop 时取消 DSH 回合（这就是会话里出现 "Turn aborted" 的来源），`gesture-path.mjs` 把 SVG 路径展平成折线。`notify.mjs` 是同一 bundle 里的第二个插件（宿主层，不在预设里）：通知入口、Jev 判断（判断不了就不唤起）、按应用分开的合并队列；每个应用一个固定的 `cowork-phone` 会话（`cowork-app-<资料>-<包名>`，包名的点换成 `-`，插件直接用 DSH 的会话服务创建或恢复，用 DSH 的默认模型，不归档，被手动归档的在下次送达前取消归档），通过的批次插进它正在跑的一轮，或在副屏空闲时作为它的新一轮。`src/index.mjs`、`bridge.mjs`、`files.mjs`、`policy.mjs` 是旧代码，不在 `package.json` 的 `files` 里。
 
 ### 安全边界（改动时不能退让）
 

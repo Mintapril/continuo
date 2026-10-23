@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, writeFile, chmod, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, chmod, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -95,10 +95,24 @@ test('prompt framing carries every notification JSON-encoded, labelled untrusted
   assert.match(INSTRUCTION, /长期会话/); assert.match(INSTRUCTION, /不要停下来等对方回复/);
 });
 
+test('an app session id passes the Broker session rule, or every turn of it is cancelled before its first step', async () => {
+  // TaskLifecycle.begin (the turn's native lease) and ActionGate.start (tool calls) refuse other ids with SESSION_INVALID.
+  const broker = new URL('../../app/src/main/java/dev/dsh/pocket/cowork/broker/', import.meta.url);
+  const rules = [];
+  for (const file of ['TaskLifecycle.java', 'ActionGate.java']) {
+    const line = (await readFile(new URL(file, broker), 'utf8')).split('\n').find(l => l.includes('"SESSION_INVALID"'));
+    rules.push(new RegExp(`^(?:${line.match(/matches\("([^"]+)"\)/)[1]})$`));
+  }
+  const ids = [['work', 'com.tencent.mobileqq'], ['personal', 'tv.danmaku.bili'], ['work', 'com.example.very_long_package_name.with.many.segments_x']]
+    .map(([profile, pkg]) => sessionIdOf(appKey(item({ profile, package: pkg }))));
+  for (const id of ids) for (const rule of rules) assert.match(id, rule);
+  assert.notEqual(sessionIdOf('work:com.a_b'), sessionIdOf('work:com.a.b'), 'distinct packages never share a session');
+});
+
 test('each app has one standing session: a judged batch splits per profile and package', () => {
   const QQ = appKey(item()), BILI = appKey(item({ package: 'tv.danmaku.bili', profile: 'personal' }));
-  assert.equal(QQ, 'work:com.tencent.mobileqq'); assert.equal(sessionIdOf(QQ), 'cowork-app-work-com.tencent.mobileqq');
-  assert.equal(sessionIdOf(BILI), 'cowork-app-personal-tv.danmaku.bili');
+  assert.equal(QQ, 'work:com.tencent.mobileqq'); assert.equal(sessionIdOf(QQ), 'cowork-app-work-com-tencent-mobileqq');
+  assert.equal(sessionIdOf(BILI), 'cowork-app-personal-tv-danmaku-bili');
   assert.notEqual(appKey(item({ profile: 'personal' })), QQ, 'the owner\'s own copy of an app is another session');
   const single = parsed({ count: 5 });
   assert.equal(splitByApp(single)[0].batch, single, 'a batch of one app stays as it is');
@@ -310,19 +324,22 @@ test('the secret file must be a private regular file holding 64 hex characters',
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-function host({ jev = 0.9, stored = [] } = {}) {
+const DEFAULT_MODEL = Object.freeze({ provider: 'lithosai', model: 'deepseek-ai/DeepSeek-V4.1-Flash', reasoningEffort: 'max' });
+function host({ jev = 0.9, stored = [], archived: hidden = [] } = {}) {
   const effects = [], listeners = [], warnings = [], resolved = [], created = [], resumed = [], attached = [], titles = [], permissions = [],
-    messages = [], mounted = [];
-  const live = new Map(); let scopes = 0;
-  const agent = id => ({ id, session: { id }, followup: m => messages.push({ id, mode: 'followup', m }), steer: m => messages.push({ id, mode: 'steer', m }) });
+    messages = [], mounted = [], routes = [], unarchived = [];
+  const live = new Map(), archived = new Set(hidden); let scopes = 0;
+  const agent = id => ({ id, session: { id }, followup: m => messages.push({ id, mode: 'followup', m, archived: archived.has(id) }),
+    steer: m => messages.push({ id, mode: 'steer', m, archived: archived.has(id) }) });
   const ctx = {
     effect: fn => { const dispose = fn(); effects.push(dispose); },
     on: (name, fn, options) => { assert.equal(name, 'session/event'); assert.deepEqual(options, { global: true }); listeners.push(fn); },
-    workspaceRegistry: { create: async p => ({ path: p, attachSession: async id => { attached.push(id); }, detachSession: async () => {} }) },
+    workspaceRegistry: { create: async p => ({ path: p, attachSession: async id => { attached.push(id); }, detachSession: async () => {} }),
+      unarchiveSession: async id => { unarchived.push(id); archived.delete(id); } },
     agents: {
       get: id => live.get(id),
-      resume: async ({ resumeSessionId, setup }) => { resumed.push(resumeSessionId); await setup('agent-ctx'); live.set(resumeSessionId, agent(resumeSessionId)); return { agent: live.get(resumeSessionId) }; },
-      create: async ({ sessionId, meta, setup }) => { created.push({ sessionId, meta }); await setup('agent-ctx'); live.set(sessionId, agent(sessionId)); return { agent: live.get(sessionId), dispose: async () => { live.delete(sessionId); } }; },
+      resume: async ({ resumeSessionId, agentOptions, setup }) => { resumed.push(resumeSessionId); routes.push(agentOptions); await setup('agent-ctx'); live.set(resumeSessionId, agent(resumeSessionId)); return { agent: live.get(resumeSessionId) }; },
+      create: async ({ sessionId, meta, agentOptions, setup }) => { created.push({ sessionId, meta }); routes.push(agentOptions); await setup('agent-ctx'); live.set(sessionId, agent(sessionId)); return { agent: live.get(sessionId), dispose: async () => { live.delete(sessionId); } }; },
     },
     agentPresets: { resolve: async id => ({ id }), mount: async (agentCtx, id) => { mounted.push(id); }, acquireScope: async () => ({ [Symbol.asyncDispose]: async () => { scopes++; } }) },
     sessionTitle: { rename: (session, title) => titles.push([session.id, title]) },
@@ -330,6 +347,7 @@ function host({ jev = 0.9, stored = [] } = {}) {
       if (!stored.includes(id)) throw Object.assign(new Error(`session "${id}" not found`), { code: 'SESSION_QUERY_SESSION_NOT_FOUND' });
       return { [Symbol.dispose]() {} };
     } },
+    agentDefaultModel: { currentSelection: () => ({ ...DEFAULT_MODEL }) },
     permissionPresets: { defaultPreset: 'danger-full-access', set: (session, preset) => permissions.push([session.id, preset]) },
     credentials: { resolve: async ref => { resolved.push(ref); return jev === null ? undefined : { value: 'sk-or-test' }; } },
     logger: { warn: message => warnings.push(message) },
@@ -348,13 +366,13 @@ function host({ jev = 0.9, stored = [] } = {}) {
     const answers = Object.fromEntries(state.notifications.map(x => [`n${x.n}`, { type: 'noul', noul: typeof jev === 'function' ? jev(x) : jev }]));
     return new Response(JSON.stringify({ answers }), { status: 200 });
   };
-  return { ctx, llm, effects, warnings, emit, start, end, resolved, fetch, created, resumed, attached, titles, permissions, messages, mounted, live, scopes: () => scopes };
+  return { ctx, llm, effects, warnings, emit, start, end, resolved, fetch, created, resumed, attached, titles, permissions, messages, mounted, routes, unarchived, archived, live, scopes: () => scopes };
 }
 const install = (h, c) => installNotify(h.ctx, { listen: false, readSecret: async () => VECTOR.secret, fetch: h.fetch, llm: h.llm, ...c });
 const textsOf = message => JSON.parse(message.m.content[0].text.split('\n').at(-1).slice('notifications_untrusted_json: '.length)).map(x => x.text);
 
 test('notify needs the DSH session services and no longer goes through dsh-webhook', () => {
-  for (const name of ['agents', 'agentPresets', 'sessionQuery', 'sessionTitle', 'workspaceRegistry', 'permissionPresets', 'credentials']) assert.ok(inject.includes(name), name);
+  for (const name of ['agents', 'agentPresets', 'agentDefaultModel', 'sessionQuery', 'sessionTitle', 'workspaceRegistry', 'permissionPresets', 'credentials']) assert.ok(inject.includes(name), name);
   assert.ok(!inject.includes('webhookRuntime'));
 });
 
@@ -367,8 +385,9 @@ test('installNotify: an approved batch becomes a turn of the standing session of
     assert.equal((await signed(url, sent)).status, 202);
     await settle();
     assert.deepEqual(h.resolved, [JEV.credential], 'every batch goes to Jev');
-    const id = 'cowork-app-work-com.tencent.mobileqq';
+    const id = 'cowork-app-work-com-tencent-mobileqq';
     assert.deepEqual(h.created, [{ sessionId: id, meta: { cwd: WORKSPACE, agentPreset: PRESET } }], 'the QQ session, on the Cowork preset');
+    assert.deepEqual(h.routes, [DEFAULT_MODEL], 'on the default model of DSH, or its first step fails with no provider/model');
     assert.deepEqual(h.mounted, [PRESET]); assert.deepEqual(h.attached, [id]); assert.equal(h.scopes(), 1, 'the preset scope is released');
     assert.deepEqual(h.permissions, [[id, 'danger-full-access']]); assert.deepEqual(h.titles, [[id, 'QQ · 自动运营']]);
     assert.equal(h.messages.length, 1);
@@ -391,7 +410,7 @@ test('installNotify: an approved batch becomes a turn of the standing session of
     assert.equal(h.messages.length, 2, 'a turn that stopped for the user keeps the screen');
     h.start(id, 'x', 2); h.end(id);
     await settle();
-    const biliId = 'cowork-app-personal-tv.danmaku.bili';
+    const biliId = 'cowork-app-personal-tv-danmaku-bili';
     assert.deepEqual(h.messages.map(m => [m.id, m.mode]).at(-1), [biliId, 'followup'], 'the waiting app starts right after');
     assert.deepEqual(h.titles.at(-1), [biliId, 'B站（个人）· 通知']);
     h.start(biliId, h.messages.at(-1).m.source.deliveryId); h.end(biliId);
@@ -404,14 +423,31 @@ test('installNotify: an approved batch becomes a turn of the standing session of
 });
 
 test('installNotify: after a DSH restart the stored app session is resumed, not created again', async () => {
-  const id = 'cowork-app-work-com.tencent.mobileqq';
+  const id = 'cowork-app-work-com-tencent-mobileqq';
   const c = clock(), h = host({ stored: [id] });
   const { accept } = install(h, c);
   await accept(parsed());
   await settle();
   assert.deepEqual(h.resumed, [id]); assert.deepEqual(h.created, []); assert.deepEqual(h.mounted, [PRESET], 'resumed with the Cowork preset');
+  assert.deepEqual(h.routes, [DEFAULT_MODEL], 'and on the default model, as DSH resumes its own sessions');
   assert.deepEqual(h.titles, [], 'title and workspace stay as they were');
   assert.deepEqual(h.messages.map(m => [m.id, m.mode]), [[id, 'followup']]);
+  h.effects.forEach(dispose => dispose?.());
+});
+
+test('installNotify: an archived app session comes back before its next turn, or DSH refuses every step of it', async () => {
+  const id = 'cowork-app-work-com-tencent-mobileqq';
+  const c = clock(), h = host({ stored: [id], archived: [id] });
+  const { accept } = install(h, c);
+  await accept(parsed());
+  await settle();
+  assert.deepEqual(h.messages.map(m => [m.id, m.mode, m.archived]), [[id, 'followup', false]], 'unarchived first, then the turn');
+  // Archived again while its agent is still live: the next batch brings it back too.
+  h.start(id, h.messages[0].m.source.deliveryId); h.end(id); h.archived.add(id);
+  await accept(parsed({ items: [item({ text: '又来了' })] }));
+  await settle();
+  assert.deepEqual(h.messages.map(m => m.archived), [false, false]);
+  assert.deepEqual(h.unarchived, [id, id]); assert.deepEqual(h.resumed, [id], 'the live agent is reused');
   h.effects.forEach(dispose => dispose?.());
 });
 
@@ -459,7 +495,7 @@ test('installNotify: one real message among ten advertisements is judged on its 
   const batch = parsed({ count: 11, firstAt: NOW - 3000, lastAt: NOW - 2100, items: [...ads.slice(0, 5), dm, ...ads.slice(5)] });
   assert.deepEqual(await accept(batch), { queued: true, judged: true, meaningful: 0.93, kept: 1, total: 11 });
   await settle();
-  assert.deepEqual(h.created.map(x => x.sessionId), ['cowork-app-work-com.tencent.mobileqq'], 'no session for the shopping app');
+  assert.deepEqual(h.created.map(x => x.sessionId), ['cowork-app-work-com-tencent-mobileqq'], 'no session for the shopping app');
   assert.equal(h.messages.length, 1);
   assert.deepEqual(textsOf(h.messages[0]), ['晚上一起吃饭吗']);
   assert.match(h.messages[0].m.content[0].text, /notification_count: 1\n/);
@@ -474,8 +510,8 @@ test('installNotify: a session that cannot be created is logged and frees the sc
   const { accept, coalescer } = install(h, c);
   await accept(parsed({ count: 2, items: [item(), bili({ at: NOW - 1500 })] }));
   await settle();
-  assert.match(h.warnings[0], /cowork-app-work-com\.tencent\.mobileqq not reached \(PersistenceError\)/);
-  assert.deepEqual(h.messages.map(m => m.id), ['cowork-app-personal-tv.danmaku.bili'], 'the other app still gets its turn');
+  assert.match(h.warnings[0], /cowork-app-work-com-tencent-mobileqq not reached \(PersistenceError\)/);
+  assert.deepEqual(h.messages.map(m => m.id), ['cowork-app-personal-tv-danmaku-bili'], 'the other app still gets its turn');
   assert.equal(coalescer.snapshot().inflight.key, BILI);
   h.effects.forEach(dispose => dispose?.());
 });

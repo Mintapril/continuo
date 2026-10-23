@@ -1,15 +1,12 @@
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 package dev.dsh.pocket.ui
 
-import android.content.Intent
-import android.provider.Settings as AndroidSettings
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -36,13 +33,13 @@ import java.util.Locale
     val excluded by NotifyCenter.excluded.collectAsState()
     val log by NotifyCenter.log.collectAsState()
     val quiet by NotifyCenter.quietSeconds.collectAsState()
+    val reading by NotifyCenter.reading.collectAsState()
     var refresh by remember { mutableIntStateOf(0) }
     val owner = LocalLifecycleOwner.current
     DisposableEffect(owner) {
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) refresh++ }
         owner.lifecycle.addObserver(observer); onDispose { owner.lifecycle.removeObserver(observer) }
     }
-    val granted = remember(refresh) { NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName) }
     var ingress by remember { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(refresh) { ingress = null; ingress = withContext(Dispatchers.IO) { NotifyCenter.ingressListening() } }
     LaunchedEffect(vm.connected) { if (vm.connected) vm.jevRefresh() }
@@ -69,8 +66,8 @@ import java.util.Locale
 
         SectionLabel("状态")
         InsetGroup {
-            GroupRow("通知使用权", icon = Glyph.Eye, subtitle = "读取通知所必需", value = if (granted) "已允许" else "未允许",
-                onClick = { context.startActivity(Intent(AndroidSettings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) })
+            GroupRow("读取通知", icon = Glyph.Eye, subtitle = "由 Cowork 执行器（root）读取，锁屏时也不会被系统冻结", chevron = false,
+                value = when (reading) { true -> "已生效"; false -> "同步设置中"; null -> "执行器未连接" })
             GroupDivider()
             GroupRow("通知入口", icon = Glyph.Link, subtitle = "Cowork 插件 · 127.0.0.1:3082", chevron = false, onClick = { refresh++ }, trailing = {
                 if (ingress == null) Spinner(size = 14.dp) else StatusDot(if (ingress == true) Pocket.success else Pocket.faint)
@@ -87,7 +84,7 @@ import java.util.Locale
         }
         Footnote(if (ingress == false) "通知入口未就绪：DSH 没有运行，或手机上的 Cowork 插件还没有部署通知触发。点一下重新检查。"
             else "收到通知后先等 $quiet 秒；期间任何应用的新通知都并进同一批并重新计时，$quiet 秒没有新通知就整批交给 Jev" +
-                "（一直不停时最多攒 ${NotifyDefaults.MAX_WAIT_MS / 60_000} 分钟）。Jev 逐条判断，只把判为有意义的那几条交给一个 Cowork 会话；副屏正被任务占用时排队，空闲后开始。任务结束后会话自动归档。")
+                "（一直不停时最多攒 ${NotifyDefaults.MAX_WAIT_MS / 60_000} 分钟）。Jev 逐条判断，判为有意义的那几条交给该应用固定的 Cowork 会话；副屏正被任务占用时排队，空闲后开始。")
 
         SectionLabel("最近记录")
         InsetGroup {
@@ -97,7 +94,7 @@ import java.util.Locale
                 GroupRow(clock.format(Date(entry.at)), icon = Glyph.Clock, subtitle = entry.text, chevron = false)
             }
         }
-        Footnote("记录只保存在内存里，应用被系统结束后清空；合并与节流的计数也会重新开始。")
+        Footnote("记录只保存在执行器的内存里，执行器重启后清空；合并与节流的计数也会重新开始。")
     }
 
     if (keyDialog) InputDialog("Jev 密钥（OpenRouter）", "OpenRouter 的 API Key（sk-or-…）；只转交给本机 DSH 保存，应用不留存", "", { keyDialog = false }, secret = true) {

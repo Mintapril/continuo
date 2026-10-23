@@ -104,7 +104,7 @@ private val SETTINGS_PAGES = setOf(Screen.CONNECTION, Screen.COWORK, Screen.NOTI
     var query by rememberSaveable { mutableStateOf("") }
     var menu by remember { mutableStateOf<JSONObject?>(null) }
     val pendingAgents = vm.pending.map { it.text("agentId") }.toSet()
-    val recents = vm.sessions.filter { it.text("sessionId") !in vm.archived && !it.optBoolean("blank") && (query.isBlank() || sessionTitle(it).contains(query.trim(), true)) }
+    val recents = vm.sessions.filter { it.text("sessionId") !in vm.archived && !it.optBoolean("blank") && !isAppSession(it) && (query.isBlank() || sessionTitle(it).contains(query.trim(), true)) }
         .sortedByDescending { it.text("sessionId") in vm.pinned }
     ModalDrawerSheet(Modifier.width(312.dp), drawerShape = RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp),
         drawerContainerColor = if (Pocket.dark) MaterialTheme.colorScheme.surfaceContainerLow else MaterialTheme.colorScheme.surface, drawerTonalElevation = 0.dp) {

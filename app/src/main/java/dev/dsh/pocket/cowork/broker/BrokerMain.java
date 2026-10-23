@@ -25,7 +25,9 @@ public final class BrokerMain {
     /** New text on the AI screen that the model neither caused nor saw (see {@link ScreenWatch}), and what a finished turn
      *  left unseen, for the controller to hand to the notification triggers. */
     private final ScreenWatch watch=new ScreenWatch();
-    private final ScreenNews news=new ScreenNews();
+    /** The notification triggers (null until started, or when the listener could not register). */
+    private volatile NotifyBridge notify;
+    private long screenSeq;
     private final ApprovalGate approvals=new ApprovalGate();
     private volatile String state="idle", lastTaskId="", pauseReason="";
     private volatile boolean restartRequired=false;
@@ -65,6 +67,8 @@ public final class BrokerMain {
         long now=SystemClock.elapsedRealtime();
         if(now-controllerSeen<=15000||now-wokeAt<8000)return;
         wokeAt=now;
+        // A running controller frozen by ColorOS (screen off) only needs thawing; keepControllerRunning repeats it.
+        try{thawController();}catch(Throwable ignored){}
         new Thread(()->{
             try{
                 if(Files.exists(Path.of(BASE,"no-auto-wake")))return;
@@ -102,19 +106,25 @@ public final class BrokerMain {
             if(current>Integer.parseInt(PROTECTED_ADJ))Files.write(adj,PROTECTED_ADJ.getBytes(StandardCharsets.UTF_8));
         }catch(Exception ignored){}
     }
+    /** After a wake request the controller stays thawed this long: a begin waits up to 25 s for its heartbeat
+     *  (task-lifecycle.mjs OFFLINE_WAIT_MS), and with the screen off ColorOS freezes Continuo again within seconds. */
+    private static final long CONTROLLER_WAKE_MS=30000;
     private void keepControllerRunning(){
         try{
-            if(!(tasks.active()||gate.owner()!=null||takeover.active()))return;
-            if(controllerUid==-2){try{controllerUid=workspace.context().getPackageManager().getPackageUid(CONTROLLER_PACKAGE,0);}catch(Exception missing){controllerUid=-1;}}
-            if(controllerUid<0)return;
-            for(String root:new String[]{"/sys/fs/cgroup/apps/uid_","/sys/fs/cgroup/uid_"}){
-                Path freeze=Path.of(root+controllerUid,"cgroup.freeze");
-                if(!Files.exists(freeze))continue;
-                if(new String(Files.readAllBytes(freeze),StandardCharsets.UTF_8).trim().equals("1"))Files.write(freeze,"0".getBytes(StandardCharsets.UTF_8));
-                protectProcesses(Path.of(root+controllerUid));
-                return;
-            }
+            if(!(tasks.active()||gate.owner()!=null||takeover.active()||SystemClock.elapsedRealtime()-wokeAt<CONTROLLER_WAKE_MS))return;
+            thawController();
         }catch(Throwable ignored){}
+    }
+    private void thawController()throws Exception{
+        if(controllerUid==-2){try{controllerUid=workspace.context().getPackageManager().getPackageUid(CONTROLLER_PACKAGE,0);}catch(Exception missing){controllerUid=-1;}}
+        if(controllerUid<0)return;
+        for(String root:new String[]{"/sys/fs/cgroup/apps/uid_","/sys/fs/cgroup/uid_"}){
+            Path freeze=Path.of(root+controllerUid,"cgroup.freeze");
+            if(!Files.exists(freeze))continue;
+            if(new String(Files.readAllBytes(freeze),StandardCharsets.UTF_8).trim().equals("1"))Files.write(freeze,"0".getBytes(StandardCharsets.UTF_8));
+            protectProcesses(Path.of(root+controllerUid));
+            return;
+        }
     }
     /** Lock discipline (root cause of the stuck "stopping" state): `this` guards short control-plane state only and is
      *  NEVER held across a workspace operation. Phone tools take `toolLock` and the workspace's own monitor, so a
@@ -130,6 +140,7 @@ public final class BrokerMain {
         String agent=new String(Files.readAllBytes(Path.of(BASE,"agent.token")),StandardCharsets.UTF_8).trim();String controller=new String(Files.readAllBytes(Path.of(BASE,"controller.token")),StandardCharsets.UTF_8).trim();
         if(!agent.matches("[A-Za-z0-9_-]{40,}")||!controller.matches("[A-Za-z0-9_-]{40,}")||agent.equals(controller))throw new SecurityException("Invalid broker credentials");
         BrokerMain broker=new BrokerMain(agent,controller);
+        broker.startNotify();
         Runtime.getRuntime().addShutdownHook(new Thread(()->broker.workspace.close()));
         new Thread(()->{try{broker.serve();}catch(Exception e){System.err.println("Broker stopped: "+e.getClass().getSimpleName());}finally{broker.running=false;broker.workspace.close();System.exit(0);}},"cowork-http").start();
         // Two independent watchdogs: the lifecycle one only touches control-plane state and always runs on time;
@@ -143,11 +154,26 @@ public final class BrokerMain {
         watchdog.scheduleAtFixedRate(()->{try{broker.guardTick(++tick[0]);}catch(Throwable guardFailure){}},1,1,TimeUnit.SECONDS);
         Looper.loop();
     }
+    /** Notification triggers read by the broker itself: Continuo is frozen while the screen is off (see NotifyBridge). */
+    private void startNotify(){
+        try{NotifyBridge bridge=new NotifyBridge(workspace.context(),Path.of(BASE,"notify-settings.json"),workspace::profileUserId,workspace::appLabel);bridge.start();notify=bridge;}
+        catch(Throwable e){System.err.println("notification triggers unavailable: "+e.getClass().getSimpleName());}
+    }
     /** While a turn owns the display its power group must not doze (see {@link ProfileWorkspace#keepAwake}). Runs on its own
      *  clock, so a long tool (phone_wait, a takeover) cannot let the group time out. */
     private void keepOwnedDisplayAwake(){try{if(gate.owner()!=null)workspace.keepAwake();}catch(Throwable keepAwakeFailure){}} // a throw would cancel the schedule
+    /** A locked phone on battery suspends its CPU within seconds, and a running turn (model calls, tools) then stalls until
+     *  the next wake-up. While a turn runs, a kernel wake lock with a timeout is renewed every tick: it lapses on its own a
+     *  minute after the turn ends (covering the next queued turn), or after a crash. */
+    private static final String CPU_WAKE_LOCK="cowork-task "+TimeUnit.SECONDS.toNanos(60);
+    private volatile boolean cpuWakeLockFailed;
+    private void holdCpuAwake(){
+        try{Files.write(Path.of("/sys/power/wake_lock"),CPU_WAKE_LOCK.getBytes(StandardCharsets.US_ASCII));}
+        catch(Exception wakeLockFailure){if(!cpuWakeLockFailed){cpuWakeLockFailed=true;System.err.println("cpu wake lock unavailable: "+wakeLockFailure.getClass().getSimpleName());}}
+    }
     /** Control-plane watchdog. Never waits on the workspace, so lease expiry and command settlement are always on time. */
     private void lifecycleTick(){
+        if(tasks.active())holdCpuAwake();
         try{synchronized(this){
             long now=SystemClock.elapsedRealtime();
             if(tasks.active()&&(tasks.overdue(now)||now-controllerSeen>15000))requestTaskControl("stop","CONTROL_CHANNEL_OFFLINE");
@@ -240,6 +266,11 @@ public final class BrokerMain {
                 // display, so they queue behind the current tool instead of racing it.
                 if(Set.of("resume","approve").contains(request.optString("action"))){synchronized(toolLock){result=control(request);}}else result=control(request);
             }catch(ActionGate.Denied e){respond(socket,409,denied(e),auth);return;}}
+            else if(first[0].equals("POST")&&first[1].equals("/v1/notify-settings")&&controller){controllerSeen=SystemClock.elapsedRealtime();
+                JSONObject applied=notify==null?null:notify.configure(request);
+                if(applied==null){respond(socket,409,denied(new ActionGate.Denied("PROTOCOL_INVALID","Invalid notification settings")),auth);return;}
+                result=applied;
+            }
             else if(first[0].equals("POST")&&first[1].equals("/v1/takeover")&&controller){controllerSeen=SystemClock.elapsedRealtime();try{result=takeoverControl(request);}catch(ActionGate.Denied e){respond(socket,409,denied(e),auth);return;}}
             else if(first[0].equals("POST")&&first[1].equals("/v1/user-input")&&controller){controllerSeen=SystemClock.elapsedRealtime();try{result=userInput(request);}catch(ActionGate.Denied e){respond(socket,409,denied(e),auth);return;}}
             else {respond(socket,404,new JSONObject().put("ok",false),auth);return;}
@@ -325,7 +356,8 @@ public final class BrokerMain {
         try{
             ProfileStructure.Screen now=workspace.idleScreen();
             List<String> lines=now==null?unseen.unseen("",List.of()):unseen.unseen(now.pkg(),now.lines());
-            if(!lines.isEmpty())news.post(unseen.pkg(),workspace.appLabel(unseen.pkg()),lines,System.currentTimeMillis());
+            NotifyBridge relay=notify;
+            if(!lines.isEmpty()&&relay!=null)relay.screen(unseen.pkg(),workspace.appLabel(unseen.pkg()),lines,System.currentTimeMillis(),"screen-"+instanceId+"-"+(++screenSeq));
         }catch(Throwable e){System.err.println("unseen screen report failed: "+e.getClass().getSimpleName());}
     }
     /** About once a second while the model thinks (no tool runs, nobody else holds the screen): ScreenWatch compares the
@@ -917,7 +949,7 @@ public final class BrokerMain {
     private synchronized JSONObject status()throws Exception{
         long observedAt=SystemClock.elapsedRealtime();long sample=++environmentSequence;
         String main=workspace.mainPackage();Object game=JSONObject.NULL;if(main.equals("dev.dsh.pocket"))game=false;else try{android.content.pm.ApplicationInfo info=workspace.context().getPackageManager().getApplicationInfo(main,0);int category=info.category;if(category!=android.content.pm.ApplicationInfo.CATEGORY_UNDEFINED)game=category==android.content.pm.ApplicationInfo.CATEGORY_GAME;else if((info.flags&android.content.pm.ApplicationInfo.FLAG_IS_GAME)!=0)game=true;else if((info.flags&android.content.pm.ApplicationInfo.FLAG_SYSTEM)!=0)game=false;}catch(Exception ignored){}
-        JSONObject out=new JSONObject().put("profileUserId",workspace.profileUserId()).put("profileSerial",workspace.profileSerial()).put("accessMode","managed-profile").put("instanceId",instanceId).put("executionId",executionId).put("taskId",lastTaskId).put("revision",revision).put("state",state).put("taskManaged",taskManaged).put("paused",taskManaged?!state.equals("running"):gate.paused()).put("restartRequired",restartRequired).put("displayAlert",standingFailure).put("pauseReason",pauseReason).put("displayId",workspace.displayId()).put("workspaceActive",gate.owner()!=null).put("packageName",gate.owner()==null?"":workspace.targetPackage()).put("mainPackage",main).put("mainIsGame",game).put("environmentSequence",sample).put("environmentObservedAt",observedAt).put("locked",workspace.locked()).put("activity",activity.json()).put("ownerNotices",notices.json()).put("screenNews",news.json());
+        JSONObject out=new JSONObject().put("profileUserId",workspace.profileUserId()).put("profileSerial",workspace.profileSerial()).put("accessMode","managed-profile").put("instanceId",instanceId).put("executionId",executionId).put("taskId",lastTaskId).put("revision",revision).put("state",state).put("taskManaged",taskManaged).put("paused",taskManaged?!state.equals("running"):gate.paused()).put("restartRequired",restartRequired).put("displayAlert",standingFailure).put("pauseReason",pauseReason).put("displayId",workspace.displayId()).put("workspaceActive",gate.owner()!=null).put("packageName",gate.owner()==null?"":workspace.targetPackage()).put("mainPackage",main).put("mainIsGame",game).put("environmentSequence",sample).put("environmentObservedAt",observedAt).put("locked",workspace.locked()).put("activity",activity.json()).put("ownerNotices",notices.json()).put("notify",notify==null?JSONObject.NULL:notify.json());
         takeover.describe(out);
         ApprovalGate.Reservation p=approvals.pending();if(p!=null)out.put("pending",new JSONObject().put("sessionId",p.session).put("tool",p.tool).put("arguments",new JSONObject(p.arguments)).put("approvalId",p.id).put("remainingMs",Math.max(0,p.deadline-SystemClock.elapsedRealtime())));return out;
     }

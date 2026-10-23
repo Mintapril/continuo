@@ -96,6 +96,14 @@ class NotifyPolicyTest {
         assertEquals(41, t.take(NotifyDefaults.MAX_WAIT_MS)!!.count)
     }
 
+    @Test fun theCpuStaysUpUntilThePendingBatchFiresPlusSending() {
+        val t = NotifyThrottle()
+        t.add(posted(1_000), "QQ")
+        assertEquals(5_000 + NotifyDefaults.SEND_AWAKE_MS, NotifyDefaults.awakeMs(t.fireAt()!!, 1_000))
+        assertEquals("overdue: just the send", NotifyDefaults.SEND_AWAKE_MS, NotifyDefaults.awakeMs(t.fireAt()!!, 9_000))
+        assertEquals(NotifyDefaults.MAX_WAIT_MS + NotifyDefaults.SEND_AWAKE_MS, NotifyDefaults.awakeMs(Long.MAX_VALUE, 0))
+    }
+
     @Test fun repostedContentIsNotCountedTwice() {
         val t = NotifyThrottle()
         assertEquals(Verdict.ACCEPT, t.add(posted(1_000, key = "same", text = "在吗"), "QQ"))

@@ -7,7 +7,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 // Notification triggers. Continuo batches every app's notifications on the phone (excluded apps never leave it) and
 // sends each batch here, signed. This host-plane plugin asks the Jev judge model about each notification separately;
 // the ones it judges worth a look go to the standing Cowork session of their app: one session per profile and
-// package (id cowork-app-<profile>-<package>), created on first use, resumed after a DSH restart, never archived, so
+// package (id cowork-app-<profile>-<package with dots as dashes>), created on first use, resumed after a DSH restart, never archived
+// (one the owner archived is unarchived before its next turn), so
 // the model keeps what it already did in that app. A batch for an app whose session has a turn open goes straight
 // into that turn; any other waits until no Cowork turn holds the AI screen and then starts a new turn there, the app
 // that waited longest first. The notification text reaches the model JSON-encoded and labelled as other people's
@@ -16,7 +17,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 // screen takeover; what needs the owner becomes one phone_notify_owner, then the task ends.
 
 export const name = 'cowork-notify';
-export const inject = ['workspaceRegistry', 'agents', 'agentPresets', 'sessionTitle', 'sessionQuery', 'permissionPresets', 'credentials'];
+export const inject = ['workspaceRegistry', 'agents', 'agentPresets', 'agentDefaultModel', 'sessionTitle', 'sessionQuery', 'permissionPresets', 'credentials'];
 export const RULE_ID = 'cowork-notify';
 export const KIND = 'cowork-notify';
 export const HOST = '127.0.0.1';
@@ -188,7 +189,9 @@ export function framePrompt(req) {
 
 /** The app's standing session: one per profile and package. Package names are [A-Za-z0-9_.] only (parseItems). */
 export const appKey = item => `${item.profile}:${item.package}`;
-export const sessionIdOf = key => `cowork-app-${key.replace(':', '-')}`;
+// The Broker takes only [a-zA-Z0-9_-]{1,100} as a session id (turn lease and tool calls). Dots become dashes, which
+// no package name contains, so two packages never share an id.
+export const sessionIdOf = key => `cowork-app-${key.replace(':', '-').replaceAll('.', '-')}`;
 
 /** Title of an app's standing session (a batch of that one app), set when the session is created. */
 export function titleOf(req) {
@@ -344,7 +347,7 @@ export function createNotifyHandler({ accept, readSecret = loadNotifySecret, now
 /**
  * The standing session of each app, found live, resumed from persistence (after a DSH restart) or created on first
  * use, the same way DSH's own session API and dsh-webhook do it: the Cowork preset mounted, attached to /workspace,
- * the default permission preset, a title. `llm` supplies createUserMessage and boundContextSummary (dsh-llm).
+ * the default permission preset, the default model, a title. `llm` supplies createUserMessage and boundContextSummary (dsh-llm).
  */
 export function createAppSessions(ctx, llm) {
   const loading = new Map();
@@ -357,11 +360,15 @@ export function createAppSessions(ctx, llm) {
   async function load(id, title) {
     const preset = await ctx.agentPresets.resolve(PRESET);
     const setup = async agentCtx => { await ctx.agentPresets.mount(agentCtx, preset.id); };
-    if (await stored(id)) return (await ctx.agents.resume({ resumeSessionId: id, setup })).agent;
+    // An agent without provider and model fails its first step. Like DSH's own sessions, a created or resumed app
+    // session runs on the current default model of DSH.
+    const { provider, model, reasoningEffort } = ctx.agentDefaultModel.currentSelection();
+    const agentOptions = { provider, model, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) };
+    if (await stored(id)) return (await ctx.agents.resume({ resumeSessionId: id, agentOptions, setup })).agent;
     const scope = await ctx.agentPresets.acquireScope(preset.id);
     try {
       const workspace = await ctx.workspaceRegistry.create(WORKSPACE);
-      const handle = await ctx.agents.create({ sessionId: id, meta: { cwd: workspace.path, agentPreset: preset.id }, setup });
+      const handle = await ctx.agents.create({ sessionId: id, meta: { cwd: workspace.path, agentPreset: preset.id }, agentOptions, setup });
       let attached = false;
       try {
         await workspace.attachSession(id); attached = true;
@@ -385,6 +392,9 @@ export function createAppSessions(ctx, llm) {
     /** 'steer' into the open turn of the app's session, or 'followup' as its next turn. */
     async deliver(key, batch, mode) {
       const agent = await agentOf(key, titleOf(batch));
+      // DSH refuses every step of an archived session, and the Broker then waits for the owner. Archiving only hides
+      // an app's standing session: it comes back when the app has news.
+      await ctx.workspaceRegistry.unarchiveSession(agent.session.id);
       const message = llm.createUserMessage({ content: [{ type: 'text', text: framePrompt(batch) }],
         source: { kind: 'webhook', provider: KIND, source: 'continuo', deliveryId: batch.id, ruleId: RULE_ID, form: 'notice',
           summary: llm.boundContextSummary(`${KIND} webhook handled by ${RULE_ID}`) } });

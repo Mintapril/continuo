@@ -50,6 +50,20 @@ class ModesTest {
         assertTrue(matchesFilter(session("d"), SessionFilter.COMPLETED, archived, emptySet()))
     }
 
+    @Test fun appSessionsHaveTheirOwnFilter() {
+        val qq = session("cowork-app-work-com-tencent-mobileqq", "cowork-phone", running = true)
+        assertTrue(isAppSession(qq))
+        assertTrue(isAppSession(session("cowork-app-work-com.tencent.mobileqq", "cowork-phone")))
+        assertFalse(isAppSession(session("session-1", "cowork-phone")))
+        assertTrue(matchesFilter(qq, SessionFilter.APPS, emptySet(), emptySet()))
+        for (f in listOf(SessionFilter.ALL, SessionFilter.WORKING, SessionFilter.NEEDS_INPUT, SessionFilter.COMPLETED))
+            assertFalse(f.name, matchesFilter(qq, f, emptySet(), setOf(qq.text("sessionId"))))
+        assertFalse(matchesFilter(session("session-1", "cowork-phone"), SessionFilter.APPS, emptySet(), emptySet()))
+        val hidden = setOf(qq.text("sessionId"))
+        assertFalse(matchesFilter(qq, SessionFilter.APPS, hidden, emptySet()))
+        assertTrue(matchesFilter(qq, SessionFilter.ARCHIVED, hidden, emptySet()))
+    }
+
     @Test fun toolTargetPrefersCommandAndPathAndTruncates() {
         val command = TranscriptRow("t1", "tool", "bash — 完成", detail = "Call ID: x\nArguments:\n{\"command\":\"\\n  ls -la /workspace\\nmore\"}")
         assertEquals("ls -la /workspace", toolTarget(command))

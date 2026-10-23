@@ -254,6 +254,8 @@ object CoworkConnection {
         approvalId?.let{body.put("approvalId",it)}
         apply(request("/v1/control",body))
     }
+    /** Applies the notification-trigger settings in the broker, which reads the notifications itself (NotifyBridge). */
+    suspend fun notifySettings(settings:JSONObject):JSONObject=request("/v1/notify-settings",settings)
     suspend fun refreshApps(){
         val rows=request("/v1/apps").getJSONArray("apps")
         appRows.value=(0 until rows.length()).map{rows.getJSONObject(it)}.map{CoworkApp(it.getString("packageName"),it.getString("label"),it.optBoolean("approved"))}.sortedBy{it.label}

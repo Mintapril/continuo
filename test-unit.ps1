@@ -65,6 +65,7 @@ foreach ($entry in $classpath) { if (!(Test-Path -LiteralPath $entry)) { throw "
     dev.dsh.pocket.cowork.ActivityLogTest `
     dev.dsh.pocket.island.IslandStoreTest `
     dev.dsh.pocket.island.IslandPolicyTest `
-    dev.dsh.pocket.notify.NotifyPolicyTest
+    dev.dsh.pocket.notify.NotifyPolicyTest `
+    dev.dsh.pocket.notify.NotifyRelayTest
 if ($LASTEXITCODE -ne 0) { throw 'JVM regression tests failed' }
 

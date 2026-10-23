@@ -80,7 +80,7 @@ Broker（root，app_process，从已安装 APK 的 dev.dsh.pocket.cowork.broker.
 - `data/`：`DshApi`（唯一允许的目标是 `http://127.0.0.1:3080`，`init` 里 `require`），`Transcript`（会话快照归约为 `TranscriptRow`），`Modes`（只有 `COWORK`=`cowork-phone` 与 `CODE`=`standard` 两种预设，没有普通聊天模式），`RuntimeController`（经 `su` 调 `pocket-control.sh` 的固定动作），`MemoryCenter`/`ScheduleCenter`（通过 DSH 自己的插件路由读写 dsh-mneme 记忆与 dsh-schedule 任务），`CredentialVault`。
 - `cowork/`：`CoworkConnection`（单例，controller 通道、实时流、接管输入），`CoworkControllerService`（前台服务，自愈重连），`CoworkStateBridge`（Broker 状态样本按 instance/revision 去旧，喂给任务岛的 `IslandStore`），`LiveVideo`、`RemoteKeyboard`。
 - `data/Presentation.kt` 的 `foldedEntries`：一轮结束后把思考、工具调用、中间回复折叠成一项，只留用户消息、报错和最后的结论；正在进行的一轮不折叠。
-- `notify/`：通知触发，没有按应用的规则。`NotifyListener`（NotificationListenerService，开关打开且不在排除列表才读内容）、`NotifyCenter`（单例：开关与排除列表、全局批次调度、签名发送到 127.0.0.1:3082）、`NotifyPolicy`（可在 JVM 上测的过滤、10 秒去抖合并、v2 线格式）。设置页 `ui/NotifySettings.kt`。`data/QueuedInput`：停止后把最早一条排队消息重新 steer 回去（DSH 停止后不会为已排队的消息自动开新一轮）。
+- `notify/`：通知触发，没有按应用的规则。`NotifyListener`（NotificationListenerService，开关打开且不在排除列表才读内容）、`NotifyCenter`（单例：开关与排除列表、全局批次调度、签名发送到 127.0.0.1:3082）、`NotifyPolicy`（可在 JVM 上测的过滤、去抖合并（等待时间可在设置页选，默认 5 秒）、v2 线格式）。设置页 `ui/NotifySettings.kt`。`data/QueuedInput`：停止后把最早一条排队消息重新 steer 回去（DSH 停止后不会为已排队的消息自动开新一轮）。
 - `island/`：`IslandRuntime`（单例入口）、`IslandOverlayService`（悬浮窗）、`IslandAccessibilityService`（只用来抬高窗口层级，不读内容）、`IslandPillView`。
 - `ui/`：Compose 界面；`PocketViewModel` 是唯一的 ViewModel。
 

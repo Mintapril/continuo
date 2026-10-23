@@ -11,8 +11,13 @@ import javax.crypto.spec.SecretKeySpec
  */
 object NotifyDefaults {
     const val OWN_PACKAGE = "dev.dsh.pocket"
-    /** Each notification restarts this wait; when no app has posted for this long, the batch goes to Jev. */
-    const val QUIET_MS = 10_000L
+    /** Each notification restarts this wait; when no app has posted for this long, the batch goes to Jev. The user picks
+     *  it on the settings page (one of [QUIET_CHOICES]); a stored value is clamped to [MIN_QUIET_SECONDS]..[MAX_QUIET_SECONDS]. */
+    const val DEFAULT_QUIET_SECONDS = 5
+    const val MIN_QUIET_SECONDS = 1
+    const val MAX_QUIET_SECONDS = 60
+    val QUIET_CHOICES = listOf(3, 5, 10, 15, 30, 60)
+    fun quietSeconds(raw: Int): Int = raw.coerceIn(MIN_QUIET_SECONDS, MAX_QUIET_SECONDS)
     /** A stream that never pauses still goes out this long after its first notification. */
     const val MAX_WAIT_MS = 120_000L
     private val UNPRINTABLE = Regex("[\\p{Cc}\\p{Zl}\\p{Zp}]+")
@@ -59,10 +64,11 @@ object ProfileShade {
 }
 
 /**
- * The one pending batch, across apps. It goes out once no app has posted for [NotifyDefaults.QUIET_MS], or
+ * The one pending batch, across apps. It goes out once no app has posted for [quietMs] (the user's choice; a change
+ * applies to the batch being collected), or
  * [NotifyDefaults.MAX_WAIT_MS] after its first notification. In memory only: a killed process starts fresh.
  */
-class NotifyThrottle(private val quietMs: Long = NotifyDefaults.QUIET_MS, private val maxWaitMs: Long = NotifyDefaults.MAX_WAIT_MS) {
+class NotifyThrottle(var quietMs: Long = NotifyDefaults.DEFAULT_QUIET_SECONDS * 1000L, private val maxWaitMs: Long = NotifyDefaults.MAX_WAIT_MS) {
     data class Item(val packageName: String, val app: String, val work: Boolean, val sender: String, val text: String, val at: Long)
     data class Batch(val count: Int, val firstAt: Long, val lastAt: Long, val items: List<Item>)
     private var count = 0

@@ -42,17 +42,30 @@ class NotifyPolicyTest {
         assertEquals(Verdict.EMPTY, NotifyFilter.check(posted(1, title = " ", text = "")))
     }
 
-    @Test fun differentAppsJoinOneBatchAndEachNotificationRestartsTheTenSecondWait() {
+    @Test fun differentAppsJoinOneBatchAndEachNotificationRestartsTheFiveSecondDefaultWait() {
         val t = NotifyThrottle()
         assertEquals(Verdict.ACCEPT, t.add(posted(1_000, text = "a"), "QQ"))
-        assertEquals(11_000L, t.fireAt())
-        assertEquals(Verdict.ACCEPT, t.add(posted(8_000, text = "b", pkg = "tv.danmaku.bili", work = false), "B站"))
-        assertEquals(18_000L, t.fireAt())
-        assertNull(t.take(17_999))
-        val batch = t.take(18_000)!!
-        assertEquals(2, batch.count); assertEquals(1_000L, batch.firstAt); assertEquals(8_000L, batch.lastAt)
+        assertEquals(6_000L, t.fireAt())
+        assertEquals(Verdict.ACCEPT, t.add(posted(4_000, text = "b", pkg = "tv.danmaku.bili", work = false), "B站"))
+        assertEquals(9_000L, t.fireAt())
+        assertNull(t.take(8_999))
+        val batch = t.take(9_000)!!
+        assertEquals(2, batch.count); assertEquals(1_000L, batch.firstAt); assertEquals(4_000L, batch.lastAt)
         assertEquals(listOf("QQ", "B站"), batch.items.map { it.app }); assertEquals(listOf(true, false), batch.items.map { it.work })
         assertNull(t.fireAt()); assertEquals(0, t.waiting())
+    }
+
+    @Test fun theWaitIsTheUsersChoiceClampedAndAppliesToTheBatchBeingCollected() {
+        assertEquals(5, NotifyDefaults.DEFAULT_QUIET_SECONDS)
+        assertTrue(NotifyDefaults.DEFAULT_QUIET_SECONDS in NotifyDefaults.QUIET_CHOICES)
+        assertTrue(NotifyDefaults.QUIET_CHOICES.all { NotifyDefaults.quietSeconds(it) == it })
+        assertEquals(1, NotifyDefaults.quietSeconds(0)); assertEquals(60, NotifyDefaults.quietSeconds(600)); assertEquals(10, NotifyDefaults.quietSeconds(10))
+        val t = NotifyThrottle(quietMs = 10_000)
+        t.add(posted(1_000), "QQ")
+        assertEquals(11_000L, t.fireAt())
+        t.quietMs = 3_000
+        assertEquals("a shorter wait applies to the waiting batch", 4_000L, t.fireAt())
+        assertEquals(1, t.take(4_000)!!.count)
     }
 
     @Test fun aStreamThatNeverPausesStillGoesOutAfterMaxWait() {

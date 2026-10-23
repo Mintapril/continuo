@@ -60,13 +60,13 @@ Continuo 是一个原生 Android 客户端（Kotlin + Jetpack Compose），连�
 
 ## 功能
 
-**Cowork（AI 操作手机）**：20 个手机工具，外加受限文件读写与网页工具，共 25 个。
+**Cowork（AI 操作手机）**：22 个手机工具，外加受限文件读写与网页工具，共 27 个。
 
 | 类别 | 工具 |
 |---|---|
 | 观察 | `phone_ui_tree`、`phone_screenshot`（可局部放大）、`phone_read_page`（自动下翻读长文） |
 | 操作 | `phone_tap`、`phone_long_press`、`phone_swipe`、`phone_scroll`、`phone_type_text`、`phone_key`、`phone_batch`（同屏 2–5 步元素操作）、`phone_gesture`（任意轨迹与两指手势） |
-| 应用与控制 | `phone_status`、`phone_apps`、`phone_start`、`phone_launch_app`、`phone_wait`、`phone_pause`、`phone_stop`、`phone_request_intervention`、`phone_notify_owner` |
+| 应用与控制 | `phone_status`、`phone_apps`、`phone_start`、`phone_launch_app`、`phone_wait`、`phone_pause`、`phone_stop`、`phone_request_intervention`、`phone_notify_owner`、`phone_grant_permission`、`phone_uninstall_app`（给工作资料里的第三方应用开权限、卸载应用，不经系统弹窗） |
 
 - **任意轨迹手势**：用 SVG 路径描述笔画（含贝塞尔曲线与圆弧）、两指捏合与旋转，可用于画画、签名、拖拽。
 - **局部放大截图**：裁出一块区域放大最多 8 倍，四边标屏幕坐标刻度，便于精确定位。
@@ -74,7 +74,7 @@ Continuo 是一个原生 Android 客户端（Kotlin + Jetpack Compose），连�
 - **接管时打字**：副屏不弹输入法；接管时点中输入框，会弹出本机键盘，文字经接管通道发到副屏。密码框只接受英文字母、数字和符号，AI 看不到输入内容。
 - **自动化任务**：使用 DSH 自带的 `dsh-schedule`（默认关闭的实验组件，可在应用里开关）。模型用 `schedule_*` 工具安排一次性、间隔、每天、每周或 cron 任务，到期后发回原会话执行；由提醒触发的回合只能列出任务，不能新建、修改或删除。App 的"自动化"页可查看、修改、删除任务。
 - **通知触发**：手机收到的通知在本机合并后交给判断模型 Jev（TypeSafe，经 OpenRouter），有实际意义才唤起一个新的 Cowork 会话，判断不了就不唤起；通知原文只作为"他人写的、不可信的内容"交给 AI。副屏被占用时排队，会话结束后自动归档。在设置 → 通知触发里开关、排除应用、填 Jev 密钥。经 DSH 的 `dsh-webhook` 实现，详见 [docs/cowork-internals.md](docs/cowork-internals.md#通知触发)。
-- **AI 自己经营副屏上的账号**：工作资料里的通讯、社交等应用和账号是你专门注册给 AI 用的，由它以自己的身份经营：回消息、发动态、加好友、卸载应用、给应用开权限等都自行判断，不请示。只有付款、账号安全（改密码、换绑手机、扫码或授权登录、注销账号）和清空聊天记录要你决定。你在聊天里派的任务，需要你时请你接管副屏；通知或定时任务唤起的回合没人看着，需要你时 AI 用 `phone_notify_owner` 给你发一条"Cowork 给你留言"的通知，然后结束任务。这些是提示词层面的约束，不是 Broker 的硬拦截；"哪种回合能接管、哪种能发通知"由插件强制。
+- **AI 自己经营副屏上的账号**：工作资料里的通讯、社交等应用和账号是你专门注册给 AI 用的，由它以自己的身份经营：回消息、发动态、加好友、卸载应用、给应用开权限等都自行判断，不请示。系统的权限弹窗和卸载确认框不接受 AI 的点击，所以开权限、卸载由 Broker 用 root 直接办（`phone_grant_permission`、`phone_uninstall_app`），只限工作资料里的第三方应用。只有付款、账号安全（改密码、换绑手机、扫码或授权登录、注销账号）和清空聊天记录要你决定。你在聊天里派的任务，需要你时请你接管副屏；通知或定时任务唤起的回合没人看着，需要你时 AI 用 `phone_notify_owner` 给你发一条"Cowork 给你留言"的通知，然后结束任务。这些是提示词层面的约束，不是 Broker 的硬拦截；"哪种回合能接管、哪种能发通知"由插件强制。
 
 **其他**：
 
@@ -138,7 +138,7 @@ node --test test/strict-*.test.mjs   # 插件离线测试
 
 - 依赖 root、手机本机 DSH 与手动创建的工作资料，只在一加 Ace 3V 上验证过。
 - 工作资料不是虚拟机，也不是防恶意应用的完整沙箱；root 链路共享。跨资料、跨显示的跳转只会被检测并处理，不是系统级阻断。
-- 应用跳到工作资料以外的系统页面时，Broker 只能当作转场，20 秒后暂停；系统权限弹窗通常拒绝注入的点击，需要用户接管。
+- 应用跳到工作资料以外的系统页面时，Broker 只能当作转场，20 秒后暂停；系统弹窗通常拒绝注入的点击。权限和卸载由专门的工具处理，但已经弹出的权限对话框在授权后会不会自己关掉尚未在真机验证，不关时仍需你点一下；其他系统弹窗需要你接管。
 - WebView、游戏、自绘界面常缺少结构节点，只能依赖截图；第三方应用只做过抽样验证。
 - 不带元素 ID 的文本输入仅支持 ASCII；带元素 ID 时可输入任意语言。
 - 少数系统级启动（通知、闹钟等）仍可能让工作资料界面短暂出现在主屏，由兜底迁移回副屏。

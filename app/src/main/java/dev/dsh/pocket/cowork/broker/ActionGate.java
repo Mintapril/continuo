@@ -4,7 +4,7 @@ import java.util.*;
 
 /** Platform independent capability gate. Unknown operations and stale observations fail closed. */
 public final class ActionGate {
-    public static final Set<String> TOOLS = Set.of("phone.status", "phone.apps", "phone.start", "phone.screenshot", "phone.ui_tree", "phone.tap", "phone.long_press", "phone.swipe", "phone.scroll", "phone.read_page", "phone.type_text", "phone.key", "phone.wait", "phone.batch", "phone.gesture", "phone.launch_app", "phone.pause", "phone.stop", "phone.request_intervention", "phone.intervention_status", "phone.notify_owner");
+    public static final Set<String> TOOLS = Set.of("phone.status", "phone.apps", "phone.start", "phone.screenshot", "phone.ui_tree", "phone.tap", "phone.long_press", "phone.swipe", "phone.scroll", "phone.read_page", "phone.type_text", "phone.key", "phone.wait", "phone.batch", "phone.gesture", "phone.launch_app", "phone.pause", "phone.stop", "phone.request_intervention", "phone.intervention_status", "phone.notify_owner", "phone.grant_permission", "phone.uninstall_app");
     public static final Set<String> INPUTS = Set.of("phone.tap", "phone.long_press", "phone.swipe", "phone.scroll", "phone.read_page", "phone.type_text", "phone.key", "phone.launch_app");
     public static final class Denied extends RuntimeException {
         public final String code;

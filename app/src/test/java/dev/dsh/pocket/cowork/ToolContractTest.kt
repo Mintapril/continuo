@@ -104,4 +104,12 @@ class ToolContractTest {
         denied("phone.notify_owner","{}");denied("phone.notify_owner","""{"text":""}""");denied("phone.notify_owner","""{"text":"   "}""")
         denied("phone.notify_owner","""{"text":"${"x".repeat(201)}"}""");denied("phone.notify_owner","""{"text":1}""");denied("phone.notify_owner","""{"text":"a","to":"x"}""")
     }
+    @Test fun appManagementTakesAPackageAndAKnownPermissionGroup(){
+        for(group in listOf("location","camera","microphone","storage","contacts","notifications"))valid("phone.grant_permission","""{"packageName":"com.tencent.mobileqq","permission":"$group"}""")
+        valid("phone.uninstall_app","""{"packageName":"com.tencent.mobileqq"}""")
+        denied("phone.grant_permission","""{"packageName":"com.tencent.mobileqq","permission":"android.permission.ACCESS_FINE_LOCATION"}""")
+        denied("phone.grant_permission","""{"packageName":"com.tencent.mobileqq","permission":"sms"}""");denied("phone.grant_permission","""{"packageName":"com.tencent.mobileqq"}""")
+        denied("phone.grant_permission","""{"packageName":"com.tencent.mobileqq","permission":"camera","userId":0}""");denied("phone.grant_permission","""{"packageName":"qq","permission":"camera"}""")
+        denied("phone.uninstall_app","{}");denied("phone.uninstall_app","""{"packageName":"intent://x"}""");denied("phone.uninstall_app","""{"packageName":"com.tencent.mobileqq","allUsers":true}""")
+    }
 }

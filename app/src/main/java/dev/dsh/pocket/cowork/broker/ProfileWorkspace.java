@@ -58,7 +58,11 @@ public final class ProfileWorkspace implements AutoCloseable {
         launchers.reconcile();
         try{popups=new BackgroundPopupGate(context,profile);popups.enforce();}catch(Exception e){System.err.println("background pop-up gate unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
         try{quiet=new QuietNotificationGate(profile);quiet.enforce();}catch(Exception e){System.err.println("notification quieting unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
+        try{apps=new ProfileApps(profile);}catch(Exception e){System.err.println("app management unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
     }
+    private volatile ProfileApps apps;
+    /** See {@link ProfileApps}: phone.grant_permission and phone.uninstall_app, on their own lock, not this one. */
+    public ProfileApps apps(){ProfileApps value=apps;if(value==null)ActionGate.fail("PLATFORM_ERROR","App management is unavailable");return value;}
     private volatile BackgroundPopupGate popups;
     /** See {@link BackgroundPopupGate}: drift repair from the watchdog; new installs are handled by the install watch. */
     public void closeBackgroundPopups(){BackgroundPopupGate gate=popups;if(gate!=null)gate.enforce();}
@@ -355,6 +359,15 @@ public final class ProfileWorkspace implements AutoCloseable {
         try{for(ActivityManager.RunningTaskInfo t:tasks())if(t.getClass().getField("displayId").getInt(t)==displayId()&&t.getClass().getField("userId").getInt(t)==profile.userId()&&t.getClass().getField("isVisible").getBoolean(t)&&t.topActivity!=null)return t.topActivity.getPackageName();}
         catch(Exception ignored){}return "";
     }
+    /** Whether a visible task of the owned display belongs to this work-profile app (also under a system dialog in it). */
+    public boolean showing(String pkg){
+        if(displayId()<=0)return false;
+        for(ActivityManager.RunningTaskInfo t:tasks())if(taskInt(t,"displayId")==displayId()&&taskInt(t,"userId")==profile.userId()&&taskVisible(t)
+            &&((t.topActivity!=null&&pkg.equals(t.topActivity.getPackageName()))||(t.baseActivity!=null&&pkg.equals(t.baseActivity.getPackageName()))))return true;
+        return false;
+    }
+    /** An app that was uninstalled is no longer one this display launched. */
+    public synchronized void forget(String pkg){launched.remove(pkg);}
     public synchronized void launch(String pkg)throws Exception{
         // check() has already moved a task of this app that leaked to the main screen onto the owned display; starting
         // the app below then brings that task to the front. Only a task that could not be moved is still refused.

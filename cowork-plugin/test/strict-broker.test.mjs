@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BrokerClient, PHONE_ARGUMENTS, loadAgentSecret, waitForHandback, planZoom, ZOOM } from '../src/broker.mjs';
+import { BrokerClient, PHONE_ARGUMENTS, PERMISSION_GROUPS, loadAgentSecret, waitForHandback, planZoom, ZOOM } from '../src/broker.mjs';
 import { phoneTools, ALLOWED_TOOLS, toolTimeoutMs } from '../src/restricted.mjs';
 import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,7 @@ function setup(transform = x => x) {
     if (t === 'phone.read_page') result = { performed: true, text: 'a\nb', pages: 2, reachedEnd: true, title: 'T' };
     if (t === 'phone.batch') result = { performed: true, completed: request.arguments.steps.length };
     if (t === 'phone.gesture') result = { performed: true, completed: request.arguments.strokes.length };
+    if (t === 'phone.grant_permission') result = { performed: true, granted: PERMISSION_GROUPS[request.arguments.permission].slice(0, 1), held: [], kept: [] };
     return transform({ protocolVersion: 1, requestId: request.requestId, ok: true, result });
   } });
   return { client, calls, advance: delta => time += delta };
@@ -34,6 +35,7 @@ const args = {
   'phone.type_text': { observationId: 'obs', text: 'hello', elementId: 'edit' }, 'phone.key': { observationId: 'obs', key: 'BACK' },
   'phone.wait': { timeoutMs: 0 }, 'phone.launch_app': { observationId: 'obs', packageName: 'dev.fixture.app' }, 'phone.pause': {}, 'phone.stop': {}, 'phone.request_intervention': {},
   'phone.notify_owner': { text: '张三发来一笔 200 元转账，需要你决定是否收款' },
+  'phone.grant_permission': { packageName: 'dev.fixture.app', permission: 'location' }, 'phone.uninstall_app': { packageName: 'dev.fixture.app' },
   'phone.batch': { observationId: 'obs', steps: [{ tool: 'type_text', elementId: 'edit', text: 'a' }, { tool: 'tap', elementId: 'btn' }] },
   'phone.gesture': { observationId: 'obs', strokes: [{ path: 'M 10 10 L 50 50' }] },
 };
@@ -188,13 +190,49 @@ test('notify_owner wrapper tells the model to end the task and reports the notif
   await assert.rejects(refused.get('phone.notify_owner').execute({ text: 'x' }, { agent: { session: { id: 's' } }, signal: new AbortController().signal }));
   assert.deepEqual(sent, ['s'], 'a notification the broker refused does not count');
 });
+test('grant_permission: a known group of a valid package, and only a result inside that group that holds something', async () => {
+  const { client, calls } = setup();
+  assert.ok(ALLOWED_TOOLS.includes('phone_grant_permission') && ALLOWED_TOOLS.includes('phone_uninstall_app'));
+  for (const permission of Object.keys(PERMISSION_GROUPS)) await client.call('s', 'phone.grant_permission', { packageName: 'com.tencent.mobileqq', permission });
+  assert.equal(calls.length, Object.keys(PERMISSION_GROUPS).length);
+  for (const bad of [{ packageName: 'com.tencent.mobileqq', permission: 'android.permission.CAMERA' }, { packageName: 'com.tencent.mobileqq', permission: 'sms' },
+    { packageName: 'com.tencent.mobileqq', permission: 'background_location' }, { packageName: 'qq', permission: 'camera' }, { packageName: 'com.tencent.mobileqq' }, { permission: 'camera' }])
+    await assert.rejects(client.call('s', 'phone.grant_permission', bad), JSON.stringify(bad));
+  for (const bad of [{}, { packageName: 'not a package' }]) await assert.rejects(client.call('s', 'phone.uninstall_app', bad));
+  assert.equal(calls.length, Object.keys(PERMISSION_GROUPS).length, 'refused before dispatch');
+  const fine = 'android.permission.ACCESS_FINE_LOCATION', coarse = 'android.permission.ACCESS_COARSE_LOCATION';
+  const reply = result => new BrokerClient({ secret, transport: async r => envelopeOk(r, { performed: true, ...result }) }).call('s', 'phone.grant_permission', { packageName: 'p.a', permission: 'location' });
+  assert.deepEqual(await reply({ granted: [], held: [fine], kept: [coarse] }), { performed: true, granted: [], held: [fine], kept: [coarse] });
+  for (const bad of [{ granted: ['android.permission.CAMERA'], held: [], kept: [] }, { granted: [fine], held: [fine], kept: [] }, { granted: [], held: [], kept: [fine] },
+    { granted: [], held: [], kept: [] }, { granted: [fine], held: [] }, { granted: [fine], held: [], kept: [], note: 'x' }])
+    await assert.rejects(reply(bad), JSON.stringify(bad));
+});
+test('the permission groups are the same in ProfileAppPolicy.java', async () => {
+  const java = await readFile(new URL('../../app/src/main/java/dev/dsh/pocket/cowork/broker/ProfileAppPolicy.java', import.meta.url), 'utf8');
+  const groups = Object.fromEntries([...java.matchAll(/^\s*"([a-z]+)", List\.of\(([^)]*)\)/gm)].map(([, group, list]) => [group, [...list.matchAll(/"([^"]+)"/g)].map(m => m[1])]));
+  assert.deepEqual(groups, { ...PERMISSION_GROUPS });
+});
+test('app management changes the screen: observations are dropped, uninstall waits out a takeover like other mutations', async () => {
+  for (const [name, args] of [['phone.grant_permission', { packageName: 'p.a', permission: 'camera' }], ['phone.uninstall_app', { packageName: 'p.a' }]]) {
+    const { client, calls } = setup();
+    await client.call('s', 'phone.ui_tree', {});
+    await client.call('s', name, args);
+    await assert.rejects(client.call('s', 'phone.tap', { observationId: 'obs', elementId: 'btn' }), /current tree|Observation missing/, name);
+    await assert.rejects(client.call('s', 'phone.screenshot', {}), error => error.code === 'TREE_REQUIRED', name);
+    assert.equal(calls.at(-1).tool, name);
+  }
+  const h = interventionHarness({ userControlTools: [['phone.uninstall_app', 1]] });
+  const result = await h.tools.get('phone.uninstall_app').execute({ packageName: 'p.a' }, h.exec());
+  assert.equal(result.performed, false); assert.equal(result.userControlled, true);
+  assert.equal(h.calls.filter(c => c === 'phone.uninstall_app').length, 1, 'never re-issued after hand-back');
+});
 test('phone.status accepts optional userControl', async () => {
   const c = new BrokerClient({ secret, transport: async r => envelopeOk(r, { state: 'ready', accessibilityReady: true, screenCaptureReady: true, userControl: true }) });
   assert.equal((await c.call('s', 'phone.status', {})).userControl, true);
 });
 test('tool timeouts: blockable tools outlast the 15 minute wait, others stay 30 s', () => {
-  for (const name of ['phone.request_intervention', 'phone.screenshot', 'phone.ui_tree', 'phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.type_text', 'phone.key', 'phone.launch_app', 'phone.wait', 'phone.batch', 'phone.gesture', 'phone.status']) assert.equal(toolTimeoutMs(name), 960000, name);
-  for (const name of ['phone.apps', 'phone.start', 'phone.pause', 'phone.stop', 'cowork.files.read', 'web_fetch']) assert.equal(toolTimeoutMs(name), 30000, name);
+  for (const name of ['phone.request_intervention', 'phone.screenshot', 'phone.ui_tree', 'phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.type_text', 'phone.key', 'phone.launch_app', 'phone.wait', 'phone.batch', 'phone.gesture', 'phone.status', 'phone.uninstall_app']) assert.equal(toolTimeoutMs(name), 960000, name);
+  for (const name of ['phone.apps', 'phone.start', 'phone.pause', 'phone.stop', 'phone.notify_owner', 'phone.grant_permission', 'cowork.files.read', 'web_fetch']) assert.equal(toolTimeoutMs(name), 30000, name);
 });
 
 function interventionHarness({ statuses = [], userControlTools = [], clock } = {}) {

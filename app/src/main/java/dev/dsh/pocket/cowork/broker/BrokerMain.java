@@ -43,7 +43,7 @@ public final class BrokerMain {
     /** Turn a transition refusal into an actionable one; a refusal that paused the session keeps its own code. */
     private static ActionGate.Denied settling(ActionGate.Denied e){return RefusalPolicy.reported(e);}
     /** Observation and input tools the model may not use while the user controls the screen. */
-    private static final Set<String> USER_CONTROL_BLOCKED=Set.of("phone.screenshot","phone.ui_tree","phone.tap","phone.long_press","phone.swipe","phone.scroll","phone.read_page","phone.type_text","phone.key","phone.launch_app","phone.wait","phone.batch","phone.gesture");
+    private static final Set<String> USER_CONTROL_BLOCKED=Set.of("phone.screenshot","phone.ui_tree","phone.tap","phone.long_press","phone.swipe","phone.scroll","phone.read_page","phone.type_text","phone.key","phone.launch_app","phone.wait","phone.batch","phone.gesture","phone.uninstall_app");
     private final Takeover takeover=new Takeover();
     /** How often the live view re-reads the focused input field during a takeover (one accessibility query). */
     private static final long FIELD_POLL_MS=200;
@@ -415,6 +415,27 @@ public final class BrokerMain {
         if(takeover.active()&&USER_CONTROL_BLOCKED.contains(tool))ActionGate.fail("USER_CONTROL","The user is controlling the screen; wait for hand-back");
         gate.requireActive(session);
         workspace.keepAwake();
+        // The model's own app management (ProfileApps): no pixels are involved, so no observation and no screen check.
+        // The screen may change all the same (a permission dialog may close, the app disappears): observe again after.
+        if(tool.equals("phone.grant_permission")){
+            String pkg=a.getString("packageName");
+            JSONObject granted=workspace.apps().grant(pkg,a.getString("permission"));
+            treeRead=false;treeIncomplete=false;gate.invalidate();
+            if(granted.getJSONArray("granted").length()>0)activity.note("给"+workspace.appLabel(pkg)+"开了权限");
+            event(tool,"running");return performed(granted);
+        }
+        if(tool.equals("phone.uninstall_app")){
+            String pkg=a.getString("packageName");ProfileApps apps=workspace.apps();
+            apps.requireManageable(pkg);
+            // The app on screen would vanish under the guard (APP_UNKNOWN until the watchdog pauses): the AI desktop
+            // takes the display first, as HOME does.
+            if(workspace.showing(pkg))try{workspace.home();}catch(ActionGate.Denied e){if(!survives(e))safePause(e.code);throw settling(e);}catch(Exception e){safePause("PLATFORM_ERROR");throw e;}
+            String label=workspace.appLabel(pkg);
+            treeRead=false;treeIncomplete=false;gate.invalidate();
+            apps.uninstall(pkg);
+            workspace.forget(pkg);activity.note("卸载了"+label);
+            event(tool,"running");return performed();
+        }
         // phone.wait guards on its own clock below: a settling screen is exactly what it waits out, so this up-front
         // check must not turn it into an immediate SCREEN_SETTLING.
         if(!tool.equals("phone.wait"))try{guardNow();}catch(ActionGate.Denied e){if(!survives(e))safePause(e.code);throw settling(e);}

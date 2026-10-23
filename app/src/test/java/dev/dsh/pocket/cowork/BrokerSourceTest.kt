@@ -143,6 +143,19 @@ class BrokerSourceTest {
     }
 
     /** The native tool sets and the plugin's tool tables must name the same agent tools. */
+    /** phone.grant_permission and phone.uninstall_app act for the verified work profile only: the grant names the
+     *  profile's UserHandle, the uninstall the profile's user id with flags 0 (never DELETE_ALL_USERS, so a copy of the
+     *  app in the owner's own space stays), and both verify the app first. */
+    @Test fun appManagementStaysInTheWorkProfile() {
+        val apps = File(root, "ProfileApps.java").readText()
+        assertTrue(apps.contains("user = (UserHandle) UserHandle.class.getMethod(\"of\", int.class).invoke(null, profile.userId());"))
+        assertEquals(listOf("pm, pkg, name, user"), Regex("""grant\.invoke\(([^;]*)\);""").findAll(apps).map { it.groupValues[1] }.toList())
+        assertEquals(listOf("pm, new VersionedPackage(pkg, PackageManager.VERSION_CODE_HIGHEST), observer, profile.userId(), 0"),
+            Regex("""delete\.invoke\(([^;]*)\);""").findAll(apps).map { it.groupValues[1] }.toList())
+        for (method in listOf("JSONObject grant(String pkg, String group)", "void uninstall(String pkg)"))
+            assertTrue(method, apps.substringAfter(method).substringBefore("\n    }").contains("manageable(pkg, "))
+    }
+
     @Test fun toolInventoryMatchesThePlugin() {
         val gate = File(root, "ActionGate.java").readText()
         val tools = Regex("""TOOLS\s*=\s*Set\.of\(([^)]*)\)""").find(gate)?.groupValues?.get(1)

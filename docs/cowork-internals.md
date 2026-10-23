@@ -51,7 +51,18 @@
     - 你在聊天里派的任务：用 `phone_request_intervention` 把屏幕交给你，和以前一样。
     - 定时提醒或通知触发开启的回合没人看着：不等你，用 `phone_notify_owner` 给你发一条通知，说明情况和需要你做什么，然后结束任务。
     - 这两条由插件强制：没有你的消息的回合调用 `phone_request_intervention` 会被拒绝；有你的消息的回合调用 `phone_notify_owner` 会被拒绝；每个回合最多发一条通知。插件中途重载、没看到本轮开始时，按没人看着处理。
-  - **技术限制**：系统权限弹窗、卸载确认框属于系统应用，Broker 的输入只投给模型正在操作的应用，这类窗口会拒绝（`INPUT_REJECTED`）。所以“要不要开权限、要不要卸载”由模型决定，但真要点那个弹窗，仍得你来（接管或收到通知后处理）。
+  - **开权限和卸载（`phone_grant_permission`、`phone_uninstall_app`）**：系统权限弹窗、卸载确认框属于系统应用，Broker 的输入只投给模型正在操作的应用，这类窗口会拒绝（`INPUT_REJECTED`）。所以这两件事不点弹窗，由 Broker 以 root 直接办（`ProfileApps`，规则见 `ProfileAppPolicy`）：
+    - **范围**：只管已验证工作资料里的第三方应用。系统应用、资料拥有者、Continuo 自己的包（含验收用的 fixture），以及设置、终端、安装器一类的包都拒绝（`APP_DENIED`）。只作用于工作资料用户，不碰个人空间。
+    - **开权限**：模型按组指定，和系统弹窗问的一样：`location`（精确和大致位置，只在前台，不含后台位置）、`camera`、`microphone`、`storage`（照片、视频、音频、共享文件）、`contacts`（工作资料自己的联系人）、`notifications`。每组对应一份固定的运行时权限清单（插件的 `PERMISSION_GROUPS` 与 `ProfileAppPolicy.GROUPS`，由测试核对两边一致），不含悬浮窗、使用情况访问、所有文件访问之类的特殊权限，也不含电话、短信、通话记录。位置、相机、麦克风用的是这台手机真实的传感器。
+      - 调用和 `pm grant` 相同，应用操作由系统同步，授予后回读确认。
+      - 只授予应用申请了、还没有、也没人做过决定的权限。你在系统设置里关掉的（用户设置、用户固定），以及策略或系统固定的，保留原样，结果里列为 `kept`，和“新装应用自动允许通知”的规则一致。
+      - 应用一项都没申请，或授予后一项都没有时，返回 `PERMISSION_UNAVAILABLE`。
+    - **卸载**：调用和 `pm uninstall --user` 相同（`IPackageManager.deletePackageVersioned`，flags 为 0），只从工作资料卸载，个人空间里的同一个应用不受影响，数据随应用删除。root 调用不弹确认框。
+      - 应用正显示在副屏上时，先让 AI 桌面盖住副屏再卸载，免得副屏上的前台应用凭空消失、20 秒后被看门狗暂停。
+      - 系统拒绝或 15 秒内没有确认时返回 `UNINSTALL_FAILED`，模型用 `phone_apps` 查看是否已卸载。
+      - 你接管副屏期间调用，会等你交还后返回“未执行”。
+    - **已经弹出的权限对话框**：授权后它会不会自己关掉，取决于系统的权限控制器，尚未在真机验证。权限本身已经授予，但对话框不关时应用仍在等它的回答，还得你点一下（接管或收到通知后处理）。所以提示词让模型尽量在应用开口之前授权（刚装好时、用到功能之前），应用已有权限就不会弹窗。
+    - **验证状况**：只有离线测试，还没在真机上调用过。
   - 工作资料模式下没有逐个动作的原生审批（资料本身是授权边界），以上除插件强制的部分外，都是提示词层面的约束，不是 Broker 的硬拦截。
   - **通知怎么到你手上**：Broker 把留言放进控制端状态（`ownerNotices`，最近 5 条，按 Broker 实例编号），Continuo 的控制服务逐条弹出“Cowork 给你留言”通知（“Cowork 需要你处理”通道，锁屏上隐藏内容），点开进 Cowork 页面，可在那里接管副屏。已弹过的编号存在本地，Continuo 重启不会重复弹。留言只在 Broker 内存里，Broker 重启后清空。
 - **文本输入**：带 `elementId` 时对可编辑节点做语义整体替换，任何语言都可以（含中文），密码框拒绝（`SECRET_INPUT`）；不带 `elementId` 时逐键注入，仅限键盘可表达的 ASCII 可打印字符，中文与 emoji 返回 `TEXT_UNSUPPORTED`（不结束任务）。两种方式都不走共享剪贴板。
@@ -80,7 +91,7 @@
 
 ## 模型可用的工具
 
-手机工具 20 个。模型看到的名字是下划线形式（如 `phone_tap`），插件与 Broker 之间的线协议名是点号形式（`phone.tap`）：
+手机工具 22 个。模型看到的名字是下划线形式（如 `phone_tap`），插件与 Broker 之间的线协议名是点号形式（`phone.tap`）：
 
 | 类别 | 工具 |
 |---|---|
@@ -90,8 +101,9 @@
 | 输入 | `phone.type_text`、`phone.key`（`BACK`/`ENTER`/`HOME`/`RECENTS`）、`phone.batch`（同一观察上的 2–5 步元素操作） |
 | 应用与时序 | `phone.start`（可选）、`phone.launch_app`（最多等 8 秒上屏，超时返回 `LAUNCH_TIMEOUT` 但保留已启动的应用）、`phone.wait`（≤10 秒） |
 | 控制 | `phone.pause`、`phone.stop`、`phone.request_intervention`、`phone.notify_owner`（没人看着的回合给你发一条通知） |
+| 应用管理 | `phone.grant_permission`（按组给第三方应用开运行时权限）、`phone.uninstall_app`（只从工作资料卸载），见上文“开权限和卸载” |
 
-另有 `cowork_files_read/write/list`（固定 `/workspace/cowork`，只能新建文件）、`web_search`、`web_fetch`（仅公网 HTTP(S)），共 25 个。宿主装有对应插件时，还会放行上下文管理工具（`compress`、`decompress`、`search_context`、`acp_status`）和记忆工具（`memory_search/get/list/save/update/archive`），但只认宿主的全局定义，带文件参数的调用一律拒绝。
+另有 `cowork_files_read/write/list`（固定 `/workspace/cowork`，只能新建文件）、`web_search`、`web_fetch`（仅公网 HTTP(S)），共 27 个。宿主装有对应插件时，还会放行上下文管理工具（`compress`、`decompress`、`search_context`、`acp_status`）和记忆工具（`memory_search/get/list/save/update/archive`），但只认宿主的全局定义，带文件参数的调用一律拒绝。
 
 开启 DSH 自动化任务（`dsh-experimental-schedule-bundle`）后，`dsh-schedule` 会把 `schedule_create`、`schedule_list`、`schedule_update`、`schedule_delete` 注册进每个根会话自己的作用域，Cowork 会放行这四个工具。放行条件有三条：
 - 调用方是顶层会话；
@@ -202,7 +214,7 @@ DSH 重启后，这份追踪状态会丢失，重启前未结束的通知会话�
 
 ### 已知限制
 
-- **通知权限**：应用必须有通知权限才会发通知。已有应用的权限要你自己在系统设置里开，Broker 只替之后新装的应用开。
+- **通知权限**：应用必须有通知权限才会发通知。Broker 只自动替之后新装的应用开；已有的应用由模型用 `phone_grant_permission` 开（`notifications`），或你在系统设置里开。
 - **与其他 webhook 覆盖层冲突**：另一个同时挂载 `@deepseek-ai/dsh-webhook` 的覆盖层（如上游的 GitHub 评审示例）会与它冲突。
 - **验证状况**：工作资料里的 QQ 通知被个人资料里的 Continuo 收到、Jev 真实调用、新建 Cowork 会话、结束后归档，整条链路已在真机走通；一批里广告混着私信的逐条判断、新装应用自动允许通知，还没有用真实场景验证。
 

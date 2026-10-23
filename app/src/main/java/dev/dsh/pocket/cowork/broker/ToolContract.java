@@ -85,6 +85,8 @@ public final class ToolContract {
             case "phone.request_intervention":fields(a,"","reason");if(a.has("reason"))text(a,"reason",1,120);break;
             case "phone.notify_owner":fields(a,"text","");if(text(a,"text",1,OwnerNotices.MAX_TEXT).isBlank())fail();break;
             case "phone.start":fields(a,"","packageName");if(a.has("packageName"))pkg(a);break;
+            case "phone.grant_permission":fields(a,"packageName,permission","");pkg(a);if(!ProfileAppPolicy.GROUPS.containsKey(text(a,"permission",1,20)))fail();break;
+            case "phone.uninstall_app":fields(a,"packageName","");pkg(a);break;
             case "phone.launch_app":fields(a,"packageName","observationId");if(a.has("observationId"))obs(a);pkg(a);break;
             case "phone.tap":fields(a,"observationId","x,y,elementId");obs(a);target(a);break;
             case "phone.long_press":fields(a,"observationId","x,y,elementId,durationMs");obs(a);target(a);if(a.has("durationMs"))number(a,"durationMs",500,2000);break;

@@ -16,16 +16,26 @@ const ERROR_CODES = new Set([
   'APP_UNAVAILABLE', 'APP_UNKNOWN', 'ARGUMENTS_INVALID', 'CONTROLLER_OFFLINE', 'CONTROL_DENIED', 'LAUNCH_TIMEOUT',
   'CONTROL_INTERRUPTED', 'DISPLAY_BUSY', 'DISPLAY_FAILED', 'EXECUTION_STALE', 'FRAME_UNAVAILABLE',
   'HIGH_IMPACT_SINGLE', 'IME_POLICY_UNAVAILABLE', 'INPUT_REJECTED', 'INVALID_GESTURE', 'KEY_DENIED',
-  'LOCKED', 'MAIN_CHANGED', 'MAIN_UNKNOWN', 'NODE_STALE', 'NOT_EDITABLE', 'NO_DISPLAY', 'PAUSED',
+  'LOCKED', 'MAIN_CHANGED', 'MAIN_UNKNOWN', 'NODE_STALE', 'NOT_EDITABLE', 'NO_DISPLAY', 'PAUSED', 'PERMISSION_UNAVAILABLE',
   'PLATFORM_ERROR', 'PROTOCOL_INVALID', 'RESTART_REQUIRED', 'REVISION_STALE', 'SCROLL_UNSUPPORTED',
   'SCREEN_SETTLING', 'SECRET_INPUT', 'SECRET_SCREEN', 'SECURE_WINDOW', 'SECURITY_UNAVAILABLE', 'SESSION_BUSY',
   'SESSION_INVALID', 'SESSION_MISMATCH', 'STALE_OBSERVATION', 'TEXT_LIMIT',
-  'TEXT_UNSUPPORTED', 'TOOL_DENIED', 'TREE_REQUIRED', 'USER_CONTROL', 'USER_REQUIRED', 'WAIT_LIMIT', 'WRONG_DISPLAY',
+  'TEXT_UNSUPPORTED', 'TOOL_DENIED', 'TREE_REQUIRED', 'UNINSTALL_FAILED', 'USER_CONTROL', 'USER_REQUIRED', 'WAIT_LIMIT', 'WRONG_DISPLAY',
   // Retain the previously recognized protocol codes for compatibility.
   'INVALID_REQUEST', 'UNAUTHORIZED', 'UNKNOWN_TOOL', 'PERMISSION_DENIED', 'NOT_READY',
   'OUT_OF_BOUNDS', 'BUSY', 'TIMEOUT', 'INTERNAL_ERROR', 'APP_NOT_APPROVED',
 ]);
 const observed = { observationId: str };
+// phone.grant_permission groups, as the system dialog asks for them -> the runtime permissions each stands for. The same
+// table as ProfileAppPolicy.GROUPS (strict-broker.test.mjs compares them): nothing else is ever granted.
+export const PERMISSION_GROUPS = Object.freeze({
+  location: ['android.permission.ACCESS_FINE_LOCATION', 'android.permission.ACCESS_COARSE_LOCATION'],
+  camera: ['android.permission.CAMERA'],
+  microphone: ['android.permission.RECORD_AUDIO'],
+  storage: ['android.permission.READ_MEDIA_IMAGES', 'android.permission.READ_MEDIA_VIDEO', 'android.permission.READ_MEDIA_AUDIO', 'android.permission.READ_MEDIA_VISUAL_USER_SELECTED', 'android.permission.READ_EXTERNAL_STORAGE', 'android.permission.WRITE_EXTERNAL_STORAGE'],
+  contacts: ['android.permission.READ_CONTACTS', 'android.permission.WRITE_CONTACTS'],
+  notifications: ['android.permission.POST_NOTIFICATIONS'],
+});
 const num = { type: 'number' };
 export const PHONE_ARGUMENTS = Object.freeze({
   'phone.status': object(), 'phone.apps': object(),
@@ -51,11 +61,14 @@ export const PHONE_ARGUMENTS = Object.freeze({
   'phone.pause': object(), 'phone.stop': object(), 'phone.request_intervention': object({ reason: str }, []),
   // One note for the owner from a run nobody watches (1..200 characters); the App shows it as a notification.
   'phone.notify_owner': object({ text: str }, ['text']),
+  // The model's own app management in the work profile: third-party apps only (natively enforced), no screen involved.
+  'phone.grant_permission': object({ packageName: str, permission: { type: 'string', enum: Object.keys(PERMISSION_GROUPS) } }),
+  'phone.uninstall_app': object({ packageName: str }),
 });
 // Native-only tools: accepted by BrokerClient but never registered with, or visible to, the model.
 export const INTERNAL_ARGUMENTS = Object.freeze({ 'phone.intervention_status': object() });
 // Tools natively rejected with USER_CONTROL while the user controls the screen; their wrappers wait for hand-back.
-export const USER_CONTROL_TOOLS = Object.freeze(['phone.screenshot', 'phone.ui_tree', 'phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.read_page', 'phone.type_text', 'phone.key', 'phone.launch_app', 'phone.wait', 'phone.batch', 'phone.gesture']);
+export const USER_CONTROL_TOOLS = Object.freeze(['phone.screenshot', 'phone.ui_tree', 'phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.read_page', 'phone.type_text', 'phone.key', 'phone.launch_app', 'phone.wait', 'phone.batch', 'phone.gesture', 'phone.uninstall_app']);
 // Read-only observations are re-issued once after hand-back; everything else must be re-planned by the model.
 export const REISSUE_AFTER_HANDBACK = Object.freeze(['phone.status', 'phone.apps', 'phone.screenshot', 'phone.ui_tree', 'phone.wait']);
 export const HANDBACK_MAX_MS = 15 * 60_000, HANDBACK_POLL_MS = 1000;
@@ -90,6 +103,8 @@ export const PHONE_RESULTS = Object.freeze({
   'phone.gesture': object({ performed: { type: 'boolean', const: true }, completed: int, stoppedAt: int, stopReason: str, uncertain: bool, note: str, ...afterInput }, ['performed', 'completed']),
   // Native result only; the model-visible result is built by the blocking wrapper in restricted.mjs.
   'phone.request_intervention': object({ performed: { type: 'boolean', const: true }, interventionId: str }),
+  // granted: newly held; held: held before; kept: requested but left as they were (decided by the owner, a policy or the system).
+  'phone.grant_permission': object({ performed: { type: 'boolean', const: true }, granted: { type: 'array', items: str }, held: { type: 'array', items: str }, kept: { type: 'array', items: str } }),
 });
 export const INTERNAL_RESULTS = Object.freeze({
   'phone.intervention_status': object({ active: bool, interventionId: str, outcome: { type: 'string', enum: ['none', 'active', 'handed_back', 'expired', 'cancelled'] } }),
@@ -172,7 +187,9 @@ export const REFUSAL_HINT = Object.freeze({
   SCREEN_SETTLING: 'The screen is changing (app switch, dialog or animation) and the session is still running: call phone_wait (it returns the settled screen).',
   STALE_OBSERVATION: 'The screen changed since that observation: call phone_ui_tree again.',
   NODE_STALE: 'That element moved or disappeared: read phone_ui_tree again, or use coordinates with the same observationId.',
-  INPUT_REJECTED: 'This window refuses injected input (usually a system permission, uninstall or chooser dialog), so the owner has to tap it. The session is still running: if the owner gave this task in the chat, use phone_request_intervention; in a run nobody watches, send phone_notify_owner and end the task.',
+  INPUT_REJECTED: 'This window refuses injected input (usually a system dialog). The session is still running. A permission request: if you decide the app should have it, call phone_grant_permission. Uninstalling: call phone_uninstall_app. Any other such window needs the owner: if the owner gave this task in the chat, use phone_request_intervention; in a run nobody watches, send phone_notify_owner and end the task.',
+  PERMISSION_UNAVAILABLE: 'Nothing was granted: the app does not request that permission, or the owner turned it off in system settings (or a policy or the system fixed it), and that stays as it is. The session is still running.',
+  UNINSTALL_FAILED: 'The system refused the uninstall or did not confirm it in time: call phone_apps to see whether the app is still installed before trying again. The session is still running.',
   APP_DENIED: 'The target is outside the owned work-profile display or refused: observe again, or ask the user. The session is still running.',
   APP_UNKNOWN: 'The AI screen shows no window of the app yet: call phone_wait (it returns the screen); if the screen stays empty call phone_launch_app with the package.',
   LAUNCH_TIMEOUT: 'The app is still starting: call phone_wait (up to 10000 ms; it returns the screen); do not call phone_start again.',
@@ -393,6 +410,12 @@ export class BrokerClient {
         const code = ERROR_CODES.has(result.observationError) ? result.observationError : 'BROKER_ERROR';
         result.observationError = code;
         result.note = `${result.note ? `${result.note} ` : ''}The action was performed, but the screen could not be read afterwards (${code}). ${REFUSAL_HINT[code] ?? 'Call phone_ui_tree before the next action.'}`;
+      }
+      if (name === 'phone.grant_permission') {
+        // Only permissions of the requested group, each once, and something of it held: the native refusal covers the rest.
+        const group = PERMISSION_GROUPS[args.permission], seen = new Set();
+        for (const permission of [...result.granted, ...result.held, ...result.kept]) { check(group.includes(permission) && !seen.has(permission), 'Grant result names a permission outside the requested group', 'BROKER_PROTOCOL'); seen.add(permission); }
+        check(result.granted.length + result.held.length > 0, 'Grant result holds nothing of the group', 'BROKER_PROTOCOL');
       }
       if (name === 'phone.status' && (result.state !== 'ready' || result.userControl === true)) this.forget(sessionId);
       if (name === 'phone.intervention_status') check(result.active ? result.outcome === 'active' : result.outcome !== 'active', 'Inconsistent intervention status', 'BROKER_PROTOCOL');

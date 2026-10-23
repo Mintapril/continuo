@@ -10,7 +10,9 @@ verified() {
   IFS= read -r PID < "$BASE/broker.pid"
   case "$PID" in ''|*[!0-9]*) return 1;; esac
   [ -r "/proc/$PID/cmdline" ] || return 1
-  tr '\000' ' ' < "/proc/$PID/cmdline" | grep -F 'dev.dsh.pocket.cowork.broker.BrokerMain' >/dev/null
+  # Reading the cmdline of a broker that just exited once spun at full CPU for minutes.
+  # Bound the read by size and time; a vanished process or a timed-out read counts as not running.
+  timeout -k 1 3 head -c 4096 "/proc/$PID/cmdline" 2>/dev/null | tr '\000' ' ' | grep -F 'dev.dsh.pocket.cowork.broker.BrokerMain' >/dev/null
 }
 case "${1:-status}" in
   start)
@@ -24,7 +26,9 @@ case "${1:-status}" in
     ;;
   status) if verified; then echo "RUNNING pid=$PID"; else echo STOPPED; fi;;
   stop)
-    if verified; then kill -TERM "$PID"; i=0; while [ "$i" -lt 10 ]; do if ! verified; then echo STOPPED; exit 0; fi; sleep 1; i=$((i+1)); done; echo 'Broker did not stop; no forced kill'; exit 1; fi
+    if verified; then kill -TERM "$PID"; i=0; while [ "$i" -lt 10 ]; do if ! verified; then rm -f "$BASE/broker.pid"; echo STOPPED; exit 0; fi; sleep 1; i=$((i+1)); done; echo 'Broker did not stop; no forced kill'; exit 1; fi
+    # The process is gone: drop its pid so a later start or status never reads a stale /proc entry.
+    rm -f "$BASE/broker.pid"
     echo STOPPED
     ;;
   controller-token) cat "$BASE/controller.token";;

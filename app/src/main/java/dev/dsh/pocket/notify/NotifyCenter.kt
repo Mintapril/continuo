@@ -53,12 +53,21 @@ object NotifyCenter {
     private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
         .connectTimeout(3, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS).writeTimeout(5, TimeUnit.SECONDS).build()
 
+    /** The Cowork work profile's user id as the broker last reported it, kept across restarts: the system often starts
+     *  the listener without the app, so without (or before) a broker connection. -1 until first seen. */
+    @Volatile var profileUserId = -1; private set
+
     @Synchronized fun init(context: Context) {
         if (::prefs.isInitialized) return
         appContext = context.applicationContext
         prefs = appContext.getSharedPreferences("notify-triggers", Context.MODE_PRIVATE)
         enabledState.value = prefs.getBoolean("enabled", false)
         excludedState.value = runCatching { JSONArray(prefs.getString("excluded", "[]")).let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } }.getOrDefault(emptySet())
+        profileUserId = prefs.getInt("profileUserId", -1)
+        scope.launch { CoworkConnection.status.collect { status ->
+            val id = status.optInt("profileUserId", -1)
+            if (id > 0 && id != profileUserId) { profileUserId = id; prefs.edit().putInt("profileUserId", id).apply() }
+        } }
     }
 
     fun setEnabled(on: Boolean) {

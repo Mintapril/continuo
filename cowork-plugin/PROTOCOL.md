@@ -85,6 +85,7 @@ All fields are required unless explicitly marked optional. `{}` means no propert
 | `phone.stop` | `{}` | `{ "performed": true }` |
 | `phone.request_intervention` | optional `reason` (1–120 chars) | native `{ "performed": true, "interventionId" }`; the plugin blocks (polls internal `phone.intervention_status` ~1 s, max 15 min) and returns `{ performed, outcome, note }` |
 | `phone.intervention_status` (internal, not model-visible) | `{}` | `{ active, interventionId, outcome: none/active/handed_back/expired/cancelled }` |
+| `phone.notify_owner` | `text` (1–200 chars, not blank) | `{ "performed": true }`; the plugin returns `{ performed, note }` telling the model to end the task. The plugin admits it only in a turn without a user message (a reminder or a notification started it), once per turn, and refuses `phone.request_intervention` in such a turn |
 
 `packageName` is at most 255 characters, matches an Android-style dotted identifier (`[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+`), and must additionally be explicitly approved natively. It is not an intent, URI, executable name or command line. The display has its own virtual navigation keys: `BACK` (display-local key event), `HOME` (opens the profile-owned AI desktop; the running app keeps running in the background) and `RECENTS` (lists the work-profile tasks on the owned display without changing it). `HOME` and `RECENTS` address the owned display, not pixels, so they need no observation; `phone.launch_app` switched back to an app needs none either. `phone.start` and `phone.launch_app` never authorize arbitrary applications.
 
@@ -94,6 +95,7 @@ Native behavior requirements:
 - `pause`: stop accepting mutations, retaining enough state for the user to inspect the reason.
 - `stop`: complete safe session/display teardown before returning `performed: true`; do not report a mere request acknowledgment as completion.
 - `request_intervention`: open native user-intervention UI, without giving the model an approval primitive or clearing a pause.
+- `notify_owner`: keep the text as an owner notice for the controller (`ownerNotices` in `/v1/state`); touch no screen, claim no display, need no observation.
 - `wait`: bounded wait only, not an arbitrary polling expression or script.
 - `batch`: run the steps in order and check right before each one: the window set and foreground UID are still those of the observation, nothing labelled outside the previous step's element changed after that step settled, and the target is still visible and enabled at its observed bounds with its observed text and description. A tap or long press whose observed label or view id names a high-impact action (send, reply, pay, delete, confirm, agree, grant, buy, submit, publish and their Chinese equivalents), an unlabelled target that is neither a field nor a toggle, and `ENTER` unless the batch typed into a field labelled as a search box, are left to a single call (`HIGH_IMPACT_SINGLE`). Before the first input any refusal is an ordinary `ok: false` that keeps the observation; after it the result is always `performed: true` with `completed` (steps performed) and, when stopped, `stoppedAt` (= `completed`) and `stopReason` (`WINDOW_CHANGED`, `SCREEN_CHANGED_ELSEWHERE`, `SCREEN_SETTLING`, `BATCH_TIME_LIMIT` after 15 s, `USER_CONTROL`, `HIGH_IMPACT_SINGLE` or a refusal code); `uncertain: true` means the stopped step's input may have partly happened. The adapter maps an unknown `stopReason` to `BROKER_ERROR` and adds a `note`.
 - `type_text`: use only a supported display-bound native text channel. Do not silently fall back to shared clipboard or main-display IME. If an `elementId` is supplied, it must identify an editable node in the exact current tree. Otherwise native focus validation is still mandatory.
@@ -163,6 +165,8 @@ These are required backend behavior, not guarantees that a DSH JavaScript plugin
 ## Task-island activity
 
 `/v1/state` now carries an `activity` object `{seq, app, text, events:[{id,text}]}` produced natively by the broker from key actions for the task island. No model call is involved and no plugin-side publication endpoint exists.
+
+`/v1/state` also carries `ownerNotices`: the last 5 `phone.notify_owner` texts as `[{seq, text, at}]`, oldest first, `seq` counting from 1 within one broker `instanceId`, `at` in wall-clock milliseconds. The controller shows each notice once as a notification and remembers the last `instanceId` and `seq` it showed. Notices live in broker memory only.
 
 ## Offline contract checks
 

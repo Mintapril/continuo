@@ -83,6 +83,7 @@ public final class ToolContract {
             case "phone.status":case "phone.apps":case "phone.ui_tree":case "phone.pause":case "phone.stop":case "phone.intervention_status":fields(a,"","");break;
             case "phone.screenshot":screenshot(a);break;
             case "phone.request_intervention":fields(a,"","reason");if(a.has("reason"))text(a,"reason",1,120);break;
+            case "phone.notify_owner":fields(a,"text","");if(text(a,"text",1,OwnerNotices.MAX_TEXT).isBlank())fail();break;
             case "phone.start":fields(a,"","packageName");if(a.has("packageName"))pkg(a);break;
             case "phone.launch_app":fields(a,"packageName","observationId");if(a.has("observationId"))obs(a);pkg(a);break;
             case "phone.tap":fields(a,"observationId","x,y,elementId");obs(a);target(a);break;

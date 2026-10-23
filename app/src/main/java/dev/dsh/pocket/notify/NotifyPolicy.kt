@@ -46,6 +46,19 @@ object NotifyFilter {
 }
 
 /**
+ * Notifications of the Cowork work profile's apps belong to the AI: the broker keeps their channels silent
+ * (QuietNotificationGate) and the listener, once it has read one, clears it from the owner's shade. Only the broker's
+ * verified profile, only third-party apps other than the profile owner, and never what the system keeps (ongoing,
+ * no-clear, foreground service). [system] is null when the notification carries no ApplicationInfo: left alone.
+ */
+object ProfileShade {
+    const val PROFILE_OWNER = "dev.dsh.pocket.isolation"
+
+    fun clears(userId: Int, profileUserId: Int, packageName: String, system: Boolean?, sticky: Boolean): Boolean =
+        profileUserId > 0 && userId == profileUserId && system == false && packageName != PROFILE_OWNER && !sticky
+}
+
+/**
  * The one pending batch, across apps. It goes out once no app has posted for [NotifyDefaults.QUIET_MS], or
  * [NotifyDefaults.MAX_WAIT_MS] after its first notification. In memory only: a killed process starts fresh.
  */

@@ -55,7 +55,7 @@ class CoworkControllerService : Service() {
         }
         // A paused/stopping task the user has not caused must be visible even with Pocket in the background.
         manager.createNotificationChannel(NotificationChannel(ALERT_CHANNEL,"Cowork 需要你处理",NotificationManager.IMPORTANCE_HIGH).apply {
-            description="AI 请求介入或任务被安全暂停时提醒；不包含屏幕内容"
+            description="AI 请求介入、无人值守的任务需要你处理，或任务被安全暂停时提醒"
             setShowBadge(false);lockscreenVisibility=Notification.VISIBILITY_PRIVATE
         })
         scope.launch {
@@ -76,6 +76,25 @@ class CoworkControllerService : Service() {
                 }
             }
         }
+        // Notes the AI left when a run nobody watched needed you (phone_notify_owner): one notification each, never
+        // replaced or cancelled by the alert above; the last one shown is remembered across restarts.
+        scope.launch {
+            val prefs=getSharedPreferences("preferences",0)
+            CoworkConnection.status.collect { state ->
+                val fresh=OwnerNoticeFeed.fresh(state,prefs.getString("notice_instance","").orEmpty(),prefs.getLong("notice_seq",0))
+                if(fresh.isEmpty())return@collect
+                val instance=state.optString("instanceId")
+                for(n in fresh)try{manager.notify("notice-$instance-${n.seq}",NOTICE_ID,notice(n))}catch(_:SecurityException){}
+                prefs.edit().putString("notice_instance",instance).putLong("notice_seq",fresh.last().seq).apply()
+            }
+        }
+    }
+    private fun notice(n:OwnerNoticeFeed.Notice):Notification {
+        val open=PendingIntent.getActivity(this,75,Intent(this,CoworkActivity::class.java),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        return Notification.Builder(this,ALERT_CHANNEL).setSmallIcon(R.drawable.island_notification)
+            .setContentTitle("Cowork 给你留言").setContentText(n.text).setStyle(Notification.BigTextStyle().bigText(n.text))
+            .setWhen(n.at).setShowWhen(true).setContentIntent(open).setAutoCancel(true).setCategory(Notification.CATEGORY_REMINDER)
+            .setVisibility(Notification.VISIBILITY_PRIVATE).build()
     }
     private fun alert(reason:String,detail:String=""):Notification {
         val open=PendingIntent.getActivity(this,74,Intent(this,CoworkActivity::class.java),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -143,6 +162,7 @@ class CoworkControllerService : Service() {
         private const val CHANNEL="cowork-controller"
         private const val ID=7131
         private const val ALERT_ID=7132
+        private const val NOTICE_ID=7133
         private const val ALERT_CHANNEL="cowork-alert"
         private const val CONNECT="dev.dsh.pocket.cowork.CONNECT"
         private const val MAX_FAILURES=6

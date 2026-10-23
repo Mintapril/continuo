@@ -178,7 +178,7 @@ class CoworkActivity : ComponentActivity() {
                     }
                     HorizontalDivider()
                     Text("工作资料应用",style=MaterialTheme.typography.titleLarge)
-                    Text("资料 ID：${status.optInt("profileUserId",-1)} · 不使用应用白名单。这里只列出该资料已安装且可启动的应用；个人空间同名应用不在访问范围内。应用可访问不代表发送、支付、授权或删除许可。")
+                    Text("资料 ID：${status.optInt("profileUserId",-1)} · 不使用应用白名单。这里只列出该资料已安装且可启动的应用；个人空间同名应用不在访问范围内。这些应用由 AI 自行经营；付款、账号安全和清空聊天记录仍需你确认。")
                     OutlinedButton(onClick={perform{CoworkConnection.refreshApps()}},enabled=!busy&&status.has("revision")){Text("刷新应用列表")}
                     OutlinedTextField(appFilter,{appFilter=it},label={Text("搜索应用名称或包名")},singleLine=true,modifier=Modifier.fillMaxWidth())
                     val filtered=apps.filter{appFilter.isBlank()||it.label.contains(appFilter,true)||it.packageName.contains(appFilter,true)}

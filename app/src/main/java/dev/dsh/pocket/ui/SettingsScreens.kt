@@ -274,7 +274,7 @@ private fun reasonText(value: dev.dsh.pocket.island.IslandSuppression) = when (v
             GroupRow("Cowork 控制中心", icon = Glyph.Play, subtitle = "实时画面、接管与交还、暂停与停止、工作资料应用",
                 onClick = { context.startActivity(Intent(context, CoworkActivity::class.java)) })
         }
-        Footnote("工作资料应用无需逐项加入白名单；应用可访问不代表发送、支付、授权或删除许可。")
+        Footnote("工作资料应用无需逐项加入白名单，由 AI 自行经营；付款、账号安全和清空聊天记录仍需你确认。")
     }
 
     if (overlayDialog) ConfirmDialog("允许显示在其他应用上层", "将打开 Android 系统设置，请手动允许 Continuo。应用不会自行授予任何权限；未授权时只使用通知。", "前往设置", dismiss = { overlayDialog = false }) {

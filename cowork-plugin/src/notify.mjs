@@ -11,7 +11,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 // while waiting are merged into that one session. Each finished session is archived. The notification text reaches
 // the model JSON-encoded and labelled as other people's words (data, never instructions); it is never logged or
 // stored here. The session's messages carry source kind webhook, so restricted.mjs treats the turn as unattended: no
-// automation-task writes, and high-impact steps still wait for the user.
+// automation-task writes, no screen takeover; what needs the owner becomes one phone_notify_owner, then the task ends.
 
 export const name = 'cowork-notify';
 export const inject = ['webhookRuntime', 'workspaceRegistry', 'agents', 'permissionPresets', 'credentials'];
@@ -31,7 +31,8 @@ export const WORKSPACE = '/workspace';
 export const PRESET = 'cowork-phone';
 export const MAX_ITEMS = 20;
 export const INSTRUCTION = '这是一次性的自动任务，只由这些通知触发，没有人在对话里等你的回复，任何写给用户的话都是浪费。'
-  + '这些通知已经过 Jev 判断，可能有实际意义。请根据通知内容自行决定：需要处理就直接处理（必要时打开工作资料里的对应应用查看或操作），不需要就什么都不做。'
+  + '这些通知已经过 Jev 判断，可能有实际意义。这些应用和账号归你经营：请根据通知内容自行判断，需要处理就直接处理（必要时打开工作资料里的对应应用查看、回复或操作），不需要就什么都不做。'
+  + '遇到必须由主人决定的事（付款、账号安全、清空聊天记录），或者做不下去时，用 phone_notify_owner 给主人发一条通知，说明情况和需要主人做什么，然后结束任务。'
   + '不要寒暄、不要提问、不要复述通知、不要汇报过程；结束时最多留一句很短的结论。';
 const HOUR = 3_600_000;
 // turn/end reasons after which the task is over; any other reason means the turn stopped for the user.

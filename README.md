@@ -60,13 +60,13 @@ Continuo 是一个原生 Android 客户端（Kotlin + Jetpack Compose），连�
 
 ## 功能
 
-**Cowork（AI 操作手机）**：19 个手机工具，外加受限文件读写与网页工具，共 24 个。
+**Cowork（AI 操作手机）**：20 个手机工具，外加受限文件读写与网页工具，共 25 个。
 
 | 类别 | 工具 |
 |---|---|
 | 观察 | `phone_ui_tree`、`phone_screenshot`（可局部放大）、`phone_read_page`（自动下翻读长文） |
 | 操作 | `phone_tap`、`phone_long_press`、`phone_swipe`、`phone_scroll`、`phone_type_text`、`phone_key`、`phone_batch`（同屏 2–5 步元素操作）、`phone_gesture`（任意轨迹与两指手势） |
-| 应用与控制 | `phone_status`、`phone_apps`、`phone_start`、`phone_launch_app`、`phone_wait`、`phone_pause`、`phone_stop`、`phone_request_intervention` |
+| 应用与控制 | `phone_status`、`phone_apps`、`phone_start`、`phone_launch_app`、`phone_wait`、`phone_pause`、`phone_stop`、`phone_request_intervention`、`phone_notify_owner` |
 
 - **任意轨迹手势**：用 SVG 路径描述笔画（含贝塞尔曲线与圆弧）、两指捏合与旋转，可用于画画、签名、拖拽。
 - **局部放大截图**：裁出一块区域放大最多 8 倍，四边标屏幕坐标刻度，便于精确定位。
@@ -74,7 +74,7 @@ Continuo 是一个原生 Android 客户端（Kotlin + Jetpack Compose），连�
 - **接管时打字**：副屏不弹输入法；接管时点中输入框，会弹出本机键盘，文字经接管通道发到副屏。密码框只接受英文字母、数字和符号，AI 看不到输入内容。
 - **自动化任务**：使用 DSH 自带的 `dsh-schedule`（默认关闭的实验组件，可在应用里开关）。模型用 `schedule_*` 工具安排一次性、间隔、每天、每周或 cron 任务，到期后发回原会话执行；由提醒触发的回合只能列出任务，不能新建、修改或删除。App 的"自动化"页可查看、修改、删除任务。
 - **通知触发**：手机收到的通知在本机合并后交给判断模型 Jev（TypeSafe，经 OpenRouter），有实际意义才唤起一个新的 Cowork 会话，判断不了就不唤起；通知原文只作为"他人写的、不可信的内容"交给 AI。副屏被占用时排队，会话结束后自动归档。在设置 → 通知触发里开关、排除应用、填 Jev 密钥。经 DSH 的 `dsh-webhook` 实现，详见 [docs/cowork-internals.md](docs/cowork-internals.md#通知触发)。
-- **高影响操作交给用户**：付款、发消息、授权、删除等由模型请求用户接管。注意这一条是提示词层面的约束，不是 Broker 的硬拦截。
+- **AI 自己经营副屏上的账号**：工作资料里的通讯、社交等应用和账号是你专门注册给 AI 用的，由它以自己的身份经营：回消息、发动态、加好友、卸载应用、给应用开权限等都自行判断，不请示。只有付款、账号安全（改密码、换绑手机、扫码或授权登录、注销账号）和清空聊天记录要你决定。你在聊天里派的任务，需要你时请你接管副屏；通知或定时任务唤起的回合没人看着，需要你时 AI 用 `phone_notify_owner` 给你发一条"Cowork 给你留言"的通知，然后结束任务。这些是提示词层面的约束，不是 Broker 的硬拦截；"哪种回合能接管、哪种能发通知"由插件强制。
 
 **其他**：
 

@@ -21,6 +21,7 @@ public final class BrokerMain {
     private final LinkedHashMap<String,JSONObject> responses=new LinkedHashMap<>();
     private volatile long revision=0, environmentSequence=0;
     private final ActivityLog activity=new ActivityLog();
+    private final OwnerNotices notices=new OwnerNotices();
     private final ApprovalGate approvals=new ApprovalGate();
     private volatile String state="idle", lastTaskId="", pauseReason="";
     private volatile boolean restartRequired=false;
@@ -158,6 +159,8 @@ public final class BrokerMain {
         // Every 10 s: drift repair of the background pop-up gate. New installs are closed at once by the install watch,
         // any other package change of the profile within a second by hideNewInstalls.
         if(tick%10==0)try{workspace.closeBackgroundPopups();}catch(Exception popupGateFailure){}
+        // Every 10 s: work-profile notification channels held at the lowest importance (apps add channels at any time).
+        if(tick%10==0)try{workspace.quietNotifications();}catch(Exception quietFailure){}
         // 1 Hz: an app installed into the work profile must never stay visible to the personal launcher long enough
         // for an icon of it to land on the home screen (the user's report: icon shows up and only a reboot clears it).
         try{workspace.hideNewInstalls();}catch(Exception installSweepFailure){}
@@ -378,6 +381,11 @@ public final class BrokerMain {
         if(tool.equals("phone.status"))return toolStatus();
         if(tool.equals("phone.intervention_status"))return takeover.status();
         if(tool.equals("phone.apps"))return new JSONObject().put("apps",workspace.availableApps(Set.of()));
+        if(tool.equals("phone.notify_owner")){
+            // A note for the owner from a run nobody watches; the controller shows it as a notification. No screen is touched.
+            notices.post(a.getString("text"),System.currentTimeMillis());activity.note("已给你发通知");
+            return performed();
+        }
         if(tool.equals("phone.start")){
             // Optional now: the display already exists and is claimed by the first tool of the turn. start = claim + launch.
             if(a.has("packageName"))workspace.requirePackage(a.getString("packageName"));
@@ -840,7 +848,7 @@ public final class BrokerMain {
     private synchronized JSONObject status()throws Exception{
         long observedAt=SystemClock.elapsedRealtime();long sample=++environmentSequence;
         String main=workspace.mainPackage();Object game=JSONObject.NULL;if(main.equals("dev.dsh.pocket"))game=false;else try{android.content.pm.ApplicationInfo info=workspace.context().getPackageManager().getApplicationInfo(main,0);int category=info.category;if(category!=android.content.pm.ApplicationInfo.CATEGORY_UNDEFINED)game=category==android.content.pm.ApplicationInfo.CATEGORY_GAME;else if((info.flags&android.content.pm.ApplicationInfo.FLAG_IS_GAME)!=0)game=true;else if((info.flags&android.content.pm.ApplicationInfo.FLAG_SYSTEM)!=0)game=false;}catch(Exception ignored){}
-        JSONObject out=new JSONObject().put("profileUserId",workspace.profileUserId()).put("profileSerial",workspace.profileSerial()).put("accessMode","managed-profile").put("instanceId",instanceId).put("executionId",executionId).put("taskId",lastTaskId).put("revision",revision).put("state",state).put("taskManaged",taskManaged).put("paused",taskManaged?!state.equals("running"):gate.paused()).put("restartRequired",restartRequired).put("displayAlert",standingFailure).put("pauseReason",pauseReason).put("displayId",workspace.displayId()).put("workspaceActive",gate.owner()!=null).put("packageName",gate.owner()==null?"":workspace.targetPackage()).put("mainPackage",main).put("mainIsGame",game).put("environmentSequence",sample).put("environmentObservedAt",observedAt).put("locked",workspace.locked()).put("activity",activity.json());
+        JSONObject out=new JSONObject().put("profileUserId",workspace.profileUserId()).put("profileSerial",workspace.profileSerial()).put("accessMode","managed-profile").put("instanceId",instanceId).put("executionId",executionId).put("taskId",lastTaskId).put("revision",revision).put("state",state).put("taskManaged",taskManaged).put("paused",taskManaged?!state.equals("running"):gate.paused()).put("restartRequired",restartRequired).put("displayAlert",standingFailure).put("pauseReason",pauseReason).put("displayId",workspace.displayId()).put("workspaceActive",gate.owner()!=null).put("packageName",gate.owner()==null?"":workspace.targetPackage()).put("mainPackage",main).put("mainIsGame",game).put("environmentSequence",sample).put("environmentObservedAt",observedAt).put("locked",workspace.locked()).put("activity",activity.json()).put("ownerNotices",notices.json());
         takeover.describe(out);
         ApprovalGate.Reservation p=approvals.pending();if(p!=null)out.put("pending",new JSONObject().put("sessionId",p.session).put("tool",p.tool).put("arguments",new JSONObject(p.arguments)).put("approvalId",p.id).put("remainingMs",Math.max(0,p.deadline-SystemClock.elapsedRealtime())));return out;
     }

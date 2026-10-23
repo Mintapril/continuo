@@ -33,6 +33,7 @@ const args = {
   'phone.swipe': { observationId: 'obs', x1: 0, y1: 0, x2: 50, y2: 50, durationMs: 100 }, 'phone.scroll': { observationId: 'obs', x: 1, y: 1, deltaY: 100 }, 'phone.read_page': { observationId: 'obs', maxPages: 3 },
   'phone.type_text': { observationId: 'obs', text: 'hello', elementId: 'edit' }, 'phone.key': { observationId: 'obs', key: 'BACK' },
   'phone.wait': { timeoutMs: 0 }, 'phone.launch_app': { observationId: 'obs', packageName: 'dev.fixture.app' }, 'phone.pause': {}, 'phone.stop': {}, 'phone.request_intervention': {},
+  'phone.notify_owner': { text: '张三发来一笔 200 元转账，需要你决定是否收款' },
   'phone.batch': { observationId: 'obs', steps: [{ tool: 'type_text', elementId: 'edit', text: 'a' }, { tool: 'tap', elementId: 'btn' }] },
   'phone.gesture': { observationId: 'obs', strokes: [{ path: 'M 10 10 L 50 50' }] },
 };
@@ -161,6 +162,31 @@ test('request_intervention: optional bounded reason; internal tool accepted by c
     const c = new BrokerClient({ secret, transport: async r => envelopeOk(r, bad) });
     await assert.rejects(c.call('s', 'phone.intervention_status', {}));
   }
+});
+test('notify_owner: bounded non-blank text, model-visible, and it keeps the observations of the screen', async () => {
+  const { client, calls } = setup();
+  for (const text of ['', '   ', 'x'.repeat(201), 'a b', 1]) await assert.rejects(client.call('s', 'phone.notify_owner', { text }));
+  await assert.rejects(client.call('s', 'phone.notify_owner', {}));
+  assert.equal(calls.length, 0);
+  assert.ok(ALLOWED_TOOLS.includes('phone_notify_owner'));
+  // Notifying the owner changes nothing on the screen: the tree just read still backs a screenshot and an element tap.
+  await client.call('s', 'phone.ui_tree', {});
+  await client.call('s', 'phone.notify_owner', { text: 'x'.repeat(200) });
+  await client.call('s', 'phone.screenshot', {});
+  await client.call('s', 'phone.tap', { observationId: 'obs', elementId: 'btn' });
+  assert.deepEqual(calls.map(c => c.tool), ['phone.ui_tree', 'phone.notify_owner', 'phone.screenshot', 'phone.tap']);
+});
+test('notify_owner wrapper tells the model to end the task and reports the notification once sent', async () => {
+  const sent = [];
+  const client = new BrokerClient({ secret, transport: async r => envelopeOk(r, { performed: true }) });
+  const tools = new Map(phoneTools(client, {}, { onNotified: sid => sent.push(sid) }).map(t => [t.name, t]));
+  const result = await tools.get('phone.notify_owner').execute({ text: '需要你确认付款' }, { agent: { session: { id: 's' } }, signal: new AbortController().signal });
+  assert.deepEqual(result, { performed: true, note: 'The owner got your notification. End the task now: no more phone actions, and finish with at most one short line.' });
+  assert.deepEqual(sent, ['s']);
+  const failing = new BrokerClient({ secret, transport: async r => envelopeErr(r, 'PAUSED') });
+  const refused = new Map(phoneTools(failing, {}, { onNotified: sid => sent.push(sid) }).map(t => [t.name, t]));
+  await assert.rejects(refused.get('phone.notify_owner').execute({ text: 'x' }, { agent: { session: { id: 's' } }, signal: new AbortController().signal }));
+  assert.deepEqual(sent, ['s'], 'a notification the broker refused does not count');
 });
 test('phone.status accepts optional userControl', async () => {
   const c = new BrokerClient({ secret, transport: async r => envelopeOk(r, { state: 'ready', accessibilityReady: true, screenCaptureReady: true, userControl: true }) });

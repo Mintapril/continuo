@@ -99,4 +99,16 @@ class NotifyPolicyTest {
         assertEquals("Jev 返回 HTTP 429", NotifyWire.judgeError("http-429"))
         assertEquals("DSH 里没有 Jev 密钥", NotifyWire.judgeError("no-key"))
     }
+
+    /** Values as read on the phone: the Cowork profile is user 10, QQ is a third-party app there. */
+    @Test fun onlyTheCoworkProfilesThirdPartyAppsLeaveTheOwnersShade() {
+        assertTrue(ProfileShade.clears(10, 10, "com.tencent.mobileqq", system = false, sticky = false))
+        assertFalse("personal user", ProfileShade.clears(0, 10, "com.tencent.mobileqq", false, false))
+        assertFalse("another profile, e.g. app cloning", ProfileShade.clears(999, 10, "com.tencent.mobileqq", false, false))
+        assertFalse("broker status not known yet", ProfileShade.clears(10, -1, "com.tencent.mobileqq", false, false))
+        assertFalse("system app in the profile", ProfileShade.clears(10, 10, "com.android.packageinstaller", true, false))
+        assertFalse("no ApplicationInfo", ProfileShade.clears(10, 10, "com.tencent.mobileqq", null, false))
+        assertFalse("profile owner", ProfileShade.clears(10, 10, ProfileShade.PROFILE_OWNER, false, false))
+        assertFalse("ongoing or foreground service", ProfileShade.clears(10, 10, "tv.danmaku.bili", false, true))
+    }
 }

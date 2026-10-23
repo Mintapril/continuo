@@ -49,6 +49,8 @@ export const PHONE_ARGUMENTS = Object.freeze({
   // exactly one of the two is checked and flattened into the native wire form by planGesture.
   'phone.gesture': object({ ...observed, strokes: { type: 'array', items: object({ path: str, fingers: { type: 'array', items: str }, durationMs: int, holdStartMs: int, holdEndMs: int }, []) }, viewBox: { type: 'array', items: num }, area: { type: 'array', items: int } }, ['observationId', 'strokes']),
   'phone.pause': object(), 'phone.stop': object(), 'phone.request_intervention': object({ reason: str }, []),
+  // One note for the owner from a run nobody watches (1..200 characters); the App shows it as a notification.
+  'phone.notify_owner': object({ text: str }, ['text']),
 });
 // Native-only tools: accepted by BrokerClient but never registered with, or visible to, the model.
 export const INTERNAL_ARGUMENTS = Object.freeze({ 'phone.intervention_status': object() });
@@ -170,7 +172,7 @@ export const REFUSAL_HINT = Object.freeze({
   SCREEN_SETTLING: 'The screen is changing (app switch, dialog or animation) and the session is still running: call phone_wait (it returns the settled screen).',
   STALE_OBSERVATION: 'The screen changed since that observation: call phone_ui_tree again.',
   NODE_STALE: 'That element moved or disappeared: read phone_ui_tree again, or use coordinates with the same observationId.',
-  INPUT_REJECTED: 'This window refuses injected input (usually a system permission or chooser dialog). The session is still running: ask the user to take over with phone_request_intervention.',
+  INPUT_REJECTED: 'This window refuses injected input (usually a system permission, uninstall or chooser dialog), so the owner has to tap it. The session is still running: if the owner gave this task in the chat, use phone_request_intervention; in a run nobody watches, send phone_notify_owner and end the task.',
   APP_DENIED: 'The target is outside the owned work-profile display or refused: observe again, or ask the user. The session is still running.',
   APP_UNKNOWN: 'The AI screen shows no window of the app yet: call phone_wait (it returns the screen); if the screen stays empty call phone_launch_app with the package.',
   LAUNCH_TIMEOUT: 'The app is still starting: call phone_wait (up to 10000 ms; it returns the screen); do not call phone_start again.',
@@ -254,9 +256,10 @@ export class BrokerClient {
     // Code-level rule (also enforced natively): no screenshot before the UI structure of the current screen was read.
     // A tree that could not describe the screen (complete:false) already tells the model to screenshot: allow it.
     if (name === 'phone.screenshot') check(this.#treeRead.has(sessionId) || this.#incomplete.has(sessionId), TREE_REQUIRED_MESSAGE, 'TREE_REQUIRED');
-    else if (!['phone.status', 'phone.apps', 'phone.ui_tree', 'phone.intervention_status'].includes(name)) { this.#treeRead.clear(); this.#incomplete.clear(); } // one physical device: any change renews the requirement for every session
+    else if (!['phone.status', 'phone.apps', 'phone.ui_tree', 'phone.intervention_status', 'phone.notify_owner'].includes(name)) { this.#treeRead.clear(); this.#incomplete.clear(); } // one physical device: any change renews the requirement for every session
     if (args.packageName !== undefined) check(/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/.test(args.packageName) && args.packageName.length <= 255, 'Invalid Android packageName');
     if (name === 'phone.request_intervention' && args.reason !== undefined) boundedString(args.reason, 120, 'reason');
+    if (name === 'phone.notify_owner') { boundedString(args.text, 200, 'text'); check(args.text.trim() !== '', 'text must say what happened and what the owner needs to do'); }
     if (name === 'phone.tap' || name === 'phone.long_press') {
       // Exactly one targeting mode: both coordinates, or one element of the latest ui_tree observation.
       const point = args.x !== undefined || args.y !== undefined;
@@ -317,7 +320,7 @@ export class BrokerClient {
         if (this.#tree.get(sessionId)?.observationId === obs.observationId) this.#tree.delete(sessionId);
         this.#observations.clear();
       }
-    } else if (!['phone.status', 'phone.apps', 'phone.screenshot', 'phone.ui_tree', 'phone.intervention_status'].includes(name) && !(name === 'phone.key' && args.key === 'RECENTS')) { this.#observations.clear(); this.#tree.clear(); }
+    } else if (!['phone.status', 'phone.apps', 'phone.screenshot', 'phone.ui_tree', 'phone.intervention_status', 'phone.notify_owner'].includes(name) && !(name === 'phone.key' && args.key === 'RECENTS')) { this.#observations.clear(); this.#tree.clear(); }
     // A zoom is checked against the screen last observed (a screenshot always follows a tree); natively against the display.
     if (name === 'phone.screenshot') { const screen = this.#observations.get(sessionId) ?? this.#tree.get(sessionId); wire = planZoom(args, screen?.width ?? 8192, screen?.height ?? 8192); }
     const requestId = this.uuid();

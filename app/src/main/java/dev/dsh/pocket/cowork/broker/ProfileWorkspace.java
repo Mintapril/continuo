@@ -57,10 +57,14 @@ public final class ProfileWorkspace implements AutoCloseable {
         // while no owned display exists, and the standing display is created right after this constructor.
         launchers.reconcile();
         try{popups=new BackgroundPopupGate(context,profile);popups.enforce();}catch(Exception e){System.err.println("background pop-up gate unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
+        try{quiet=new QuietNotificationGate(profile);quiet.enforce();}catch(Exception e){System.err.println("notification quieting unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
     }
     private volatile BackgroundPopupGate popups;
     /** See {@link BackgroundPopupGate}: drift repair from the watchdog; new installs are handled by the install watch. */
     public void closeBackgroundPopups(){BackgroundPopupGate gate=popups;if(gate!=null)gate.enforce();}
+    private volatile QuietNotificationGate quiet;
+    /** See {@link QuietNotificationGate}: from the watchdog every 10 s and on every package change of the profile. */
+    public void quietNotifications(){QuietNotificationGate gate=quiet;if(gate!=null)gate.enforce();}
     private volatile NotificationGrant notifications;
     /** See {@link NotificationGrant}: only for the packages a change read names, so only apps installed from now on. */
     private void allowNotifications(List<String> changed){NotificationGrant gate=notifications;if(gate!=null)gate.allow(changed);}
@@ -851,15 +855,16 @@ public final class ProfileWorkspace implements AutoCloseable {
      * which the personal launcher can put an icon of it on the home screen. A package change of the profile since the
      * previous call (also one the install watch does not see) hides again the entries we hid of that package that are
      * visible again (an app uninstalled from the profile and installed back), allows notifications of an app it newly
-     * names ({@link NotificationGrant}) and closes background pop-ups at once instead of at the next drift repair. Takes
-     * only the launcher-hider, notification grant and pop-up gate locks. */
+     * names ({@link NotificationGrant}), and quiets notification channels ({@link QuietNotificationGate}) and closes
+     * background pop-ups at once instead of at the next drift repair. Takes only the launcher-hider, notification grant,
+     * notification quieting and pop-up gate locks. */
     public void hideNewInstalls(){sweepInstalls(false);}
     /** {@link #hideNewInstalls}, from the watchdog and the install watch. {@code installed}: an install session of the
      *  profile just finished, so background pop-ups are closed even when the change read fails. */
     private void sweepInstalls(boolean installed){
         try{launchers.hideUnseen();}catch(Exception e){System.err.println("launcher install sweep failed: "+e.getClass().getSimpleName());}
         List<String> changed=changedPackages();
-        if(changed!=null){launchers.hideVisibleAgain(changed);allowNotifications(changed);}
+        if(changed!=null){launchers.hideVisibleAgain(changed);allowNotifications(changed);quietNotifications();}
         if(installed||changed!=null)closeBackgroundPopups();
     }
     private final InstallWatch.Changes changes=new InstallWatch.Changes();

@@ -99,4 +99,9 @@ class ToolContractTest {
         valid("phone.request_intervention","""{"reason":"请输入验证码"}""");valid("phone.intervention_status","{}")
         denied("phone.request_intervention","""{"reason":""}""");denied("phone.request_intervention","""{"reason":"${"x".repeat(121)}"}""");denied("phone.intervention_status","""{"x":1}""")
     }
+    @Test fun ownerNoticeTextIsRequiredBoundedAndNotBlank(){
+        valid("phone.notify_owner","""{"text":"有人发来 200 元转账，需要你决定是否收款"}""");valid("phone.notify_owner","""{"text":"${"x".repeat(200)}"}""")
+        denied("phone.notify_owner","{}");denied("phone.notify_owner","""{"text":""}""");denied("phone.notify_owner","""{"text":"   "}""")
+        denied("phone.notify_owner","""{"text":"${"x".repeat(201)}"}""");denied("phone.notify_owner","""{"text":1}""");denied("phone.notify_owner","""{"text":"a","to":"x"}""")
+    }
 }

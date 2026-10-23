@@ -162,6 +162,53 @@ test('host memory tools (dsh-mneme) are exposed to Cowork; destructive and path-
   const pathed=await execute('memory_save',{memory:{path:'/data/x'}});assert.equal(pathed.isError,true);assert.match(JSON.stringify(pathed),/may not write files/);
   api.remove(agent);lifecycle.dispose();await child.dispose();await preset.dispose();
 });
+test('who helps when a step needs the owner: a turn the owner started takes over the screen; a run nobody watches notifies once instead',async()=>{
+  const ctx=new Context();
+  ctx.provide('systemPrompt',{tools:()=>{},section:()=>{},getSectionOrder:()=>0});
+  ctx.provide('attachments',{saveImage:async()=>({})});
+  ctx.provide('web',{search:async()=>({content:'fact',sources:[]})});
+  ctx.provide('llm',{stream:()=>{throw Error('No model calls during tests');}});
+  const liveAgents=new Map();ctx.provide('agents',{get:id=>liveAgents.get(id),roots:()=>[...liveAgents.values()]});
+  const runtimeFiber=ctx.plugin(ToolRuntime,{mode:'native'});if(runtimeFiber.inertia)await runtimeFiber.inertia;
+  let owner;const ownerFiber=ctx.inject(['tools','systemPrompt','attachments','web','llm','agents'],c=>{owner=c;});if(ownerFiber.inertia)await ownerFiber.inertia;
+  const key={},preset=scope.createScope(owner,key),agent={id:'cowork',session:{id:'cowork',snapshotEvents:()=>[],requestHeader:()=>undefined}};
+  const child=scope.createScope(owner,agent,{parent:key});agent.ctx=child.ctx;
+  // Native admission is not under test here: tools run directly; the bridge records what reached the broker.
+  const lifecycle={runTool:(a,exec,body)=>body(exec),preStep:async()=>{},observe(){},remove(){},dispose(){},flush:async()=>{}};
+  const sent=[];
+  const bridge={call:async(sid,name)=>{sent.push(name);return name==='phone.request_intervention'?{performed:true,interventionId:'i'}:name==='phone.intervention_status'?{active:false,interventionId:'i',outcome:'handed_back'}:{performed:true};},forget:()=>{}};
+  const api=installRestrictedCowork(preset.ctx,{},{...scope,...llm,Session},{lifecycle,bridge,files:{}});
+  liveAgents.set(agent.id,agent);
+  ctx.emit('session/event',agent.session,{type:'agent-preset/selected',data:{agentPreset:'cowork-phone'}});
+  const signal=new AbortController().signal;let serial=0;
+  const execute=(name,args)=>{const callId='o'+serial++;ctx.emit('session/event',agent.session,{type:'tool/call',data:{turn:1,callId,name,arguments:args}});return ctx.tools.execute({name,arguments:args,agent,signal,callId});};
+  const turn=(n,...kinds)=>{ctx.emit('session/event',agent.session,{type:'turn/start',data:{turn:n}});for(const kind of kinds)ctx.emit('session/event',agent.session,{type:'user/message',data:{source:{kind}}});};
+  const notify={text:'有人发来 200 元转账，需要你决定是否收款'};
+  // The owner wrote this turn: take the screen over as before; a notification is for runs nobody watches.
+  turn(1,'user','time-context');
+  {const r=await execute('phone_request_intervention',{reason:'password'});assert.equal(r.isError,false,JSON.stringify(r.error));}
+  {const r=await execute('phone_notify_owner',notify);assert.equal(r.isError,true);assert.match(JSON.stringify(r),/gave this task in the chat/);}
+  assert.deepEqual(sent,['phone.request_intervention','phone.intervention_status']);
+  // A notification trigger and a due reminder are unattended: no takeover, exactly one notification per run.
+  for(const [n,kind] of [[2,'webhook'],[3,'schedule']]){
+    sent.length=0;turn(n,kind,'time-context');
+    {const r=await execute('phone_request_intervention',{});assert.equal(r.isError,true);assert.match(JSON.stringify(r),/Nobody is watching this run/);}
+    {const r=await execute('phone_notify_owner',notify);assert.equal(r.isError,false,JSON.stringify(r.error));assert.match(JSON.stringify(r),/End the task now/);}
+    {const r=await execute('phone_notify_owner',notify);assert.equal(r.isError,true,'a second notification in the same run');assert.match(JSON.stringify(r),/already notified/);}
+    assert.deepEqual(sent,['phone.notify_owner'],kind);
+  }
+  // No turn/start seen (plugin reloaded mid-turn): treated as unattended, like the schedule rule.
+  sent.length=0;api.remove(agent);ctx.emit('session/event',agent.session,{type:'agent-preset/selected',data:{agentPreset:'cowork-phone'}});
+  assert.equal((await execute('phone_request_intervention',{})).isError,true);
+  assert.equal((await execute('phone_notify_owner',notify)).isError,false);
+  assert.equal((await execute('phone_notify_owner',notify)).isError,true);
+  assert.deepEqual(sent,['phone.notify_owner']);
+  // A new owner turn resets it.
+  sent.length=0;turn(4,'user');
+  assert.equal((await execute('phone_notify_owner',notify)).isError,true);
+  assert.equal((await execute('phone_request_intervention',{})).isError,false);
+  api.remove(agent);await child.dispose();await preset.dispose();
+});
 test('host automation tools (dsh-schedule) are admitted for the top-level Cowork agent; a turn without a user message may only list tasks',async()=>{
   const ctx=new Context();
   ctx.provide('systemPrompt',{tools:()=>{},section:()=>{},getSectionOrder:()=>0});

@@ -72,7 +72,7 @@ Broker（root，app_process，从已安装 APK 的 dev.dsh.pocket.cowork.broker.
 - `BrokerMain`：HTTP 端点（agent 角色用 `/v1/tool` 调工具、`/v1/task` 申请并轮询每轮租约；controller 角色用 `/v1/control`、`/v1/state`、`/v1/apps`、`/v1/takeover`、`/v1/stream` 等）、任务租约、看门狗。锁纪律写在类注释里：`this` 只保护短暂的控制面状态，绝不跨工作区操作持有；工具调用走 `toolLock`。
 - `ProfileWorkspace`：副屏驱动（创建/保持虚拟显示、注入、截图、手势笔画、保活）。`AndroidWorkspace` 是早期共享用户版本，已不在主流程。
 - `ProfileStructure`：UiAutomation 读树、语义输入、焦点字段元数据。
-- 可在 JVM 上单测的纯逻辑：`ToolContract`（参数校验）、`RefusalPolicy`（哪些拒绝不结束任务）、`TaskLifecycle`、`BrokerAuth`（HMAC）、`StrokePath`、`ScreenZoom`、`BatchPolicy`、`StrayTaskSweep`、`LauncherEntrySweep`、`PopupPermissionPolicy`、`NotificationGrantPolicy`（工作资料新装应用自动允许通知，由 `NotificationGrant` 执行）、`QuietNotificationPolicy`（工作资料应用的通知通道压到最低、不在主屏提醒，由 `QuietNotificationGate` 执行）、`ActivityLog` 等。往这些类里放逻辑，Broker 的 Android 依赖部分尽量薄。
+- 可在 JVM 上单测的纯逻辑：`ToolContract`（参数校验）、`RefusalPolicy`（哪些拒绝不结束任务）、`TaskLifecycle`、`BrokerAuth`（HMAC）、`StrokePath`、`ScreenZoom`、`BatchPolicy`、`StrayTaskSweep`、`LauncherEntrySweep`、`PopupPermissionPolicy`、`NotificationGrantPolicy`（工作资料新装应用自动允许通知，由 `NotificationGrant` 执行）、`QuietNotificationPolicy`（工作资料应用的通知通道压到最低、不在主屏提醒，由 `QuietNotificationGate` 执行）、`ParkedApps`（副屏重建后恢复停在后面的应用）、`ActivityLog` 等。往这些类里放逻辑，Broker 的 Android 依赖部分尽量薄。
 - `*ProbeMain` 是探测入口，不在主流程。
 
 ### App 里的关键分层

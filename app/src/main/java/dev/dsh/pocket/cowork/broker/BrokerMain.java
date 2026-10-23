@@ -168,7 +168,7 @@ public final class BrokerMain {
         // display, the pop-up gate refuses screens of apps that are not on it); what still lands on the main screen, e.g.
         // a work-profile notification the user tapped there, is moved to the owned display. A running tool does it in its own check.
         if(toolsInFlight.get()==0)try{workspace.pullBackStrayTasks();}catch(Exception strayTaskFailure){}
-        if(gate.owner()==null){if(tick%5==0&&toolsInFlight.get()==0)keepStandingDisplay();return;}
+        if(gate.owner()==null){if(tick%5==0&&toolsInFlight.get()==0){keepStandingDisplay();tendParked();}return;}
         long now=SystemClock.elapsedRealtime();
         if(takeover.expired(now))endTakeover("expired");
         if(toolsInFlight.get()>0||gate.paused())return; // a paused workspace runs nothing; resume re-guards it
@@ -331,6 +331,15 @@ public final class BrokerMain {
             // One failed attempt is a transient (a lock, a settling profile); three in a row is what the user is told.
             if(standingFails==3)System.err.println("standing display unavailable after "+standingFails+" attempts: "+why);
             if(standingFails>=3)standingFailure=why;}
+    }
+    /** Between turns: after a display rebuild, one app parked on the old display is started again per call
+     *  ({@link ParkedApps}), and the AI desktop stays in front of the parked apps. Under the tool lock, so no turn claims
+     *  the display meanwhile; a turn that already owns it is left alone. */
+    private void tendParked(){
+        synchronized(toolLock){
+            if(gate.owner()!=null||toolsInFlight.get()>0)return;
+            try{workspace.restoreParked();workspace.keepDesktopInFront();}catch(Throwable e){System.err.println("parked display upkeep failed: "+e.getClass().getSimpleName());}
+        }
     }
     /** Guard for the owned display: an empty display (nothing launched this turn) has no app window to verify yet. */
     private void guardNow(){guardNow(400);}

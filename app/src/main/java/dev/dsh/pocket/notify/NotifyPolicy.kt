@@ -26,12 +26,18 @@ object NotifyDefaults {
         raw?.replace(UNPRINTABLE, " ")?.trim()?.take(60)?.trim()?.takeIf { it.isNotEmpty() } ?: packageName.substringAfterLast('.').take(60)
     /** "a, b，c\nd" -> [a, b, c, d] */
     fun words(text: String): List<String> = text.split(',', '，', '、', '\n').map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+    /** Text left unseen on the AI screen, one line per screen line; the newest end wins the 400 characters an item holds. */
+    fun screenText(lines: List<String>): String =
+        lines.map { it.replace(UNPRINTABLE, " ").trim() }.filter { it.isNotEmpty() }.joinToString("\n").takeLast(400).trim()
+    /** Screen news older than this (Continuo was not running when the turn ended) wakes nothing. */
+    const val SCREEN_MAX_AGE_MS = 10 * 60_000L
 }
 
-/** The parts of one posted notification the batch looks at. Title and text are read only for a watched package. */
+/** The parts of one posted notification the batch looks at. Title and text are read only for a watched package.
+ *  [screen]: not a notification but text a finished Cowork turn left unseen on the AI screen (the app was in front). */
 data class Posted(
     val packageName: String, val key: String, val work: Boolean, val channel: String, val category: String?,
-    val ongoing: Boolean, val groupSummary: Boolean, val title: String, val text: String, val at: Long,
+    val ongoing: Boolean, val groupSummary: Boolean, val title: String, val text: String, val at: Long, val screen: Boolean = false,
 )
 
 enum class Verdict { ACCEPT, ONGOING, SUMMARY, CATEGORY, EMPTY, REPEAT }
@@ -69,7 +75,7 @@ object ProfileShade {
  * [NotifyDefaults.MAX_WAIT_MS] after its first notification. In memory only: a killed process starts fresh.
  */
 class NotifyThrottle(var quietMs: Long = NotifyDefaults.DEFAULT_QUIET_SECONDS * 1000L, private val maxWaitMs: Long = NotifyDefaults.MAX_WAIT_MS) {
-    data class Item(val packageName: String, val app: String, val work: Boolean, val sender: String, val text: String, val at: Long)
+    data class Item(val packageName: String, val app: String, val work: Boolean, val sender: String, val text: String, val at: Long, val screen: Boolean = false)
     data class Batch(val count: Int, val firstAt: Long, val lastAt: Long, val items: List<Item>)
     private var count = 0
     private var firstAt = 0L
@@ -86,7 +92,7 @@ class NotifyThrottle(var quietMs: Long = NotifyDefaults.DEFAULT_QUIET_SECONDS * 
         while (seen.size > 500) seen.remove(seen.keys.first())
         if (count == 0) firstAt = n.at
         count = (count + 1).coerceAtMost(999); lastAt = maxOf(lastAt, n.at)
-        items.addLast(Item(n.packageName, app, n.work, clean(n.title, 80), clean(n.text, 400), n.at))
+        items.addLast(Item(n.packageName, app, n.work, clean(n.title, 80), clean(n.text, 400), n.at, n.screen))
         while (items.size > MAX_ITEMS) items.removeFirst()
         return Verdict.ACCEPT
     }
@@ -122,9 +128,10 @@ object NotifyWire {
     private const val DOMAIN = "cowork-notify-v1\n"
 
     fun body(batch: NotifyThrottle.Batch, id: String, sentAt: Long): String {
+        // origin is present only for screen text, so a notification item is byte-for-byte what it was before.
         val items = JSONArray().apply { batch.items.forEach {
             put(JSONObject().put("package", it.packageName).put("app", it.app).put("profile", if (it.work) "work" else "personal")
-                .put("sender", it.sender).put("text", it.text).put("at", minOf(it.at, sentAt)))
+                .put("sender", it.sender).put("text", it.text).put("at", minOf(it.at, sentAt)).apply { if (it.screen) put("origin", "screen") })
         } }
         // The plugin refuses times after sentAt; a clock stepped back on the phone must not void the batch.
         val last = minOf(batch.lastAt, sentAt)

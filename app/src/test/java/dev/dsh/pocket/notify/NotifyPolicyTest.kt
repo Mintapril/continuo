@@ -33,6 +33,26 @@ class NotifyPolicyTest {
         assertEquals(1_800L, stepped.getJSONArray("items").getJSONObject(1).getLong("at"))
     }
 
+    /** The plugin accepts origin only as "screen" (cowork-plugin/test/strict-notify.test.mjs SCREEN_BODY); a notification
+     *  item stays exactly as it was. */
+    @Test fun screenTextIsAnItemWithOriginScreenAndKeepsItsNewestEnd() {
+        val batch = NotifyThrottle.Batch(2, 1_000, 2_000, listOf(
+            NotifyThrottle.Item("com.tencent.mobileqq", "QQ", true, "张三", "在吗", 1_500),
+            NotifyThrottle.Item("com.tencent.mobileqq", "QQ", true, "", "张三\n明天几点到？", 2_000, screen = true)))
+        val items = JSONObject(NotifyWire.body(batch, "00000000-0000-4000-8000-000000000002", 3_000)).getJSONArray("items")
+        assertFalse(items.getJSONObject(0).has("origin"))
+        assertEquals(setOf("package", "app", "profile", "sender", "text", "at", "origin"), items.getJSONObject(1).keys().asSequence().toSet())
+        assertEquals("screen", items.getJSONObject(1).getString("origin")); assertEquals("work", items.getJSONObject(1).getString("profile"))
+        assertEquals("张三\n明天几点到？", NotifyDefaults.screenText(listOf(" 张三 ", "", "明天几点到？")))
+        val long = NotifyDefaults.screenText(listOf("a".repeat(300), "b".repeat(300)))
+        assertEquals(400, long.length); assertTrue("the newest end wins", long.endsWith("b".repeat(300)))
+        val t = NotifyThrottle()
+        val screen = Posted("com.tencent.mobileqq", "screen-a-1", true, "", null, false, false, "", "明天几点到？", 1_000, screen = true)
+        assertEquals(Verdict.ACCEPT, NotifyFilter.check(screen))
+        assertEquals(Verdict.ACCEPT, t.add(screen, "QQ"))
+        assertTrue(t.take(10_000)!!.items.single().screen)
+    }
+
     @Test fun filterDropsOnlyStructuralNoise() {
         assertEquals(Verdict.ACCEPT, NotifyFilter.check(posted(1)))
         assertEquals(Verdict.ONGOING, NotifyFilter.check(posted(1, ongoing = true)))

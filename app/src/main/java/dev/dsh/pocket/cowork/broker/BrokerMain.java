@@ -22,6 +22,10 @@ public final class BrokerMain {
     private volatile long revision=0, environmentSequence=0;
     private final ActivityLog activity=new ActivityLog();
     private final OwnerNotices notices=new OwnerNotices();
+    /** New text on the AI screen that the model neither caused nor saw (see {@link ScreenWatch}), and what a finished turn
+     *  left unseen, for the controller to hand to the notification triggers. */
+    private final ScreenWatch watch=new ScreenWatch();
+    private final ScreenNews news=new ScreenNews();
     private final ApprovalGate approvals=new ApprovalGate();
     private volatile String state="idle", lastTaskId="", pauseReason="";
     private volatile boolean restartRequired=false;
@@ -173,10 +177,10 @@ public final class BrokerMain {
         if(takeover.expired(now))endTakeover("expired");
         if(toolsInFlight.get()>0||gate.paused())return; // a paused workspace runs nothing; resume re-guards it
         if(workspace.displayId()>0&&workspace.hasLaunched()&&!takeover.active())try{activity.observe(workspace.targetPackage(),workspace::appLabel);}catch(Exception activityFailure){}
-        String reason=null;
+        String reason=null;boolean guarded=false;
         try{
             if(now-controllerSeen>15000)ActionGate.fail("CONTROLLER_OFFLINE","User control channel disconnected");
-            if(takeover.active())workspace.guardUser();else guardNow();
+            if(takeover.active())workspace.guardUser();else{guardNow();guarded=true;}
             screenSettling.reset();
             ApprovalGate.Reservation p=approvals.pending();if(p!=null&&SystemClock.elapsedRealtime()>p.deadline)reason="APPROVAL_STALE";
         }catch(Exception e){
@@ -188,6 +192,7 @@ public final class BrokerMain {
             }else reason=denied!=null?denied.code:"GUARD_FAILED";
         }
         if(reason!=null)synchronized(this){if(gate.owner()!=null&&(!gate.paused()||approvals.pending()!=null||!reason.equals(pauseReason)))safePause(reason);}
+        else if(guarded)try{watchIdle();}catch(Throwable watchFailure){}
     }
     private void serve() throws Exception {
         ServerSocket server=new ServerSocket();server.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"),3091),32);
@@ -275,7 +280,7 @@ public final class BrokerMain {
         if(op.equals("begin")){
             long age=SystemClock.elapsedRealtime()-controllerSeen;if(age<0||age>15000){wakeController();ActionGate.fail("CONTROLLER_OFFLINE","Controller is starting");}
             if(gate.owner()!=null&&!tasks.active()){System.err.println("begin: closing workspace left by a settled execution");closeWorkspace();}
-            activity.reset();tasks.begin(a,revision,SystemClock.elapsedRealtime());taskManaged=true;lastTaskId=tasks.task();executionId=tasks.execution();synchronized(responses){responses.clear();}restartRequired=false;pauseReason="";event("task.begin","running");
+            activity.reset();watch.reset();tasks.begin(a,revision,SystemClock.elapsedRealtime());taskManaged=true;lastTaskId=tasks.task();executionId=tasks.execution();synchronized(responses){responses.clear();}restartRequired=false;pauseReason="";event("task.begin","running");
         }else if(op.equals("poll")){tasks.poll(a,SystemClock.elapsedRealtime());}
         else if(op.equals("end")){
             // Native pause/approval is authoritative; terminal reporting never approves a phone action.
@@ -303,12 +308,39 @@ public final class BrokerMain {
         treeRead=false;activity.reset();if(takeover.finish("cancelled"))workspace.userRelease();cancellationBinding=new WorkspaceBinding("","");
         if(gate.owner()!=null)gate.stop(gate.owner());approvals.clear();workspaceExecutionId="";screenSettling.reset();
     }
-    /** The one path that clears the standing display: the model called phone.stop. The AI desktop covers it; the profile
-     *  tasks stay parked behind it as anchors (see {@link ProfileWorkspace#resetContent}). */
+    /** The one path that clears the standing display: the model called phone.stop, or its turn ended normally. The AI
+     *  desktop covers it; the profile tasks stay parked behind it as anchors (see {@link ProfileWorkspace#resetContent}).
+     *  Right before, the screen is read once more: what the model never saw of it becomes screen news. */
     private synchronized void clearDisplay(){
         String execution=workspaceExecutionId;
+        ScreenWatch.Pending unseen=watch.detach();
         closeWorkspace();
-        closing=closer.submit(()->{try{workspace.resetContent(execution);}catch(Throwable e){System.err.println("workspace reset failed: "+e.getClass().getSimpleName());}});
+        closing=closer.submit(()->{
+            reportUnseen(unseen);
+            try{workspace.resetContent(execution);}catch(Throwable e){System.err.println("workspace reset failed: "+e.getClass().getSimpleName());}
+        });
+    }
+    /** On the closer, before the reset: the final read happens outside the control-plane lock. Never throws. */
+    private void reportUnseen(ScreenWatch.Pending unseen){
+        try{
+            ProfileStructure.Screen now=workspace.idleScreen();
+            List<String> lines=now==null?unseen.unseen("",List.of()):unseen.unseen(now.pkg(),now.lines());
+            if(!lines.isEmpty())news.post(unseen.pkg(),workspace.appLabel(unseen.pkg()),lines,System.currentTimeMillis());
+        }catch(Throwable e){System.err.println("unseen screen report failed: "+e.getClass().getSimpleName());}
+    }
+    /** About once a second while the model thinks (no tool runs, nobody else holds the screen): ScreenWatch compares the
+     *  screen with what the model last observed. Under the tool lock, so no input can slip between the read and the record. */
+    private void watchIdle(){
+        synchronized(toolLock){
+            if(toolsInFlight.get()>0||gate.owner()==null||gate.paused()||takeover.active()||!workspace.hasLaunched())return;
+            ProfileStructure.Screen now=workspace.idleScreen();
+            if(now!=null)watch.idle(now.pkg(),now.lines());
+        }
+    }
+    /** Hands the model, with an observation it is shown, what appeared on the screen by itself since its previous one. */
+    private void reportAppeared(JSONObject observation,String pkg,List<String> lines)throws JSONException{
+        List<String> appeared=watch.observed(pkg,lines);
+        if(!appeared.isEmpty())observation.put("appeared",new JSONArray(appeared));
     }
     /** The AI display is standing: it is created once and survives every turn. Only content and ownership are per turn. */
     private final Object displayLock=new Object();
@@ -400,7 +432,7 @@ public final class BrokerMain {
             if(a.has("packageName"))workspace.requirePackage(a.getString("packageName"));
             claim(session,userApproved);gate.requireActive(session);
             if(a.has("packageName")){
-                treeRead=false;treeIncomplete=false;String pkg=a.getString("packageName");
+                treeRead=false;treeIncomplete=false;watch.acting();String pkg=a.getString("packageName");
                 try{workspace.launch(pkg);activity.launched(pkg,workspace.appLabel(pkg));}
                 catch(Exception e){
                     boolean keep=e instanceof ActionGate.Denied&&survives((ActionGate.Denied)e);
@@ -417,13 +449,15 @@ public final class BrokerMain {
         if(tool.equals("phone.request_intervention")){
             // The user takes the screen; the DSH turn stays alive and blocked in the plugin until hand-back.
             gate.requireActive(session);
-            String id=takeover.start("model",a.optString("reason"),SystemClock.elapsedRealtime());treeRead=false;activity.note("请你接管操作");
+            String id=takeover.start("model",a.optString("reason"),SystemClock.elapsedRealtime());treeRead=false;watch.acting();activity.note("请你接管操作");
             gate.invalidate();event("intervention.start",state.equals("idle")?"running":state);
             return performed().put("interventionId",id);
         }
         if(takeover.active()&&USER_CONTROL_BLOCKED.contains(tool))ActionGate.fail("USER_CONTROL","The user is controlling the screen; wait for hand-back");
         gate.requireActive(session);
         workspace.keepAwake();
+        // Anything but looking (or waiting) may change the screen: what changes from here on is the model's doing.
+        if(!tool.equals("phone.ui_tree")&&!tool.equals("phone.screenshot")&&!tool.equals("phone.wait"))watch.acting();
         // The model's own app management (ProfileApps): no pixels are involved, so no observation and no screen check.
         // The screen may change all the same (a permission dialog may close, the app disappears): observe again after.
         if(tool.equals("phone.grant_permission")){
@@ -464,7 +498,8 @@ public final class BrokerMain {
             if(tool.equals("phone.ui_tree")){
                 String observationId=gate.observeTree(session,"empty|"+workspace.fingerprintIdle(),SystemClock.elapsedRealtime());
                 treeRead=true;treeIncomplete=false;
-                return new JSONObject().put("title","").put("package","").put("complete",true).put("nodes",new org.json.JSONArray()).put("width",720).put("height",1608).put("capturedAt",System.currentTimeMillis()).put("advice","No app is open on the AI screen (it may show the AI desktop, with apps from earlier turns parked behind it). Call phone_launch_app with an installed package (phone_apps lists them); an app that is still running comes back where it was.").put("observationId",observationId);
+                JSONObject empty=new JSONObject().put("title","").put("package","").put("complete",true).put("nodes",new org.json.JSONArray()).put("width",720).put("height",1608).put("capturedAt",System.currentTimeMillis()).put("advice","No app is open on the AI screen (it may show the AI desktop, with apps from earlier turns parked behind it). Call phone_launch_app with an installed package (phone_apps lists them); an app that is still running comes back where it was.").put("observationId",observationId);
+                reportAppeared(empty,"",List.of());return empty;
             }
             if(tool.equals("phone.screenshot"))ActionGate.fail("APP_UNKNOWN","No app is open on the AI screen: call phone_launch_app first");
             if(tool.equals("phone.launch_app")){
@@ -480,7 +515,10 @@ public final class BrokerMain {
             ProfileWorkspace.Observation observation=region!=null?workspace.zoom(region.getInt(0),region.getInt(1),region.getInt(2),region.getInt(3),a.getInt("scale")):workspace.observe(tool.equals("phone.screenshot"));
             JSONObject result=observation.result();
             String observationId=tool.equals("phone.ui_tree")?gate.observeTree(session,observation.fingerprint(),SystemClock.elapsedRealtime()):gate.observe(session,observation.fingerprint(),SystemClock.elapsedRealtime());
-            if(tool.equals("phone.ui_tree")){workspace.bindTree(observationId);treeRead=true;treeIncomplete=!result.optBoolean("complete",true);}
+            if(tool.equals("phone.ui_tree")){
+                workspace.bindTree(observationId);treeRead=true;treeIncomplete=!result.optBoolean("complete",true);
+                ProfileStructure.Screen seen=workspace.lastScreen();reportAppeared(result,seen.pkg(),seen.lines());
+            }
             result.put("observationId",observationId);return result;
         }
         if(tool.equals("phone.wait")){treeRead=false;treeIncomplete=false;} // the screen may change while waiting: read the structure again before a screenshot
@@ -526,7 +564,7 @@ public final class BrokerMain {
             case "phone.swipe":workspace.swipe(a);break;
             case "phone.scroll":{JSONObject moved=workspace.scroll(a);workspace.guard();return observeAfter(session,performed(moved),before,false);} // scroll already waited for the fling
             case "phone.read_page":{JSONObject page=workspace.readPage(a);return performed(page);}
-            case "phone.type_text":workspace.type(a);activity.note("输入文字");break;
+            case "phone.type_text":watch.typed(a.getString("text"));workspace.type(a);activity.note("输入文字");break;
             case "phone.key":workspace.key(a.getString("key"));if(a.getString("key").equals("ENTER"))activity.note("确认输入");break;
             case "phone.launch_app":workspace.launch(a.getString("packageName"));activity.launched(a.getString("packageName"),workspace.appLabel(a.getString("packageName")));break;
             default:ActionGate.fail("TOOL_DENIED","Unsupported operation");
@@ -594,7 +632,7 @@ public final class BrokerMain {
                 switch(kind){
                     case "tap":workspace.tap(new JSONObject().put("elementId",id),false);break;
                     case "long_press":workspace.tap(new JSONObject().put("elementId",id),true);break;
-                    case "type_text":workspace.type(new JSONObject().put("elementId",id).put("text",step.getString("text")));typed=id;activity.note("输入文字");break;
+                    case "type_text":watch.typed(step.getString("text"));workspace.type(new JSONObject().put("elementId",id).put("text",step.getString("text")));typed=id;activity.note("输入文字");break;
                     default:workspace.key(step.getString("key"));if(step.getString("key").equals("ENTER"))activity.note("确认输入");
                 }
             }catch(Exception e){
@@ -699,6 +737,7 @@ public final class BrokerMain {
             JSONObject tree=observation.result();
             String observationId=gate.observeTree(session,observation.fingerprint(),SystemClock.elapsedRealtime());
             workspace.bindTree(observationId);treeRead=true;treeIncomplete=!tree.optBoolean("complete",true);
+            ProfileStructure.Screen seen=workspace.lastScreen();reportAppeared(tree,seen.pkg(),seen.lines());
             if(!before.isEmpty())result.put("changed",!before.equals(workspace.lastTreeSignature()));
             result.put("observation",tree.put("observationId",observationId));
         }catch(ActionGate.Denied e){
@@ -756,7 +795,7 @@ public final class BrokerMain {
             if(gate.owner()==null||workspace.displayId()<=0)ActionGate.fail("NO_DISPLAY","No active workspace to take over");
             if(takeover.active())return status();
             if(tasks.active()&&!tasks.command().isEmpty())ActionGate.fail("PAUSED","Task is stopping");
-            takeover.start("user","",SystemClock.elapsedRealtime());activity.note("你接管了操作");gate.invalidate();event("intervention.start",state.equals("idle")?"running":state);
+            takeover.start("user","",SystemClock.elapsedRealtime());watch.acting();activity.note("你接管了操作");gate.invalidate();event("intervention.start",state.equals("idle")?"running":state);
         }else if(action.equals("end")){endTakeover("handed_back");}
         else ActionGate.fail("CONTROL_DENIED","Unknown takeover action");
         return status();
@@ -878,7 +917,7 @@ public final class BrokerMain {
     private synchronized JSONObject status()throws Exception{
         long observedAt=SystemClock.elapsedRealtime();long sample=++environmentSequence;
         String main=workspace.mainPackage();Object game=JSONObject.NULL;if(main.equals("dev.dsh.pocket"))game=false;else try{android.content.pm.ApplicationInfo info=workspace.context().getPackageManager().getApplicationInfo(main,0);int category=info.category;if(category!=android.content.pm.ApplicationInfo.CATEGORY_UNDEFINED)game=category==android.content.pm.ApplicationInfo.CATEGORY_GAME;else if((info.flags&android.content.pm.ApplicationInfo.FLAG_IS_GAME)!=0)game=true;else if((info.flags&android.content.pm.ApplicationInfo.FLAG_SYSTEM)!=0)game=false;}catch(Exception ignored){}
-        JSONObject out=new JSONObject().put("profileUserId",workspace.profileUserId()).put("profileSerial",workspace.profileSerial()).put("accessMode","managed-profile").put("instanceId",instanceId).put("executionId",executionId).put("taskId",lastTaskId).put("revision",revision).put("state",state).put("taskManaged",taskManaged).put("paused",taskManaged?!state.equals("running"):gate.paused()).put("restartRequired",restartRequired).put("displayAlert",standingFailure).put("pauseReason",pauseReason).put("displayId",workspace.displayId()).put("workspaceActive",gate.owner()!=null).put("packageName",gate.owner()==null?"":workspace.targetPackage()).put("mainPackage",main).put("mainIsGame",game).put("environmentSequence",sample).put("environmentObservedAt",observedAt).put("locked",workspace.locked()).put("activity",activity.json()).put("ownerNotices",notices.json());
+        JSONObject out=new JSONObject().put("profileUserId",workspace.profileUserId()).put("profileSerial",workspace.profileSerial()).put("accessMode","managed-profile").put("instanceId",instanceId).put("executionId",executionId).put("taskId",lastTaskId).put("revision",revision).put("state",state).put("taskManaged",taskManaged).put("paused",taskManaged?!state.equals("running"):gate.paused()).put("restartRequired",restartRequired).put("displayAlert",standingFailure).put("pauseReason",pauseReason).put("displayId",workspace.displayId()).put("workspaceActive",gate.owner()!=null).put("packageName",gate.owner()==null?"":workspace.targetPackage()).put("mainPackage",main).put("mainIsGame",game).put("environmentSequence",sample).put("environmentObservedAt",observedAt).put("locked",workspace.locked()).put("activity",activity.json()).put("ownerNotices",notices.json()).put("screenNews",news.json());
         takeover.describe(out);
         ApprovalGate.Reservation p=approvals.pending();if(p!=null)out.put("pending",new JSONObject().put("sessionId",p.session).put("tool",p.tool).put("arguments",new JSONObject(p.arguments)).put("approvalId",p.id).put("remainingMs",Math.max(0,p.deadline-SystemClock.elapsedRealtime())));return out;
     }

@@ -11,6 +11,8 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import dev.dsh.pocket.R
+import dev.dsh.pocket.notify.NotifyCenter
+import dev.dsh.pocket.notify.NotifyDefaults
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.combine
 
@@ -86,6 +88,24 @@ class CoworkControllerService : Service() {
                 val instance=state.optString("instanceId")
                 for(n in fresh)try{manager.notify("notice-$instance-${n.seq}",NOTICE_ID,notice(n))}catch(_:SecurityException){}
                 prefs.edit().putString("notice_instance",instance).putLong("notice_seq",fresh.last().seq).apply()
+            }
+        }
+        // Text a finished turn left unseen on the AI screen (the app was in front, so it posted no notification): each
+        // entry once into the notification triggers, as if that app had posted it; Jev decides whether it wakes the app's
+        // session. The last number handed over is remembered across restarts.
+        scope.launch {
+            val prefs=getSharedPreferences("preferences",0)
+            CoworkConnection.status.collect { state ->
+                val instance=state.optString("instanceId")
+                val seenInstance=prefs.getString("screen_instance","").orEmpty();val seenSeq=prefs.getLong("screen_seq",0)
+                val last=ScreenNewsFeed.lastSeq(state)
+                if(instance.isBlank()||(instance==seenInstance&&last<=seenSeq))return@collect
+                val fresh=ScreenNewsFeed.fresh(state,seenInstance,seenSeq,System.currentTimeMillis(),NotifyDefaults.SCREEN_MAX_AGE_MS)
+                if(fresh.isNotEmpty()){
+                    NotifyCenter.init(this@CoworkControllerService)
+                    for(n in fresh)NotifyCenter.screen(n.packageName,n.app,n.lines,n.at,"screen-$instance-${n.seq}")
+                }
+                prefs.edit().putString("screen_instance",instance).putLong("screen_seq",last).apply()
             }
         }
     }

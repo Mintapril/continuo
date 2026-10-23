@@ -26,8 +26,9 @@ import java.util.concurrent.TimeUnit
 /**
  * Process-wide notification triggers. When on, every app's notifications (except excluded apps and structural noise)
  * join one batch; once no app has posted for the chosen wait (default 5 seconds) the batch goes, signed, to the Cowork plugin, where Jev
- * decides whether it wakes the model and the model decides what to do. Fed by [NotifyListener]; shown by the settings
- * page. Notification text is held in memory for the pending batch only.
+ * decides whether it wakes the model and the model decides what to do. Fed by [NotifyListener], and by [screen] with
+ * text a Cowork turn left unseen on the AI screen; shown by the settings page. Text is held in memory for the pending
+ * batch only.
  */
 object NotifyCenter {
     data class LogEntry(val at: Long, val text: String)
@@ -96,6 +97,23 @@ object NotifyCenter {
         if (!watches(n.packageName) || NotifyFilter.check(n) != Verdict.ACCEPT) return
         if (throttle.add(n, labelOf(n.packageName, appInfo)) != Verdict.ACCEPT) return
         schedule()
+    }
+
+    /**
+     * Text a finished Cowork turn left unseen on the AI screen, from the broker via the controller: the app was in front,
+     * so it posted no notification for it. It joins the batch like a notification of that app (same switch, exclusions,
+     * wait and Jev), marked as screen text; [key] is unique per broker entry. Any thread.
+     */
+    fun screen(packageName: String, app: String, lines: List<String>, at: Long, key: String) {
+        val text = NotifyDefaults.screenText(lines)
+        if (text.isEmpty()) return
+        main.post {
+            if (!watches(packageName)) return@post
+            val n = Posted(packageName, key, work = true, channel = "", category = null, ongoing = false, groupSummary = false,
+                title = "", text = text, at = at, screen = true)
+            if (throttle.add(n, labels[packageName] ?: NotifyDefaults.label(app, packageName)) != Verdict.ACCEPT) return@post
+            schedule()
+        }
     }
 
     /** The app's name: from the notification's own ApplicationInfo first, since the personal user cannot see an app

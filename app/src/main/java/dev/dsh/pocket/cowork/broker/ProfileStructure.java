@@ -78,7 +78,7 @@ final class ProfileStructure implements AutoCloseable {
             if(interactive){stats.interactive++;if(!c.labeled)stats.unlabeled++;}
         }
         stats.emitted=out.length();
-        lastSignature=signature(kept);
+        lastSignature=signature(kept);lastLines=lines(kept);
         JSONObject result=new JSONObject().put("title",title).put("package",pkg).put("nodes",out);
         String advice="";boolean complete=true;
         if(stats.windows==0){complete=false;advice="No accessible window on the work-profile display; use phone_screenshot.";}
@@ -105,11 +105,22 @@ final class ProfileStructure implements AutoCloseable {
         StringBuilder hex=new StringBuilder();for(byte b:digest.digest())hex.append(String.format("%02x",b));return hex.toString();
     }
     /** Visible text lines (text, else description) of the compact structure in reading order, for page reading. */
-    synchronized List<String> visibleLines(int displayId,int width,int height)throws Exception{
+    synchronized List<String> visibleLines(int displayId,int width,int height)throws Exception{return lines(collect(displayId,width,height,new Stats()));}
+    private static List<String> lines(List<Cand> list){
         ArrayList<String> lines=new ArrayList<>();
-        for(Cand c:collect(displayId,width,height,new Stats()))if(c.labeled)lines.add(c.text.isEmpty()?c.desc:c.text);
+        for(Cand c:list)if(c.labeled)lines.add(c.text.isEmpty()?c.desc:c.text);
         return lines;
     }
+    /** The app in front (package of the top application window) and the text lines of the screen. */
+    record Screen(String pkg,List<String> lines){}
+    /** The screen the latest snapshot() saw, as lines (what the model was shown). */
+    synchronized Screen lastScreen(){return new Screen(pkg,List.copyOf(lastLines));}
+    /** A read for ScreenWatch: like contentSignature, it never touches the bound node handles or the last signature. */
+    synchronized Screen screen(int displayId,int width,int height)throws Exception{
+        Stats stats=new Stats();List<String> lines=lines(collect(displayId,width,height,stats));
+        return new Screen(stats.pkg,lines);
+    }
+    private List<String> lastLines=List.of();
     private ArrayList<Cand> collect(int displayId,int width,int height,Stats stats)throws Exception{
         ArrayList<Cand> all=new ArrayList<>();
         long deadline=SystemClock.elapsedRealtime()+BUDGET_MS;

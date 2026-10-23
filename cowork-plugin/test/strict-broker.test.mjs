@@ -122,6 +122,21 @@ test('ui_tree: new fields are required and strictly validated', async () => {
   const client = new BrokerClient({ secret, now: () => now, transport: async r => envelopeOk(r, { ...good, complete: false, advice: 'Tree is sparse; use phone.screenshot.' }) });
   assert.equal((await client.call('s', 'phone.ui_tree', {})).complete, false);
 });
+test('ui_tree and returned screens may list appeared lines: bounded strings, nothing else', async () => {
+  const good = treeResult(now);
+  const ok = new BrokerClient({ secret, now: () => now, transport: async r => envelopeOk(r, { ...good, appeared: ['张三: 在吗', '1'] }) });
+  assert.deepEqual((await ok.call('s', 'phone.ui_tree', {})).appeared, ['张三: 在吗', '1']);
+  for (const appeared of [[], Array.from({ length: 21 }, (_, i) => `l${i}`), ['x'.repeat(301)], [''], [1], 'text']) {
+    const client = new BrokerClient({ secret, now: () => now, transport: async r => envelopeOk(r, { ...good, appeared }) });
+    await assert.rejects(client.call('s', 'phone.ui_tree', {}), JSON.stringify(appeared));
+  }
+  const { client } = afterHarness(r => r.tool === 'phone.tap' ? { performed: true, observation: { ...settledScreen(), appeared: ['新消息'] } } : undefined);
+  await client.call('s', 'phone.ui_tree', {});
+  assert.deepEqual((await client.call('s', 'phone.tap', { observationId: 'obs', elementId: 'btn' })).observation.appeared, ['新消息']);
+  const { client: bad } = afterHarness(r => r.tool === 'phone.tap' ? { performed: true, observation: { ...settledScreen(), appeared: Array(21).fill('x') } } : undefined);
+  await bad.call('s', 'phone.ui_tree', {});
+  assert.equal((await bad.call('s', 'phone.tap', { observationId: 'obs', elementId: 'btn' })).observationError, 'BROKER_ERROR', 'a bad list never turns a performed input into an error');
+});
 test('tap/long_press by elementId: only after ui_tree, exactly one targeting mode, known id', async () => {
   for (const name of ['phone.tap', 'phone.long_press']) {
     const { client, calls } = setup();

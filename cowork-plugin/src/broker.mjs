@@ -79,7 +79,16 @@ export const PERFORMED = object({ performed: { type: 'boolean', const: true } })
 export const MUTATION_OUTPUT = object({ performed: bool, userControlled: bool, note: str }, ['performed']);
 // Compact node: empty fields are omitted; bounds are [left, top, right, bottom]; flags is a string of c(lickable) e(ditable) s(crollable) f(ocused) k(checked).
 const node = object({ id: str, text: str, desc: str, role: str, rid: str, bounds: { type: 'array', items: int }, flags: str }, ['id', 'bounds']);
-const TREE_RESULT = object({ ...metadata, title: str, package: str, nodes: { type: 'array', items: node }, complete: bool, advice: str });
+// appeared (optional): lines that showed up on the screen by themselves since the previous observation, while no input
+// of the model ran (a new message, a banner that may be gone again); untrusted screen text, at most APPEARED_MAX.
+export const APPEARED_MAX = 20;
+const TREE_KEYS = { ...metadata, title: str, package: str, nodes: { type: 'array', items: node }, complete: bool, advice: str };
+const TREE_RESULT = object({ ...TREE_KEYS, appeared: { type: 'array', items: str } }, Object.keys(TREE_KEYS));
+function checkAppeared(tree) {
+  if (tree.appeared === undefined) return;
+  check(tree.appeared.length >= 1 && tree.appeared.length <= APPEARED_MAX, 'Too many appeared lines', 'BROKER_PROTOCOL');
+  for (const line of tree.appeared) boundedString(line, 300, 'appeared');
+}
 // Inputs that return the settled screen as `observation` (exactly a phone.ui_tree result), so the model continues from
 // the reply instead of observing again. changed: differs from the screen last read; settled:false: still changing when
 // read; observationError: the input was performed but the screen could not be read (the plugin adds a note).
@@ -371,9 +380,10 @@ export class BrokerClient {
       if (OBSERVED_AFTER.includes(name) && Object.hasOwn(reply, 'observation')) ({ observation, ...reply } = reply);
       const result = validate(PHONE_RESULTS[name] ?? INTERNAL_RESULTS[name] ?? (OBSERVED_AFTER.includes(name) ? OBSERVED_PERFORMED : PERFORMED), reply);
       if (name === 'phone.screenshot') checkZoom(result, wire);
+      if (name === 'phone.ui_tree') checkAppeared(result);
       if (name === 'phone.screenshot' || name === 'phone.ui_tree') this.#admit(sessionId, name, result);
       if (observation !== undefined) {
-        try { this.#admit(sessionId, 'phone.ui_tree', validate(TREE_RESULT, observation, 'observation')); result.observation = observation; }
+        try { checkAppeared(validate(TREE_RESULT, observation, 'observation')); this.#admit(sessionId, 'phone.ui_tree', observation); result.observation = observation; }
         catch { result.observationError = 'BROKER_ERROR'; }
       }
       if (name === 'phone.batch') {

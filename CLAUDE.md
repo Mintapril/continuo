@@ -43,7 +43,8 @@ node --test test/strict-broker.test.mjs     # 单个文件；--test-name-pattern
 - `app/src/test/.../BrokerSourceTest.kt` 对 Broker 的 Java **源码文本**做断言（例如 `Set.of` 不能有重复元素，不能注册 root 进程无法注册的包监听，手势每笔的检查点）。Broker 类在 JVM 上加载不了，所以只能这样测。改 `ProfileWorkspace.stroke`/`strokeCheck`、`ProfileStructure.focusedField`/`appendFocused` 这类方法时先看这个测试在匹配什么。
 - 模型可见的工具名是下划线形式（`phone_tap`），插件内部和线协议是点号形式（`phone.tap`），由 `modelName()` 转换；`ALLOWED_TOOLS` 是模型可见名。
 - 插件与 APK 的协议必须匹配：一边加了参数另一边会拒绝。改 `broker.mjs` 的参数/结果 schema 时同步改 `ToolContract.java`。
-- 通知入口（`notify.mjs` ↔ App 的 `notify/NotifyPolicy.kt`）：`strict-notify.test.mjs` 的 `VECTOR` 与 `NotifyPolicyTest` 逐字节对账同一个请求体和 MAC；改字段或签名格式要两边一起改（线协议见 PROTOCOL.md「Notification ingress」）。
+- 通知入口（`notify.mjs` ↔ App 的 `notify/NotifyPolicy.kt`）：`strict-notify.test.mjs` 的 `VECTOR` 与 `NotifyPolicyTest` 逐字节对账同一个请求体和 MAC；改字段或签名格式要两边一起改（线协议见 PROTOCOL.md「Notification ingress」）。屏幕新内容的条目多一个 `origin: "screen"`（`SCREEN_BODY`）。
+- 观察结果里可选的 `appeared`（Broker 的 `ScreenWatch`）由 `broker.mjs` 的 `TREE_RESULT` 校验；旧插件会拒收带它的结果，所以插件和 APK 要一起部署。
 
 ## 架构
 
@@ -72,7 +73,7 @@ Broker（root，app_process，从已安装 APK 的 dev.dsh.pocket.cowork.broker.
 - `BrokerMain`：HTTP 端点（agent 角色用 `/v1/tool` 调工具、`/v1/task` 申请并轮询每轮租约；controller 角色用 `/v1/control`、`/v1/state`、`/v1/apps`、`/v1/takeover`、`/v1/stream` 等）、任务租约、看门狗。锁纪律写在类注释里：`this` 只保护短暂的控制面状态，绝不跨工作区操作持有；工具调用走 `toolLock`。
 - `ProfileWorkspace`：副屏驱动（创建/保持虚拟显示、注入、截图、手势笔画、保活）。`AndroidWorkspace` 是早期共享用户版本，已不在主流程。
 - `ProfileStructure`：UiAutomation 读树、语义输入、焦点字段元数据。
-- 可在 JVM 上单测的纯逻辑：`ToolContract`（参数校验）、`RefusalPolicy`（哪些拒绝不结束任务）、`TaskLifecycle`、`BrokerAuth`（HMAC）、`StrokePath`、`ScreenZoom`、`BatchPolicy`、`StrayTaskSweep`、`LauncherEntrySweep`、`PopupPermissionPolicy`、`NotificationGrantPolicy`（工作资料新装应用自动允许通知，由 `NotificationGrant` 执行）、`QuietNotificationPolicy`（工作资料应用的通知通道压到最低、不在主屏提醒，由 `QuietNotificationGate` 执行）、`ParkedApps`（副屏重建后恢复停在后面的应用）、`ActivityLog` 等。往这些类里放逻辑，Broker 的 Android 依赖部分尽量薄。
+- 可在 JVM 上单测的纯逻辑：`ToolContract`（参数校验）、`RefusalPolicy`（哪些拒绝不结束任务）、`TaskLifecycle`、`BrokerAuth`（HMAC）、`StrokePath`、`ScreenZoom`、`BatchPolicy`、`StrayTaskSweep`、`LauncherEntrySweep`、`PopupPermissionPolicy`、`NotificationGrantPolicy`（工作资料新装应用自动允许通知，由 `NotificationGrant` 执行）、`QuietNotificationPolicy`（工作资料应用的通知通道压到最低、不在主屏提醒，由 `QuietNotificationGate` 执行）、`ParkedApps`（副屏重建后恢复停在后面的应用）、`ScreenWatch`（模型思考时副屏上自己冒出来、它没看到的文字：随下一次观察报 `appeared`，一轮结束时剩下的经 `ScreenNews` 交给通知触发）、`ActivityLog` 等。往这些类里放逻辑，Broker 的 Android 依赖部分尽量薄。
 - `*ProbeMain` 是探测入口，不在主流程。
 
 ### App 里的关键分层
@@ -86,7 +87,7 @@ Broker（root，app_process，从已安装 APK 的 dev.dsh.pocket.cowork.broker.
 
 ### 插件（`cowork-plugin/`）
 
-入口 `src/restricted.mjs`，通过 `cordis.patch.yml` 注册预设 `cowork-phone`。限制落在 `tools.guard()` 和空的继承工具掩码上，不只是系统提示词。`broker.mjs` 是线协议适配器（参数/结果 schema、观察 TTL、错误码表），`task-lifecycle.mjs` 持有每轮的原生租约并在 Broker 下达 pause/stop 时取消 DSH 回合（这就是会话里出现 "Turn aborted" 的来源），`gesture-path.mjs` 把 SVG 路径展平成折线。`notify.mjs` 是同一 bundle 里的第二个插件（宿主层，不在预设里）：通知入口、Jev 判断（判断不了就不唤起）、等副屏空闲的合并队列，经 `dsh-webhook` 为每个通过的批次新建 `cowork-phone` 会话并在结束后归档。`src/index.mjs`、`bridge.mjs`、`files.mjs`、`policy.mjs` 是旧代码，不在 `package.json` 的 `files` 里。
+入口 `src/restricted.mjs`，通过 `cordis.patch.yml` 注册预设 `cowork-phone`。限制落在 `tools.guard()` 和空的继承工具掩码上，不只是系统提示词。`broker.mjs` 是线协议适配器（参数/结果 schema、观察 TTL、错误码表），`task-lifecycle.mjs` 持有每轮的原生租约并在 Broker 下达 pause/stop 时取消 DSH 回合（这就是会话里出现 "Turn aborted" 的来源），`gesture-path.mjs` 把 SVG 路径展平成折线。`notify.mjs` 是同一 bundle 里的第二个插件（宿主层，不在预设里）：通知入口、Jev 判断（判断不了就不唤起）、按应用分开的合并队列；每个应用一个固定的 `cowork-phone` 会话（`cowork-app-<资料>-<包名>`，插件直接用 DSH 的会话服务创建或恢复，不归档），通过的批次插进它正在跑的一轮，或在副屏空闲时作为它的新一轮。`src/index.mjs`、`bridge.mjs`、`files.mjs`、`policy.mjs` 是旧代码，不在 `package.json` 的 `files` 里。
 
 ### 安全边界（改动时不能退让）
 

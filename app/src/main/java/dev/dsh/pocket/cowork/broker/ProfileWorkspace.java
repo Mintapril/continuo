@@ -690,6 +690,15 @@ public final class ProfileWorkspace implements AutoCloseable {
     }
     /** Signature of the latest phone_ui_tree snapshot, the screen the model last read; empty when none is bound. */
     public synchronized String lastTreeSignature(){return tree.lastSignature();}
+    /** The latest snapshot as text lines: the screen the model was last shown (ScreenWatch's baseline). */
+    public synchronized ProfileStructure.Screen lastScreen(){return tree.lastScreen();}
+    /** A read for ScreenWatch, outside any tool: only after the same check an observation makes (owned display, verified
+     *  work-profile foreground, no secure window), and it binds nothing, so the model's element ids stay valid. Null when
+     *  the screen cannot be read now (no app, a transient gap, a secure window). */
+    public synchronized ProfileStructure.Screen idleScreen(){
+        if(display==null||launched.isEmpty())return null;
+        try{check(true,false);return tree.screen(displayId(),W,H);}catch(Exception unreadable){return null;}
+    }
     /** After an input, waits until the visible structure stops changing, in the rhythm of the scroll feedback: two
      *  equal content signatures 120 ms apart, the first read 300 ms after the input, at most six reads. A screen with
      *  no labelled node yet (the blank gap between two activities) never counts as settled. false when it was still

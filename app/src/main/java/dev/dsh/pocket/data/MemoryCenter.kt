@@ -7,6 +7,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 /**
  * Read/write gateway to the `dsh-mneme` plugin running inside the on-device DSH.
@@ -205,6 +208,45 @@ class MemoryCenter(private val api: DshApi) {
             "document" -> "文档"
             else -> value
         }
+    }
+}
+
+/**
+ * The 「上次整理」 row, read from mneme 0.9's `/dream-status`: `lastRun` is the newest `dream_runs` row of any
+ * kind (`created_at` = when it started, `status` ok | noop | degraded | reconcile | failed, `error`, `run_type`
+ * auto | sleep | organize) and `runs` the newest five. A failed run must read as failed, not as a timestamp.
+ */
+object DreamFormat {
+    data class LastRun(val label: String, val failed: Boolean, val detail: String?)
+
+    private val STAMP = DateTimeFormatter.ofPattern("MM-dd HH:mm")
+
+    fun lastRun(status: JSONObject, zone: ZoneId = ZoneId.systemDefault()): LastRun {
+        val run = status.optJSONObject("lastRun") ?: return LastRun("从未", false, null)
+        val started = run.text("created_at")
+        val at = runCatching { STAMP.format(Instant.parse(started).atZone(zone)) }.getOrElse { started.take(10).ifBlank { "时间未知" } }
+        val kind = when (run.text("run_type")) { "sleep" -> "睡眠整理"; "organize" -> "手动整理"; else -> null }
+        val outcome = when (val s = run.text("status")) {
+            "ok", "" -> null
+            "noop" -> "无改动"
+            "degraded", "reconcile" -> "部分完成"
+            "failed" -> "失败"
+            else -> s
+        }
+        val failed = run.text("status") == "failed"
+        val detail = if (!failed) null else {
+            val runs = status.optJSONArray("runs")
+            val streak = if (runs == null) 1 else (0 until runs.length()).takeWhile { runs.optJSONObject(it)?.text("status") == "failed" }.size
+            listOfNotNull(if (streak > 1) "最近 $streak 次都失败" else null, reason(run.text("error"))).joinToString("：").ifBlank { null }
+        }
+        return LastRun(listOfNotNull(at, kind, outcome).joinToString(" · "), failed, detail)
+    }
+
+    private fun reason(error: String): String? = when {
+        error.isBlank() -> null
+        error == "no json array in llm output" -> "模型输出里没有可解析的 JSON"
+        error == "llm failed" -> "模型调用失败"
+        else -> error.take(80)
     }
 }
 

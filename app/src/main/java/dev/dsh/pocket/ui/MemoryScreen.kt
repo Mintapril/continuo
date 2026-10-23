@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.dsh.pocket.PocketViewModel
+import dev.dsh.pocket.data.DreamFormat
 import dev.dsh.pocket.data.MemoryCenter
 import dev.dsh.pocket.data.stringArray
 import dev.dsh.pocket.data.text
@@ -85,8 +86,9 @@ import java.util.Locale
                     style = MaterialTheme.typography.bodyMedium, color = Pocket.muted)
             })
             GroupDivider()
-            GroupRow("上次整理", icon = Glyph.Clock, chevron = false, trailing = {
-                Text(stampText(mem.dream.opt("lastRun")), style = MaterialTheme.typography.bodyMedium, color = Pocket.muted)
+            val lastDream = DreamFormat.lastRun(mem.dream)
+            GroupRow("上次整理", icon = Glyph.Clock, chevron = false, subtitle = lastDream.detail, trailing = {
+                Text(lastDream.label, style = MaterialTheme.typography.bodyMedium, color = if (lastDream.failed) Pocket.danger else Pocket.muted)
             })
             GroupDivider()
             GroupRow("版本", icon = Glyph.Info, value = mem.version.ifBlank { "—" }, chevron = false)
@@ -421,11 +423,7 @@ private fun sourceLabel(value: String) = when (value) {
 
 /** Timestamps arrive as ISO strings; show local wall-clock without pretending to full precision. */
 private fun stampText(value: Any?): String {
-    val raw = when (value) {
-        is String -> value
-        is JSONObject -> value.text("at").ifBlank { value.text("started_at") }
-        else -> ""
-    }
+    val raw = value as? String ?: ""
     if (raw.isBlank()) return "从未"
     val parsed = runCatching {
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.parse(raw.take(19))

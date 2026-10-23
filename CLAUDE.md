@@ -72,7 +72,7 @@ Broker（root，app_process，从已安装 APK 的 dev.dsh.pocket.cowork.broker.
 - `BrokerMain`：HTTP 端点（agent 角色用 `/v1/tool` 调工具、`/v1/task` 申请并轮询每轮租约；controller 角色用 `/v1/control`、`/v1/state`、`/v1/apps`、`/v1/takeover`、`/v1/stream` 等）、任务租约、看门狗。锁纪律写在类注释里：`this` 只保护短暂的控制面状态，绝不跨工作区操作持有；工具调用走 `toolLock`。
 - `ProfileWorkspace`：副屏驱动（创建/保持虚拟显示、注入、截图、手势笔画、保活）。`AndroidWorkspace` 是早期共享用户版本，已不在主流程。
 - `ProfileStructure`：UiAutomation 读树、语义输入、焦点字段元数据。
-- 可在 JVM 上单测的纯逻辑：`ToolContract`（参数校验）、`RefusalPolicy`（哪些拒绝不结束任务）、`TaskLifecycle`、`BrokerAuth`（HMAC）、`StrokePath`、`ScreenZoom`、`BatchPolicy`、`StrayTaskSweep`、`LauncherEntrySweep`、`PopupPermissionPolicy`、`NotificationGrantPolicy`（工作资料新装应用自动允许通知，由 `NotificationGrant` 执行）、`QuietNotificationPolicy`（工作资料应用的通知通道压到最低、不在主屏提醒，由 `QuietNotificationGate` 执行）、`ActivityLog` 等。往这些类里放逻辑，Broker 的 Android 依赖部分尽量薄。
+- 可在 JVM 上单测的纯逻辑：`ToolContract`（参数校验）、`RefusalPolicy`（哪些拒绝不结束任务）、`TaskLifecycle`、`BrokerAuth`（HMAC）、`StrokePath`、`ScreenZoom`、`BatchPolicy`、`StrayTaskSweep`、`LauncherEntrySweep`、`PopupPermissionPolicy`、`NotificationGrantPolicy`（工作资料新装应用自动允许通知，由 `NotificationGrant` 执行）、`QuietNotificationPolicy`（工作资料应用的通知通道压到最低、不在主屏提醒，由 `QuietNotificationGate` 执行）、`ParkedApps`（副屏重建后恢复停在后面的应用）、`ActivityLog` 等。往这些类里放逻辑，Broker 的 Android 依赖部分尽量薄。
 - `*ProbeMain` 是探测入口，不在主流程。
 
 ### App 里的关键分层
@@ -80,7 +80,7 @@ Broker（root，app_process，从已安装 APK 的 dev.dsh.pocket.cowork.broker.
 - `data/`：`DshApi`（唯一允许的目标是 `http://127.0.0.1:3080`，`init` 里 `require`），`Transcript`（会话快照归约为 `TranscriptRow`），`Modes`（只有 `COWORK`=`cowork-phone` 与 `CODE`=`standard` 两种预设，没有普通聊天模式），`RuntimeController`（经 `su` 调 `pocket-control.sh` 的固定动作），`MemoryCenter`/`ScheduleCenter`（通过 DSH 自己的插件路由读写 dsh-mneme 记忆与 dsh-schedule 任务），`CredentialVault`。
 - `cowork/`：`CoworkConnection`（单例，controller 通道、实时流、接管输入），`CoworkControllerService`（前台服务，自愈重连），`CoworkStateBridge`（Broker 状态样本按 instance/revision 去旧，喂给任务岛的 `IslandStore`），`LiveVideo`、`RemoteKeyboard`。
 - `data/Presentation.kt` 的 `foldedEntries`：一轮结束后把思考、工具调用、中间回复折叠成一项，只留用户消息、报错和最后的结论；正在进行的一轮不折叠。
-- `notify/`：通知触发，没有按应用的规则。`NotifyListener`（NotificationListenerService，开关打开且不在排除列表才读内容）、`NotifyCenter`（单例：开关与排除列表、全局批次调度、签名发送到 127.0.0.1:3082）、`NotifyPolicy`（可在 JVM 上测的过滤、10 秒去抖合并、v2 线格式）。设置页 `ui/NotifySettings.kt`。`data/QueuedInput`：停止后把最早一条排队消息重新 steer 回去（DSH 停止后不会为已排队的消息自动开新一轮）。
+- `notify/`：通知触发，没有按应用的规则。`NotifyListener`（NotificationListenerService，开关打开且不在排除列表才读内容）、`NotifyCenter`（单例：开关与排除列表、全局批次调度、签名发送到 127.0.0.1:3082）、`NotifyPolicy`（可在 JVM 上测的过滤、去抖合并（等待时间可在设置页选，默认 5 秒）、v2 线格式）。设置页 `ui/NotifySettings.kt`。`data/QueuedInput`：停止后把最早一条排队消息重新 steer 回去（DSH 停止后不会为已排队的消息自动开新一轮）。
 - `island/`：`IslandRuntime`（单例入口）、`IslandOverlayService`（悬浮窗）、`IslandAccessibilityService`（只用来抬高窗口层级，不读内容）、`IslandPillView`。
 - `ui/`：Compose 界面；`PocketViewModel` 是唯一的 ViewModel。
 

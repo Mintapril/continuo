@@ -35,6 +35,7 @@ import java.util.Locale
     val on by NotifyCenter.enabled.collectAsState()
     val excluded by NotifyCenter.excluded.collectAsState()
     val log by NotifyCenter.log.collectAsState()
+    val quiet by NotifyCenter.quietSeconds.collectAsState()
     var refresh by remember { mutableIntStateOf(0) }
     val owner = LocalLifecycleOwner.current
     DisposableEffect(owner) {
@@ -47,6 +48,7 @@ import java.util.Locale
     LaunchedEffect(vm.connected) { if (vm.connected) vm.jevRefresh() }
     var keyDialog by remember { mutableStateOf(false) }
     var excludeDialog by remember { mutableStateOf(false) }
+    var quietDialog by remember { mutableStateOf(false) }
     val clock = remember { SimpleDateFormat("MM-dd HH:mm", Locale.CHINA) }
 
     SettingsPage("通知触发", back) {
@@ -58,6 +60,9 @@ import java.util.Locale
             GroupDivider()
             GroupRow("不送去判断的应用", icon = Glyph.Shield, subtitle = "这些应用的通知不读取、不外发",
                 value = if (excluded.isEmpty()) "无" else "${excluded.size} 个", onClick = { excludeDialog = true })
+            GroupDivider()
+            GroupRow("合并等待", icon = Glyph.Clock, subtitle = "最后一条通知后再等这么久，才整批交给 Jev",
+                value = "$quiet 秒", onClick = { quietDialog = true })
         }
         Footnote("开启后，除排除的应用外，所有应用的通知标题和正文都会经 OpenRouter 发给 TypeSafe 的 Jev（typesafe/jev-1.14）判断；" +
             "判为有实际意义的那几条再作为“他人写的、不可信的内容”交给 Cowork 会话，也就会发到模型服务。验证码、银行、私密聊天也不例外，建议把这类应用加入排除。Jev 无法判断（无密钥、超时等）时不唤起。")
@@ -81,7 +86,7 @@ import java.util.Locale
             }
         }
         Footnote(if (ingress == false) "通知入口未就绪：DSH 没有运行，或手机上的 Cowork 插件还没有部署通知触发。点一下重新检查。"
-            else "收到通知后先等 ${NotifyDefaults.QUIET_MS / 1000} 秒；期间任何应用的新通知都并进同一批并重新计时，${NotifyDefaults.QUIET_MS / 1000} 秒没有新通知就整批交给 Jev" +
+            else "收到通知后先等 $quiet 秒；期间任何应用的新通知都并进同一批并重新计时，$quiet 秒没有新通知就整批交给 Jev" +
                 "（一直不停时最多攒 ${NotifyDefaults.MAX_WAIT_MS / 60_000} 分钟）。Jev 逐条判断，只把判为有意义的那几条交给一个 Cowork 会话；副屏正被任务占用时排队，空闲后开始。任务结束后会话自动归档。")
 
         SectionLabel("最近记录")
@@ -97,6 +102,14 @@ import java.util.Locale
 
     if (keyDialog) InputDialog("Jev 密钥（OpenRouter）", "OpenRouter 的 API Key（sk-or-…）；只转交给本机 DSH 保存，应用不留存", "", { keyDialog = false }, secret = true) {
         vm.jevSave(it); keyDialog = false
+    }
+    if (quietDialog) ChoiceDialog({ quietDialog = false }) {
+        SheetHeader("合并等待", "最后一条通知后等多久再交给 Jev；越短越及时，越长越容易把连发的消息并成一批")
+        NotifyDefaults.QUIET_CHOICES.forEach { seconds ->
+            SheetRow("$seconds 秒", if (seconds == NotifyDefaults.DEFAULT_QUIET_SECONDS) "默认" else null, Glyph.Clock, checked = seconds == quiet) {
+                NotifyCenter.setQuietSeconds(seconds); quietDialog = false
+            }
+        }
     }
     if (excludeDialog) InputDialog("不送去判断的应用", "输入包名，用逗号分隔，例如 com.android.bankapp；留空表示不排除", excluded.sorted().joinToString(","),
         { excludeDialog = false }, allowBlank = true) { text ->

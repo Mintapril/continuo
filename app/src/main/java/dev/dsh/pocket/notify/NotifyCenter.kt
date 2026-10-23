@@ -25,7 +25,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Process-wide notification triggers. When on, every app's notifications (except excluded apps and structural noise)
- * join one batch; once no app has posted for 10 seconds the batch goes, signed, to the Cowork plugin, where Jev
+ * join one batch; once no app has posted for the chosen wait (default 5 seconds) the batch goes, signed, to the Cowork plugin, where Jev
  * decides whether it wakes the model and the model decides what to do. Fed by [NotifyListener]; shown by the settings
  * page. Notification text is held in memory for the pending batch only.
  */
@@ -39,6 +39,9 @@ object NotifyCenter {
     private val excludedState = MutableStateFlow<Set<String>>(emptySet())
     /** Packages whose notifications are never read, judged or sent. */
     val excluded: StateFlow<Set<String>> = excludedState.asStateFlow()
+    private val quietState = MutableStateFlow(NotifyDefaults.DEFAULT_QUIET_SECONDS)
+    /** Seconds without a new notification before the batch goes to Jev. */
+    val quietSeconds: StateFlow<Int> = quietState.asStateFlow()
     private val logState = MutableStateFlow<List<LogEntry>>(emptyList())
     val log: StateFlow<List<LogEntry>> = logState.asStateFlow()
 
@@ -63,6 +66,8 @@ object NotifyCenter {
         prefs = appContext.getSharedPreferences("notify-triggers", Context.MODE_PRIVATE)
         enabledState.value = prefs.getBoolean("enabled", false)
         excludedState.value = runCatching { JSONArray(prefs.getString("excluded", "[]")).let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } }.getOrDefault(emptySet())
+        quietState.value = NotifyDefaults.quietSeconds(prefs.getInt("quietSeconds", NotifyDefaults.DEFAULT_QUIET_SECONDS))
+        main.post { throttle.quietMs = quietState.value * 1000L }
         profileUserId = prefs.getInt("profileUserId", -1)
         scope.launch { CoworkConnection.status.collect { status ->
             val id = status.optInt("profileUserId", -1)
@@ -73,6 +78,12 @@ object NotifyCenter {
     fun setEnabled(on: Boolean) {
         enabledState.value = on; prefs.edit().putBoolean("enabled", on).apply()
         if (!on) main.post { throttle.forget(); main.removeCallbacks(flushTask) }
+    }
+    /** Applies to the batch being collected at once: its send time is computed again. */
+    fun setQuietSeconds(seconds: Int) {
+        val value = NotifyDefaults.quietSeconds(seconds)
+        quietState.value = value; prefs.edit().putInt("quietSeconds", value).apply()
+        main.post { throttle.quietMs = value * 1000L; schedule() }
     }
     fun setExcluded(packages: Set<String>) { excludedState.value = packages; prefs.edit().putString("excluded", JSONArray(packages.sorted()).toString()).apply() }
 

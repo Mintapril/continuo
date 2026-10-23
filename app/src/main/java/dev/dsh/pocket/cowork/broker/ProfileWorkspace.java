@@ -50,7 +50,7 @@ public final class ProfileWorkspace implements AutoCloseable {
     public ProfileWorkspace()throws Exception{
         Class<?> at=Class.forName("android.app.ActivityThread");Object thread=at.getMethod("systemMain").invoke(null);
         context=(Context)at.getMethod("getSystemContext").invoke(thread);
-        sizeFromMainScreen();profile=new ProfileContext(context);launchers=new LauncherHider(profile);tree=new ProfileStructure(profile);windows=new WindowOwnershipProbe();try{windows.awaitInitial();}catch(IllegalStateException e){System.err.println("window snapshot not yet available at start; every operation re-checks it");}drain.start();drainHandler=new Handler(drain.getLooper());watchInstalls();
+        sizeFromMainScreen();profile=new ProfileContext(context);parkedApps=new ParkedApps(readParked());launchers=new LauncherHider(profile);tree=new ProfileStructure(profile);windows=new WindowOwnershipProbe();try{windows.awaitInitial();}catch(IllegalStateException e){System.err.println("window snapshot not yet available at start; every operation re-checks it");}drain.start();drainHandler=new Handler(drain.getLooper());watchInstalls();
         try{notifications=new NotificationGrant(profile);}catch(Exception e){System.err.println("notification grant unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
         changedPackages(); // baseline of the 1 Hz change read, taken before the start-up sweep below
         // Drift repair of the launcher entries (e.g. an app installed back before this start): housekeeping repairs it only
@@ -160,7 +160,8 @@ public final class ProfileWorkspace implements AutoCloseable {
      *  display is gone are hidden again. Under the workspace monitor, so it never races a launch (which leaves the
      *  parked state first). Called by resetContent and by the watchdog. */
     public synchronized void hideIdleLaunchers(){
-        if(!parked||displayId()<=0)return;
+        // A stale handle still reports its old id after a system_server restart while no task is left: never record that.
+        if(!parked||displayId()<=0||!displayAlive())return;
         Set<String> live=new HashSet<>();
         for(ActivityManager.RunningTaskInfo t:tasks())
             if(taskInt(t,"displayId")==displayId()&&taskInt(t,"userId")==profile.userId()){
@@ -168,6 +169,41 @@ public final class ProfileWorkspace implements AutoCloseable {
                 if(t.topActivity!=null)live.add(t.topActivity.getPackageName());
             }
         launchers.hideRevealedExcept(live);
+        Set<String> apps=new LinkedHashSet<>(live);apps.remove(DESKTOP);
+        if(parkedApps.seen(apps))saveParked();
+    }
+    private static final java.nio.file.Path PARKED=java.nio.file.Path.of("/data/local/dsh-native/cowork/parked-apps");
+    private final ParkedApps parkedApps;
+    private static List<String> readParked(){try{return java.nio.file.Files.exists(PARKED)?java.nio.file.Files.readAllLines(PARKED):List.of();}catch(Exception e){return List.of();}}
+    private void saveParked(){try{java.nio.file.Files.write(PARKED,parkedApps.list());}catch(Exception e){System.err.println("parked-apps save failed: "+e.getClass().getSimpleName());}}
+    /** After a display rebuild: starts the next app that was parked on the old display and parks it behind the AI desktop
+     *  again ({@link ParkedApps}). The caller holds the tool lock and has checked that nobody owns the display. Not an
+     *  action of the model, so the island does not show it. */
+    public void restoreParked(){
+        String pkg=parkedApps.next();
+        if(pkg==null||!ready())return;
+        try{launch(pkg);parkedApps.restored(pkg);System.err.println("restored parked app "+pkg);}
+        catch(ActionGate.Denied e){
+            if(e.code.equals("APP_UNKNOWN")){if(parkedApps.drop(pkg))saveParked();}
+            else if(e.code.equals("LAUNCH_TIMEOUT"))parkedApps.restored(pkg); // still starting, behind the desktop from now on
+            else{parkedApps.failed(pkg);System.err.println("restore of parked app "+pkg+" failed: "+e.code);}
+        }catch(Exception e){parkedApps.failed(pkg);System.err.println("restore of parked app "+pkg+" failed: "+e.getClass().getSimpleName());}
+        finally{resetContent("");}
+    }
+    private final Set<String> cameForward=new HashSet<>();
+    /** While parked and nobody owns the display: an app that came to the front on its own (a restored app moving on from
+     *  its splash screen, a dialog of a parked app) is covered by the AI desktop again. An app in front on the owned
+     *  display counts as in use and stops posting notifications. The user cannot take over a parked display, so nothing
+     *  of theirs is covered. The caller holds the tool lock and has checked that nobody owns the display. */
+    public synchronized void keepDesktopInFront(){
+        if(!parked||!displayAlive())return;
+        String top=targetPackage();
+        if(top.isEmpty()||top.equals(DESKTOP))return;
+        try{
+            if(startDesktop(recentsText())<0)System.err.println("AI desktop refused while re-parking the display");
+            else if(cameForward.add(top))System.err.println("parked app came to the front; AI desktop covers it again: "+top);
+        }catch(Exception e){System.err.println("display re-park failed: "+(e instanceof InvocationTargetException&&e.getCause()!=null?e.getCause():e));}
+        generation++;
     }
     public void clearCancellation(String execution){cancellation.clear(execution);}
     public boolean locked(){return context.getSystemService(KeyguardManager.class).isDeviceLocked();}
@@ -238,6 +274,7 @@ public final class ProfileWorkspace implements AutoCloseable {
             long until=SystemClock.elapsedRealtime()+3000;
             while(true){binding();try{protection.requireSafe(displayId(),false);break;}catch(ActionGate.Denied e){if(!e.code.equals("SECURITY_UNAVAILABLE")||SystemClock.elapsedRealtime()>=until)throw e;SystemClock.sleep(50);}}
         }catch(Exception e){closeDisplay();throw e;}
+        parkedApps.displayCreated();
     }
     /** Builds the display through VirtualDisplayConfig so the requested refresh rate (120 Hz) is honoured; the
      *  legacy overload (no refresh rate) is the fallback when the config API is unavailable. */

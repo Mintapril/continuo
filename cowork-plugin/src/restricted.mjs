@@ -21,9 +21,10 @@ const contextTools = new Set(CONTEXT_TOOLS);
 // destructive. Those stay with the user-facing panel.
 export const MEMORY_TOOLS = Object.freeze(['memory_search','memory_get','memory_list','memory_save','memory_update','memory_archive']);
 const memoryTools = new Set(MEMORY_TOOLS);
-// DSH automation (dsh-schedule, mounted when the user enables @deepseek-ai/dsh-experimental-schedule-bundle). The
-// service registers these four in every root agent's OWN scope, so they are neither global nor Cowork-owned: admitted
-// only for a top-level session, when no global definition of the name exists and the agent resolves one. A turn in
+// DSH automation (the host dsh-schedule service; since DSH 0.2.1 the Cowork preset declares @deepseek-ai/dsh-tool-schedule,
+// which registers these four in the preset's scope), so they are neither global nor Cowork-owned: admitted
+// only for a top-level session, when no global definition of the name exists and the agent resolves exactly the
+// preset-scope one. A turn in
 // which no user message arrived (a due reminder, a notification webhook, or anything else) may list tasks but never
 // create, change or delete one: screen text seen during an unattended run must not be able to plant a task that later
 // runs as the user, nor remove one the user set up.
@@ -120,7 +121,8 @@ export function installRestrictedCowork(ctx, config, peers, services = {}) {
     if (!exec.agent || !peers.scopeChainOf(exec.agent).includes(presetScope)) return 'Cowork requires its bound agent scope';
     if (scheduleTools.has(exec.name)) {
       if (!ctx.agents?.roots?.().includes(exec.agent)) return 'Cowork automation requires a top-level session';
-      if (ctx.tools.get(exec.name) !== undefined || !ctx.tools.get(exec.name, exec.agent)) return 'Cowork automation tool must be the host schedule definition';
+      const host = ctx.tools.get(exec.name, presetScope);
+      if (ctx.tools.get(exec.name) !== undefined || !host || ctx.tools.get(exec.name, exec.agent) !== host) return 'Cowork automation tool must be the host schedule definition';
       const origin = origins.get(exec.agent.session?.id);
       if (SCHEDULE_WRITES.has(exec.name) && !origin?.user) return 'An unattended run (a due reminder or a notification) cannot create, change or delete automation tasks; the user must ask for that in a message';
       return undefined;
@@ -153,10 +155,12 @@ export function installRestrictedCowork(ctx, config, peers, services = {}) {
     if (definitions.has(agent)) return;
     const owned = new Map(), undo = [];
     try {
-      // Agent-own definitions are exempt from its empty inherited mask in RC.2.
-      // Nothing is inherited from Code, globals, MCP, or other preset plugins.
-      // Only host context tools that exist right now can be named (restrict rejects unknown names).
-      undo.push(agent.ctx.tools.restrict({allow:[...CONTEXT_TOOLS,...MEMORY_TOOLS].filter(n=>ctx.tools.get(n)!==undefined)}));
+      // Agent-own definitions are exempt from its empty inherited mask.
+      // Nothing is inherited from Code, globals, MCP, or other preset plugins, except the host context and memory
+      // tools (global) and the automation tools this preset's dsh-tool-schedule registers in the preset scope.
+      // Only tools that exist right now can be named (restrict rejects unknown names).
+      undo.push(agent.ctx.tools.restrict({allow:[...[...CONTEXT_TOOLS,...MEMORY_TOOLS].filter(n=>ctx.tools.get(n)!==undefined),
+        ...SCHEDULE_TOOLS.filter(n=>ctx.tools.get(n)===undefined&&ctx.tools.get(n,presetScope)!==undefined)]}));
       const onNotified = sid => { const origin = origins.get(sid); if (origin) origin.notified = true; else origins.set(sid, { user: false, notified: true }); };
       for (const definition of [...phoneTools(bridge,ctx.attachments,{onNotified}), ...fileTools(files), ...webTools(ctx.web,services.fetch)]) {
         const body = definition.execute, timeoutMs = toolTimeoutMs(definition.name);

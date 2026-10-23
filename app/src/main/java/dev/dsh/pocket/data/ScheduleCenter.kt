@@ -15,8 +15,8 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
- * Viewer/editor over DSH's own automation (`@deepseek-ai/dsh-schedule`), which the on-device DSH 0.2.0-rc.2 ships
- * as the optional, default-off `dsh-experimental-schedule-bundle`. Tasks are created by the model with
+ * Viewer/editor over DSH's own automation (`@deepseek-ai/dsh-schedule`). DSH 0.2.0 shipped it as the optional,
+ * default-off `dsh-experimental-schedule-bundle`; since 0.2.1 `dsh-web-app` always mounts it. Tasks are created by the model with
  * `schedule_create` inside a session; the host stores them and delivers each due occurrence back into that session.
  *
  * Remote surface used here (all through the same cookie-authenticated RPC as the chat):
@@ -35,6 +35,8 @@ class ScheduleCenter(private val api: DshApi) {
     var error by mutableStateOf(""); private set
     var busy by mutableStateOf(false); private set
     val enabled: Boolean? get() = bundle?.let { it.optBoolean("enabled") }
+    /** The service ships with DSH itself (no switch): see [ScheduleFormat.switchable]. */
+    val builtIn: Boolean get() = bundle?.let { !ScheduleFormat.switchable(it) } == true
 
     suspend fun refresh() {
         busy = true
@@ -65,6 +67,7 @@ class ScheduleCenter(private val api: DshApi) {
      */
     suspend fun setEnabled(on: Boolean): String {
         val name = bundle?.text("name")?.takeIf { it.isNotBlank() } ?: error("本机 DSH 没有自动化任务组件")
+        if (builtIn) error("自动化任务随 DSH 内置，不能单独开关")
         val result = api.rpc("pluginManager/setBundleEnabled", obj("name" to name, "enabled" to on)) as? JSONObject ?: obj()
         result.optJSONObject("error")?.let { error("插件管理拒绝：${it.text("code").ifBlank { "operation-error" }}${it.text("diagnostic").let { d -> if (d.isBlank()) "" else "（$d）" }}") }
         val message = when (result.text("application")) {
@@ -135,6 +138,10 @@ object ScheduleFormat {
 
     /** The bundle whose rows include the schedule service; never matched by its package name. */
     fun findBundle(bundles: JSONArray): JSONObject? = bundles.objects().firstOrNull { b -> b.objects("rows").any { it.text("moduleName") == SERVICE_MODULE } }
+
+    /** Only an optional bundle may be switched here. Since DSH 0.2.1 the service ships in the non-optional
+     *  `dsh-web-app`; switching that bundle off would take the whole web host down with it. */
+    fun switchable(bundle: JSONObject): Boolean = bundle.optBoolean("optional")
 
     /** The stored record only: the catalog's sessionId/status/lastDelivery are not part of `expected`. */
     fun record(entry: JSONObject): JSONObject {

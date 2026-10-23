@@ -54,7 +54,9 @@ private enum class AutomationFilter(val label: String) { ALL("全部"), ACTIVE("
                     !vm.connected -> GroupRow("连接 DSH 后可用", icon = Glyph.Clock, chevron = false)
                     !center.bundleRead -> GroupRow("正在读取…", icon = Glyph.Clock, chevron = false, trailing = { Spinner() })
                     center.bundle == null && center.bundleError.isBlank() -> GroupRow("本机 DSH 没有自动化任务组件", icon = Glyph.Clock, chevron = false,
-                        subtitle = "插件列表里找不到包含 dsh-schedule 的组件（dsh-experimental-schedule-bundle）。")
+                        subtitle = "插件列表里找不到包含 dsh-schedule 的组件。")
+                    center.builtIn -> GroupRow("自动化任务", icon = Glyph.Clock, chevron = false, value = "已内置",
+                        subtitle = "随 DSH 提供，始终可用：在会话中按时间或周期安排任务，到期后发回原会话执行")
                     else -> GroupRow("启用自动化任务", icon = Glyph.Clock, chevron = false,
                         subtitle = when {
                             center.bundleError.isNotBlank() -> "插件列表读取失败：${center.bundleError}"
@@ -68,7 +70,8 @@ private enum class AutomationFilter(val label: String) { ALL("全部"), ACTIVE("
                         })
                 }
             }
-            Footnote("开启后，Cowork 和 Code 会话都能用 schedule_create 等 4 个工具创建一次性、间隔、每天、每周或 cron 任务；每次请求会多带这 4 个工具说明和一条当前时间。关闭后已存的任务留在本机，但不再执行。")
+            Footnote(if (center.builtIn) "Cowork 和 Code 会话都能用 schedule_create 等 4 个工具创建一次性、间隔、每天、每周或 cron 任务；每次请求会多带这 4 个工具说明。"
+                else "开启后，Cowork 和 Code 会话都能用 schedule_create 等 4 个工具创建一次性、间隔、每天、每周或 cron 任务；每次请求会多带这 4 个工具说明和一条当前时间。关闭后已存的任务留在本机，但不再执行。")
             if (center.service == true) {
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AutomationFilter.entries.forEach { f -> Pill(f.label, selected = filter == f, trailing = null) { filter = f } }

@@ -111,10 +111,12 @@
 
 另有 `cowork_files_read/write/list`（固定 `/workspace/cowork`，只能新建文件）、`web_search`、`web_fetch`（仅公网 HTTP(S)），共 27 个。宿主装有对应插件时，还会放行上下文管理工具（`compress`、`decompress`、`search_context`、`acp_status`）和记忆工具（`memory_search/get/list/save/update/archive`），但只认宿主的全局定义，带文件参数的调用一律拒绝。
 
-开启 DSH 自动化任务（`dsh-experimental-schedule-bundle`）后，`dsh-schedule` 会把 `schedule_create`、`schedule_list`、`schedule_update`、`schedule_delete` 注册进每个根会话自己的作用域，Cowork 会放行这四个工具。放行条件有三条：
+DSH 0.2.1 起自动化任务随 DSH 内置（`dsh-web-app` 挂载 `dsh-schedule`，不再有开关），工具由各预设自己声明：Cowork 预设声明 `@deepseek-ai/dsh-tool-schedule`，把 `schedule_create`、`schedule_list`、`schedule_update`、`schedule_delete` 注册在预设作用域里，同时声明每轮开头注入当前时间的 `dsh-time-context`。Cowork 会放行这四个工具，放行条件有三条：
 - 调用方是顶层会话；
 - 同名工具没有全局定义；
-- 会话能解析到这个工具。
+- 会话解析到的正是预设作用域里那一份（会话自己作用域里的同名定义会被拒绝）。
+
+Continuo 的自动化任务页只给可选组件显示开关；自动化服务在不可选的 `dsh-web-app` 里时显示“已内置”，不给开关，免得把整个网页组件关掉。
 
 本轮没有收到用户消息（消息来源 `user`）的回合只能列出任务，不能新建、修改或删除，以免无人值守时屏幕上的文字埋下一个日后以用户身份运行的任务，或删掉用户设好的任务。到期提醒（来源 `schedule`）、通知触发（来源 `webhook`）开启的回合都属于这一类；插件中途重载、没看到本轮开始的情况也按这一类处理。系统提示词要求：
 - 只按用户的消息新建、修改或删除任务，并给每日、每周和 cron 规则写明 IANA 时区；
@@ -178,7 +180,7 @@
   - 第一次用到时创建：挂 `cowork-phone` 预设，接到工作区 `/workspace`，权限预设取 DSH 的默认值，模型用 DSH 当前的默认模型（`agentDefaultModel`，不传会在第一步报 no provider/model），标题如“QQ · 自动运营”（个人资料的应用是“微信（个人）· 通知”）。
   - DSH 重启后从持久化恢复（`sessionQuery.observeSession` 查到就 `agents.resume`，和 DSH 自己的会话 API 一样挂上预设、用当前默认模型），不会重建。
   - 不再归档。你手动归档了也没关系：下次往它送通知前插件会先取消归档（DSH 会拒绝已归档会话的每一步，Broker 随后会停在“等你处理”）。这类会话默认不出现在 Continuo 的“全部”和“最近”里，在 Cowork 任务列表的筛选中选“自动运营”才显示（`Modes.kt` 的 `isAppSession`：ID 以 `cowork-app-` 开头）；打开它可以看 AI 在这个应用里做过的所有事；会话变长时由 DSH 的上下文压缩处理，跨会话的事靠记忆系统。
-  - 创建和恢复都由插件直接调用 DSH 的会话服务完成，不再经过 `dsh-webhook`（patch 里仍挂着它，只是不再使用）。消息来源仍是 `{kind: "webhook", ruleId: "cowork-notify", deliveryId, ...}`，形状与 dsh-webhook 给的相同，所以这一轮仍是无人值守回合。
+  - 创建和恢复都由插件直接调用 DSH 的会话服务完成，不经过 `dsh-webhook`（DSH 0.2.1 不再安装它，patch 里也已去掉）。消息来源仍是 `{kind: "webhook", ruleId: "cowork-notify", deliveryId, ...}`，形状与 dsh-webhook 给的相同，所以这一轮仍是无人值守回合。
 - **按应用分批**：Jev 留下的条目按应用拆开，各进各的会话。
 - **正在跑就直接插进去**：某个应用的会话正有一轮在跑（不管是通知唤起的还是你在那个会话里发的消息），这个应用新通过的批次立即用 `steer` 插进这一轮，不排队。这一轮恰好已经结束时，按下面的规则排队。
 - **同一时间一轮**：插件观察所有会话事件，记下每个 `cowork-phone` 会话（看会话头的 `agentPreset` 和 `agent-preset/selected` 事件）正在进行的回合。只要有一个 Cowork 回合在跑（包括你自己发起的任务），其他应用的批次就排队；副屏空出来后，等得最久的那个应用先开始，用 `followup` 作为它会话的新一轮。
@@ -233,7 +235,7 @@ notifications_untrusted_json: [{"package":"com.tencent.mobileqq","app":"QQ","pro
 
 ### 部署
 
-插件的 bundle patch 插入两个条目：`@deepseek-ai/dsh-webhook` 和 `./src/notify.mjs`。手机上的 DSH 已自带 `dsh-webhook`，不需要另装包，也不用改 profile。需要更新的是：
+插件的 bundle patch 插入 Cowork 预设和 `./src/notify.mjs` 两个条目，不需要另装包，也不用改 profile。需要更新的是：
 - 插件文件（`notify.mjs`、`restricted.mjs`、`broker.mjs` 一起）；
 - `/data/local/dsh-native/cowork-service.sh`（`notify-token`）；
 - APK，并重启 Broker。
@@ -243,9 +245,18 @@ notifications_untrusted_json: [{"package":"com.tencent.mobileqq","app":"QQ","pro
 ### 已知限制
 
 - **通知权限**：应用必须有通知权限才会发通知。Broker 只自动替之后新装的应用开；已有的应用由模型用 `phone_grant_permission` 开（`notifications`），或你在系统设置里开。
-- **与其他 webhook 覆盖层冲突**：另一个同时挂载 `@deepseek-ai/dsh-webhook` 的覆盖层（如上游的 GitHub 评审示例）会与它冲突。
 - **依赖 ColorOS 的冻结方式**：灭屏时靠 Broker 读通知、解冻控制端绕开 Hans。系统更新若改变冻结方式（例如连 binder 一起拦），可能需要重新适配。
 - **验证状况**：真机上已走通：每个应用的固定会话（QQ 通知唤起、模型在 QQ 里回复），以及插着 USB 锁屏时由 Broker 读通知、唤起并回复。拔线锁屏时，Broker 读到通知并送进会话已验证，开始任务时解冻控制端这一步还没在拔线状态下验证。`steer` 插入正在跑的一轮、屏幕新内容、广告混着私信的逐条判断、新装应用自动允许通知，都还没有在真机验证。
+
+## DSH 版本与升级
+
+手机上跑的是 DSH 0.2.1-rc.2（2026-10-23 从 0.2.0-rc.2 升级）。
+
+- **版本声明必须对得上**：0.2.1 启动时核对每个组件声明的 `@deepseek-ai/dsh-*` 版本，不符就整个跳过，不报错。所以 Cowork 插件的 peer 版本固定写成正在运行的 DSH 版本（`strict-integration.test.mjs` 拿 `research/installed/dsh` 的版本核对），升级 DSH 时要一起改。
+- **billion-context-dsh 0.2.27** 声明只支持到 0.2.0，作者还没发新版。它用到的 DSH 接口两版相同，所以在 profile 的 `compatibility.json` 里给它加了豁免（`{"billion-context-dsh@0.2.27": ["0.2.1-rc.2"]}`）。DSH 再升级时要重新核对并改这条。
+- **Cowork 插件的安装位置**：`/opt/dsh/node_modules/@local/dsh-cowork-phone`，并在 `/opt/dsh/node_modules/@deepseek-ai/dsh/package.json` 的 `dependencies` 里加一行 `"@local/dsh-cowork-phone": "file:/opt/dsh/node_modules/@local/dsh-cowork-phone"`。重装 DSH 会冲掉这两处。
+- **升级做法**：在旁边的 `/opt/dsh-next` 用电脑上验证过的 `package-lock.json` 执行 `npm ci`（DSH 照常运行），放入插件、补上依赖行；空闲时停 DSH，备份 `~/.dsh`，把 `/opt/dsh` 改名为 `/opt/dsh-<旧版本>`、`/opt/dsh-next` 改名为 `/opt/dsh`，再启动。回滚就是停掉后把目录名换回来，再从备份恢复 profile 文件。npm 11.19 默认不跑安装脚本；跳过的几个（`node-pty`、`koffi` 等）在旧安装里同样没有产出文件，不影响运行。
+- **0.2.1 的其他变化**：`dsh-experimental-schedule-bundle` 取消，DSH 启动时会自动把它从 profile 里删掉；不再安装 `dsh-webhook`。
 
 ## 任意轨迹手势（phone_gesture）
 

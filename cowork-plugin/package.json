@@ -4,18 +4,19 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "description": "Restricted native-phone Cowork preset for DSH 0.2.0-rc.2",
+  "description": "Restricted native-phone Cowork preset for DSH 0.2.1-rc.2",
   "exports": { ".": "./src/restricted.mjs", "./notify": "./src/notify.mjs", "./package.json": "./package.json" },
   "files": ["src/auth.mjs", "src/task-lifecycle.mjs", "src/restricted.mjs", "src/validation.mjs", "src/broker.mjs", "src/gesture-path.mjs", "src/bounded-files.mjs", "src/web.mjs", "src/notify.mjs", "cordis.patch.yml", "README.md", "PROTOCOL.md"],
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
   "engines": { "node": ">=22" },
   "scripts": { "test": "node --test test/strict-*.test.mjs" },
   "peerDependencies": {
-    "@deepseek-ai/dsh-agent-preset": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-scope": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-session": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-webhook": "0.2.0-rc.2"
+    "@deepseek-ai/dsh-agent-preset": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-scope": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-session": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-time-context": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-tool-schedule": "0.2.1-rc.2"
   }
 }

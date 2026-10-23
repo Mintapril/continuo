@@ -20,6 +20,19 @@ class ScheduleFormatTest {
         assertNull(ScheduleFormat.findBundle(JSONArray().put(bundles.getJSONObject(0))))
     }
 
+    @Test fun onlyAnOptionalBundleIsSwitchable() {
+        // DSH 0.2.0: the optional experimental bundle. DSH 0.2.1: the service is a row of the non-optional web app,
+        // which must never be switched off from the automation page.
+        val experimental = obj("name" to "@deepseek-ai/dsh-experimental-schedule-bundle", "optional" to true, "enabled" to false, "rows" to JSONArray()
+            .put(obj("rowId" to "schedule", "moduleName" to "@deepseek-ai/dsh-schedule")))
+        val webApp = obj("name" to "@deepseek-ai/dsh-web-app", "optional" to false, "enabled" to true, "rows" to JSONArray()
+            .put(obj("rowId" to "schedule", "moduleName" to "@deepseek-ai/dsh-schedule")))
+        assertTrue(ScheduleFormat.switchable(experimental))
+        assertEquals("@deepseek-ai/dsh-web-app", ScheduleFormat.findBundle(JSONArray().put(webApp))?.text("name"))
+        assertFalse(ScheduleFormat.switchable(webApp))
+        assertFalse(ScheduleFormat.switchable(obj("name" to "x", "rows" to JSONArray())))
+    }
+
     @Test fun expectedRecordDropsCatalogOnlyFields() {
         val entry = obj("id" to "s1", "kind" to "weekly", "title" to "周报", "prompt" to "写周报", "scheduledAt" to "2026-10-23T01:00:00.000Z",
             "time" to "09:00:00", "timeZone" to "Asia/Shanghai", "weekdays" to JSONArray(listOf(1, 5)),

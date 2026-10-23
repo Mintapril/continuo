@@ -9,15 +9,17 @@
         description: Restricted native-phone assistant; no shell, code, packages, subagents or MCP.
         order: 20
         plugins:
+          # Since DSH 0.2.1 each preset declares these itself (0.2.0's schedule bundle mounted them for every session):
+          # the clock reading each turn starts with, and the automation tools (schedule_*), registered in this
+          # preset's scope over the host schedule service; the Cowork guard still decides who may write.
+          - id: cowork-time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: cowork-tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
           - id: cowork-policy-tools-summary
             name: '@local/dsh-cowork-phone'
 
     # Notification triggers: Continuo's batches reach the signed loopback ingress in src/notify.mjs (127.0.0.1:3082).
     # What Jev passes becomes an unattended turn of the app's standing Cowork session (one per app, never archived).
-    # src/notify.mjs no longer dispatches through dsh-webhook; the mount stays so installed profiles keep loading
-    # unchanged. Conflicts with any other overlay that also mounts @deepseek-ai/dsh-webhook.
-    - id: cowork-webhook-runtime
-      name: '@deepseek-ai/dsh-webhook'
-
     - id: cowork-notify
       name: './src/notify.mjs'

@@ -44,6 +44,7 @@ node --test test/strict-broker.test.mjs     # 单个文件；--test-name-pattern
 - 模型可见的工具名是下划线形式（`phone_tap`），插件内部和线协议是点号形式（`phone.tap`），由 `modelName()` 转换；`ALLOWED_TOOLS` 是模型可见名。
 - 插件与 APK 的协议必须匹配：一边加了参数另一边会拒绝。改 `broker.mjs` 的参数/结果 schema 时同步改 `ToolContract.java`。
 - 通知入口（`notify.mjs` ↔ App 的 `notify/NotifyPolicy.kt`）：`strict-notify.test.mjs` 的 `VECTOR` 与 `NotifyPolicyTest` 逐字节对账同一个请求体和 MAC；改字段或签名格式要两边一起改（线协议见 PROTOCOL.md「Notification ingress」）。屏幕新内容的条目多一个 `origin: "screen"`（`SCREEN_BODY`）。
+- 插件 `package.json` 的 `@deepseek-ai/dsh-*` peer 版本必须等于手机上运行的 DSH 版本：DSH 0.2.1 起版本不符的组件会被直接跳过（Cowork 预设和通知入口一起消失）。`strict-integration.test.mjs` 拿 `research/installed/dsh` 的版本核对；升级方法见 docs/cowork-internals.md「DSH 版本与升级」。
 - 会话 ID 要过 Broker 的 `[a-zA-Z0-9_-]{1,100}`（`TaskLifecycle.begin`、`ActionGate.start`），否则这一轮在第一步前就被取消。`strict-notify.test.mjs` 从这两个 Java 文件读出规则核对 `sessionIdOf`。
 - 观察结果里可选的 `appeared`（Broker 的 `ScreenWatch`）由 `broker.mjs` 的 `TREE_RESULT` 校验；旧插件会拒收带它的结果，所以插件和 APK 要一起部署。
 
@@ -110,7 +111,7 @@ Broker（root，app_process，从已安装 APK 的 dev.dsh.pocket.cowork.broker.
 没有一键安装；详见 README「部署」。要点：
 
 - `adb install -r` 之后正在运行的 Broker 仍是旧代码，要在 DSH 空闲时用 `runtime/cowork-service.sh stop`/`start` 重启。
-- `scripts/` 下的部署、验收、探测脚本**写死了**设备序列号 `5b9a17cd` 和本机 adb 路径；`scripts/deploy/deploy-cowork-plugin.py` 的文件清单已过期（`--check` 会拒绝）。
+- `scripts/` 下的部署、验收、探测脚本**写死了**设备序列号 `5b9a17cd` 和本机 adb 路径；`scripts/deploy/deploy-cowork-plugin.py` 的文件清单已过期（`--check` 会拒绝）；`runtime/install-cowork-plugin.mjs` 按 DSH 0.2.0-rc.2 的哈希写死，升级到 0.2.1 时没有用它。
 - 验收脚本输出到 `test-evidence/`，该目录含个人数据，已被 git 忽略；`cowork-plugin/research/` 和根目录的 `research/` 同样不入库。
 - 根目录那些 `deploy-*.py`、`probe-*.py`、`*.mjs` 是通过 `.git/info/exclude` 排除的一次性脚本，不要提交。
 - GitHub 操作用 `gh`，远程是 `Mintapril/continuo`。

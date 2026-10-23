@@ -74,10 +74,15 @@ test('bundle is additive and packages only tested active implementation',async()
   const patch=await fs.readFile(new URL('../cordis.patch.yml',import.meta.url),'utf8');
   assert.equal(pkg.exports['.'],'./src/restricted.mjs');
   assert.deepEqual(pkg.files.filter(p=>p.startsWith('src/')).sort(),['src/restricted.mjs','src/validation.mjs','src/broker.mjs','src/auth.mjs','src/task-lifecycle.mjs','src/bounded-files.mjs','src/web.mjs','src/gesture-path.mjs','src/notify.mjs'].sort());
-  assert.equal(pkg.exports['./notify'],'./src/notify.mjs');assert.match(patch,/name: '@deepseek-ai\/dsh-webhook'/);assert.match(patch,/name: '\.\/src\/notify\.mjs'/);
+  assert.equal(pkg.exports['./notify'],'./src/notify.mjs');assert.match(patch,/name: '\.\/src\/notify\.mjs'/);
+  // DSH 0.2.1 installs no dsh-webhook; a row naming it would not resolve.
+  assert.doesNotMatch(patch,/dsh-webhook/);assert.match(patch,/name: '@deepseek-ai\/dsh-tool-schedule'/);assert.match(patch,/name: '@deepseek-ai\/dsh-time-context'/);
   assert.match(patch,/- insert:/);assert.match(patch,/id: cowork-phone/);
   assert.doesNotMatch(patch,/replace:|remove:|apiKey:|credentials:|provider:|dsh-tool-web/);
-  for(const version of Object.values(pkg.peerDependencies))assert.equal(version,'0.2.0-rc.2');
+  // DSH 0.2.1 skips a bundle whose @deepseek-ai/dsh-* peers miss the running version, so every pin must name it.
+  const runtime=JSON.parse(await fs.readFile(new URL('../research/installed/dsh/node_modules/@deepseek-ai/dsh/package.json',import.meta.url),'utf8')).version;
+  for(const version of Object.values(pkg.peerDependencies))assert.equal(version,runtime);
+  for(const name of Object.keys(pkg.peerDependencies))await fs.access(new URL(`../research/installed/dsh/node_modules/${name}/package.json`,import.meta.url));
 });
 test('screenshot stores canonical attachment instead of returning raw base64 to model',async()=>{
   let saved;
@@ -220,9 +225,10 @@ test('host automation tools (dsh-schedule) are admitted for the top-level Cowork
   let owner;const ownerFiber=ctx.inject(['tools','systemPrompt','attachments','web','llm','agents'],c=>{owner=c;});if(ownerFiber.inertia)await ownerFiber.inertia;
   const key={},preset=scope.createScope(owner,key),agent={id:'cowork',session:{id:'cowork',snapshotEvents:()=>[],requestHeader:()=>undefined}};
   const child=scope.createScope(owner,agent,{parent:key});agent.ctx=child.ctx;
-  // dsh-schedule registers its four tools in each root agent's OWN scope (registerScheduleTools(rootCtx, agent.ctx, agent)).
+  // DSH 0.2.1: the Cowork preset declares dsh-tool-schedule, which registers its four tools in the preset's scope
+  // (the next test mounts the real plugin there; stubs here record which calls the guard let through).
   const ran=[];
-  for(const n of SCHEDULE_TOOLS)agent.ctx.tools.register(tool(n,'host '+n,object(),()=>{ran.push(n);return {};}));
+  for(const n of SCHEDULE_TOOLS)preset.ctx.tools.register(tool(n,'host '+n,object(),()=>{ran.push(n);return {};}));
   const lifecycle=createTaskLifecycle({transport:async()=>({status:200,headers:{'content-type':'application/json'},body:Buffer.from('{}')})});
   const api=installRestrictedCowork(preset.ctx,{},{...scope,...llm,Session},{lifecycle,bridge:{call:async()=>({}),forget:()=>{}},files:{}});
   liveAgents.set(agent.id,agent);
@@ -254,10 +260,43 @@ test('host automation tools (dsh-schedule) are admitted for the top-level Cowork
   // A child scope inherits the definition but is no top-level session.
   const desc={id:'desc',session:{id:'desc'}},descScope=scope.createScope(owner,desc,{parent:agent});desc.ctx=descScope.ctx;
   ran.length=0;assert.equal((await execute('schedule_list',desc)).isError,true);assert.deepEqual(ran,[]);
-  // A global definition of the same name is not the host schedule service's agent-scoped tool.
+  // A same-name definition in the agent's own scope shadows the preset's and is refused as well.
+  {const undo=agent.ctx.tools.register(tool('schedule_list','agent impostor',object(),()=>{ran.push('agent-impostor');return {};}));
+    turn(6,'user');const r=await execute('schedule_list');assert.equal(r.isError,true);assert.match(JSON.stringify(r),/host schedule definition/);undo();}
+  assert.deepEqual(ran,[]);
+  // A global definition of the same name is not the preset-scoped tool either.
   ctx.tools.register(tool('schedule_list','global impostor',object(),()=>{ran.push('impostor');return {};}));
   turn(4,'user');
   const shadowed=await execute('schedule_list');assert.equal(shadowed.isError,true);assert.match(JSON.stringify(shadowed),/host schedule definition/);
   assert.deepEqual(ran,[]);
   api.remove(agent);lifecycle.dispose();await descScope.dispose();await child.dispose();await preset.dispose();
+});
+test('the real dsh-tool-schedule declared in the Cowork preset registers preset-scoped tools the guard admits',async()=>{
+  const ScheduleTools=await import('../research/installed/dsh/node_modules/@deepseek-ai/dsh-tool-schedule/lib/index.js');
+  const ctx=new Context();
+  ctx.provide('systemPrompt',{tools:()=>{},section:()=>{},getSectionOrder:()=>0});
+  ctx.provide('attachments',{saveImage:async()=>({})});
+  ctx.provide('web',{search:async()=>({content:'fact',sources:[]})});
+  ctx.provide('llm',{stream:()=>{throw Error('No model calls during tests');}});
+  const listed=[];ctx.provide('schedule',{list:async filter=>{listed.push(filter.sessionId);return [];}});
+  const liveAgents=new Map();ctx.provide('agents',{get:id=>liveAgents.get(id),roots:()=>[...liveAgents.values()]});
+  const runtimeFiber=ctx.plugin(ToolRuntime,{mode:'native'});if(runtimeFiber.inertia)await runtimeFiber.inertia;
+  let owner;const ownerFiber=ctx.inject(['tools','systemPrompt','attachments','web','llm','agents','schedule'],c=>{owner=c;});if(ownerFiber.inertia)await ownerFiber.inertia;
+  const key={},preset=scope.createScope(owner,key),agent={id:'cowork',options:{},session:{id:'cowork',header:{},snapshotEvents:()=>[],requestHeader:()=>undefined}};
+  const child=scope.createScope(owner,agent,{parent:key});agent.ctx=child.ctx;
+  const mounted=preset.ctx.plugin(ScheduleTools,{});await mounted.await();
+  const lifecycle=createTaskLifecycle({transport:async()=>({status:200,headers:{'content-type':'application/json'},body:Buffer.from('{}')})});
+  const api=installRestrictedCowork(preset.ctx,{},{...scope,...llm,Session},{lifecycle,bridge:{call:async()=>({}),forget:()=>{}},files:{}});
+  liveAgents.set(agent.id,agent);
+  ctx.emit('session/event',agent.session,{type:'agent-preset/selected',data:{agentPreset:'cowork-phone'}});
+  for(const n of SCHEDULE_TOOLS){assert.equal(ctx.tools.get(n),undefined,n+' is not global');assert.ok(ctx.tools.get(n,agent),n+' resolves for the agent');}
+  const visible=ctx.tools.schemas(agent).map(t=>t.name);for(const n of SCHEDULE_TOOLS)assert.ok(visible.includes(n),n+' visible');
+  ctx.emit('session/event',agent.session,{type:'turn/start',data:{turn:1}});
+  ctx.emit('session/event',agent.session,{type:'user/message',data:{source:{kind:'schedule'}}});
+  const signal=new AbortController().signal;let serial=0;
+  const execute=(name,args={})=>{const callId='r'+serial++;ctx.emit('session/event',agent.session,{type:'tool/call',data:{turn:1,callId,name,arguments:args}});return ctx.tools.execute({name,arguments:args,agent,signal,callId});};
+  {const r=await execute('schedule_list');assert.equal(r.isError,false,JSON.stringify(r.error));}
+  assert.deepEqual(listed,['cowork']);
+  {const r=await execute('schedule_create',{title:'t',prompt:'p',after_seconds:60});assert.equal(r.isError,true);assert.match(JSON.stringify(r),/unattended run/);}
+  api.remove(agent);lifecycle.dispose();await mounted.dispose();await child.dispose();await preset.dispose();
 });

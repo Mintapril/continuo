@@ -1,6 +1,6 @@
 # Restricted Cowork phone preset
 
-Local DSH **0.2.0-rc.2** bundle for native-phone Cowork: fixed phone capabilities, bounded document files, and basic public web search/fetch. Enforcement is in the tool registry and executable adapters—not only a prompt.
+Local DSH **0.2.1-rc.2** bundle for native-phone Cowork: fixed phone capabilities, bounded document files, and basic public web search/fetch. Enforcement is in the tool registry and executable adapters—not only a prompt.
 
 > **Not deployed.** This directory contains plugin code and offline tests, not an Android backend. No models were launched, packages installed on a device, phone actions performed, or provider credentials changed. Installation must target a **new isolated profile**, never replace the existing Code/desktop profile.
 
@@ -24,7 +24,7 @@ A plugin preset is **not an OS sandbox**. A trusted native backend must enforce 
 
 These are deployment requirements, not actions performed by this change:
 
-1. Use DSH `0.2.0-rc.2`, Node.js 22 or newer, and an isolated Cowork profile. Resolve the exact pinned DSH peer packages from that runtime, not from a different installed version.
+1. Use DSH `0.2.1-rc.2` (it skips a bundle whose `@deepseek-ai/dsh-*` peers name another version), Node.js 22 or newer, and an isolated Cowork profile. Resolve the exact pinned DSH peer packages from that runtime, not from a different installed version.
 2. Provision a private `/workspace/cowork` directory in the Linux/Android runtime, outside configuration, provider credentials and plugin code. File tools intentionally fail closed on Windows. Parent directories must not be writable by an untrusted process.
 3. Provision a per-install native **agent secret** outside that workspace. The default trusted config location is `$HOME/.config/dsh/cowork-broker.json`; trusted deployment may select another absolute path with `DSH_COWORK_BROKER_CONFIG`. The file contains exactly one JSON property, `agentSecret`, containing 32–512 printable non-space ASCII characters. Generate at least 32 cryptographically random bytes and encode them safely. On Linux/Android the file must be owned by the runtime user with no group/other permissions; use mode `0600`. No secret is included in this repository.
 4. Provide the authenticated native broker at literal `127.0.0.1:3091`; do not bind all interfaces. The plugin has no alternate endpoint, generic RPC method or command field.

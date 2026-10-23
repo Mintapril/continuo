@@ -1,6 +1,6 @@
 # Cowork native broker protocol v1
 
-Fixed typed contract used by [the shipped broker adapter](<src/broker.mjs>) and [the restricted preset](<src/restricted.mjs>) on DSH 0.2.0-rc.2. This replaces the exploratory underscore-tool contract. Model and wire tool names are now the same dotted names.
+Fixed typed contract used by [the shipped broker adapter](<src/broker.mjs>) and [the restricted preset](<src/restricted.mjs>) on DSH 0.2.1-rc.2. This replaces the exploratory underscore-tool contract. Model and wire tool names are now the same dotted names.
 
 > The native Android server is **not implemented in this package**. It must independently enforce every authorization and display boundary described below. A valid agent token or model-supplied session ID is not user consent. No real phone request was sent during plugin testing.
 

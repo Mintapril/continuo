@@ -1,4 +1,4 @@
-// Executes narrowly selected, unchanged installed 0.2.0-rc.2 implementation seams.
+// Executes narrowly selected, unchanged installed DSH implementation seams.
 // No package installation, model/provider, network, app, or Android interaction.
 import fs from 'node:fs/promises';
 import { assertNever, isJsonValue } from '../research/installed/dsh/node_modules/@deepseek-ai/dsh-util-values/lib/index.js';

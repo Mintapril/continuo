@@ -23,3 +23,8 @@
     # What Jev passes becomes an unattended turn of the app's standing Cowork session (one per app, never archived).
     - id: cowork-notify
       name: './src/notify.mjs'
+
+    # The model unattended runs use (patrols, notification triggers), set in Continuo over DSH's authenticated RPC
+    # (namespace coworkUnattended); the preset applies it per request without touching DSH's default model.
+    - id: cowork-unattended
+      name: './src/unattended.mjs'

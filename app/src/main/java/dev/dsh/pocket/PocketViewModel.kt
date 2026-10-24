@@ -189,6 +189,20 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     fun memoryReclaimNow() = task { memoryReclaim = memory.reclaim(dryRun = false); memory.refresh() }
     fun clearMemorySheets() { memoryInjection = null; memoryReclaim = null }
 
+    // ── 无人值守的模型（Cowork 插件的 coworkUnattended）────────────────────
+    // Patrols and notification-triggered runs may use their own model; null in [unattended] means not read yet (or the
+    // plugin is too old to have the setting: [unattendedError]).
+    var unattended by mutableStateOf<JSONObject?>(null); private set
+    var unattendedError by mutableStateOf(""); private set
+    fun unattendedRefresh() = viewModelScope.launch {
+        try { unattended = api.rpc(UnattendedModels.READ) as? JSONObject ?: obj(); unattendedError = "" }
+        catch (e: CancellationException) { throw e } catch (e: Exception) { unattended = null; unattendedError = e.message ?: "读取失败" }
+    }
+    fun setUnattendedModel(kind: String, provider: String?, model: String?, effort: String?) = task {
+        unattended = api.rpc(UnattendedModels.WRITE, UnattendedModels.request(kind, provider, model, effort)) as? JSONObject ?: obj()
+        notice = "已保存"
+    }
+
     // ── 便条（DSH 的 dsh-schedule）──────────────────────────────────────
     // The host keeps the notes and delivers each due one back into its session; the app switches the bundle on/off,
     // lists, edits and deletes. Creating stays with the model (no remote create), so "new" drafts a Cowork request.

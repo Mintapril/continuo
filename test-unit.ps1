@@ -33,6 +33,7 @@ foreach ($entry in $classpath) { if (!(Test-Path -LiteralPath $entry)) { throw "
     dev.dsh.pocket.data.RpcRejectedExceptionTest `
     dev.dsh.pocket.data.ModesTest `
     dev.dsh.pocket.data.ScheduleFormatTest `
+    dev.dsh.pocket.data.UnattendedModelsTest `
     dev.dsh.pocket.data.DreamFormatTest `
     dev.dsh.pocket.data.QueuedInputTest `
     dev.dsh.pocket.cowork.RemoteTypingTest `

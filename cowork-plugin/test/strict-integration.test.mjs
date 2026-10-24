@@ -73,13 +73,14 @@ test('bundle is additive and packages only tested active implementation',async()
   const pkg=JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8'));
   const patch=await fs.readFile(new URL('../cordis.patch.yml',import.meta.url),'utf8');
   assert.equal(pkg.exports['.'],'./src/restricted.mjs');
-  assert.deepEqual(pkg.files.filter(p=>p.startsWith('src/')).sort(),['src/restricted.mjs','src/validation.mjs','src/broker.mjs','src/auth.mjs','src/task-lifecycle.mjs','src/bounded-files.mjs','src/web.mjs','src/gesture-path.mjs','src/notify.mjs','src/screen-board.mjs'].sort());
+  assert.deepEqual(pkg.files.filter(p=>p.startsWith('src/')).sort(),['src/restricted.mjs','src/validation.mjs','src/broker.mjs','src/auth.mjs','src/task-lifecycle.mjs','src/bounded-files.mjs','src/web.mjs','src/gesture-path.mjs','src/notify.mjs','src/screen-board.mjs','src/unattended-store.mjs','src/unattended.mjs'].sort());
   // Every module a packaged one imports is packaged too (a missing file only shows up when DSH loads the bundle).
   for(const file of pkg.files.filter(p=>p.endsWith('.mjs'))){
     const text=await fs.readFile(new URL(`../${file}`,import.meta.url),'utf8');
     for(const [,dep] of text.matchAll(/^import [^;]*? from '\.\/([^']+)';/gm))assert.ok(pkg.files.includes(`src/${dep}`),`${file} imports src/${dep}, which is not packaged`);
   }
   assert.equal(pkg.exports['./notify'],'./src/notify.mjs');assert.match(patch,/name: '\.\/src\/notify\.mjs'/);
+  assert.equal(pkg.exports['./unattended'],'./src/unattended.mjs');assert.match(patch,/id: cowork-unattended\n\s+name: '\.\/src\/unattended\.mjs'/);
   // DSH 0.2.1 installs no dsh-webhook; a row naming it would not resolve.
   assert.doesNotMatch(patch,/dsh-webhook/);assert.match(patch,/name: '@deepseek-ai\/dsh-tool-schedule'/);assert.match(patch,/name: '@deepseek-ai\/dsh-time-context'/);
   assert.match(patch,/- insert:/);assert.match(patch,/id: cowork-phone/);
@@ -395,4 +396,79 @@ test('a due note reaches the model, and the session log, as its own note; a turn
   assert.equal(steered[1].source.summary,'有其他任务在等副屏：请尽快收尾');
   api.yieldTo(agent,'bogus');assert.equal(steered.length,2,'an unknown reason sends nothing');
   api.remove(agent);await child.dispose();await preset.dispose();
+});
+test('a patrol and a notification-triggered turn run on the owner\'s unattended models, over the session\'s own selection; the owner\'s turns keep the session\'s',async()=>{
+  const ctx=new Context();
+  ctx.provide('systemPrompt',{tools:()=>{},section:()=>{},getSectionOrder:()=>0});
+  ctx.provide('attachments',{saveImage:async()=>({})});
+  ctx.provide('web',{search:async()=>({content:'fact',sources:[]})});
+  const resolveCalls=[];
+  ctx.provide('llm',{stream:()=>{throw Error('No model calls during tests');},resolveCallConfig:async sel=>{resolveCalls.push(sel);if(sel.provider==='gone')throw Error('no such provider');return {provider:sel.provider,model:sel.model,reasoningEffort:sel.reasoningEffort??'adapter-default'};}});
+  const liveAgents=new Map();ctx.provide('agents',{get:id=>liveAgents.get(id),roots:()=>[...liveAgents.values()]});
+  const runtimeFiber=ctx.plugin(ToolRuntime,{mode:'native'});if(runtimeFiber.inertia)await runtimeFiber.inertia;
+  let owner;const ownerFiber=ctx.inject(['tools','systemPrompt','attachments','web','llm','agents'],c=>{owner=c;});if(ownerFiber.inertia)await ownerFiber.inertia;
+  const key={},preset=scope.createScope(owner,key),agent={id:'cowork-app-patrol',session:{id:'cowork-app-patrol',snapshotEvents:()=>[],requestHeader:()=>undefined}};
+  const child=scope.createScope(owner,agent,{parent:key});agent.ctx=child.ctx;
+  const lifecycle={runTool:(a,exec,body)=>body(exec),preStep:async()=>{},observe(){},remove(){},dispose(){},flush:async()=>{}};
+  let store={patrol:null,notify:null};
+  const api=installRestrictedCowork(preset.ctx,{},{...scope,...llm,Session},{lifecycle,bridge:{call:async()=>({}),forget:()=>{}},files:{},unattended:()=>store});
+  liveAgents.set(agent.id,agent);
+  ctx.emit('session/event',agent.session,{type:'agent-preset/selected',data:{agentPreset:'cowork-phone'}});
+  // What DSH's api-session installs when it composes a session (installModelSelection): registered later, on the agent's
+  // own scope, it replaces the route with the session's selection. The Cowork listener is prepended, so it sees this.
+  child.ctx.on('agent/request',async(_payload,next)=>({...(await next()),provider:'session',model:'own',reasoningEffort:'low'}));
+  const signal=new AbortController().signal;
+  const reminder=prompt=>llm.createUserMessage({content:[{type:'text',text:['[SCHEDULE REMINDER BATCH]','This is a scheduled message from the user',`reminders_json: ${JSON.stringify([{schedule_id:'p1',occurrence_at:'2026-10-24T01:00:00.000Z',reminder_prompt:prompt}])}`].join('\n')}],source:{kind:'schedule'}});
+  const hook=llm.createUserMessage({content:[{type:'text',text:'[NOTIFICATION TRIGGER]'}],source:{kind:'webhook',provider:'cowork-notify',source:'continuo',deliveryId:'d',ruleId:'cowork-notify'}});
+  const mine=llm.createUserMessage({content:[{type:'text',text:'帮我看看 QQ'}],source:{kind:'user'}});
+  const step=(turn,messages)=>agentEvents(ctx,agent).waterfall('agent/pre-step',{turn,step:1,signal,messages},async()=>({kind:'enter',messages}));
+  const request=turn=>agentEvents(ctx,agent).waterfall('agent/request',{turn,step:1,signal},()=>Promise.resolve({provider:'seed',model:'seed',reasoningEffort:'medium',maxTokens:100}));
+  const own={provider:'session',model:'own',reasoningEffort:'low',maxTokens:100};
+  // A notification trigger: the notify model replaces the route; the session's effort goes when none was chosen.
+  store={patrol:null,notify:{provider:'codex',model:'gpt-6-luna'}};
+  await step(1,[hook]);
+  assert.deepEqual(await request(1),{provider:'codex',model:'gpt-6-luna',maxTokens:100});
+  store={patrol:null,notify:{provider:'codex',model:'gpt-6-luna',reasoningEffort:'high'}};
+  assert.deepEqual(await request(1),{provider:'codex',model:'gpt-6-luna',reasoningEffort:'high',maxTokens:100},'read on every request, effort kept when chosen');
+  assert.deepEqual(await request(2),own,'another turn not started by a trigger keeps the session\'s');
+  // A due patrol uses the patrol model; a patrol marker in an ordinary note does not.
+  store={patrol:{provider:'claude',model:'claude-opus-5-5'},notify:null};
+  await step(3,[reminder('[巡视] 每次挑 2–3 个应用逛逛。')]);
+  assert.deepEqual(await request(3),{provider:'claude',model:'claude-opus-5-5',maxTokens:100});
+  await step(4,[reminder('提醒我 [巡视] 的事')]);
+  assert.deepEqual(await request(4),own);
+  // The owner's message: the session's own model, also when it joins a patrol turn.
+  await step(5,[mine]);assert.deepEqual(await request(5),own);
+  await step(6,[reminder('[巡视] 逛逛')]);await step(6,[mine]);
+  assert.deepEqual(await request(6),own,'the owner steered into the patrol: their session model from then on');
+  // No setting, or one the catalog no longer resolves: the session's own.
+  await step(7,[hook]);assert.deepEqual(await request(7),own,'no notify setting');
+  store={patrol:{provider:'gone',model:'x'},notify:null};
+  await step(8,[reminder('[巡视] 逛逛')]);assert.deepEqual(await request(8),own,'an unavailable setting falls back');
+  assert.ok(resolveCalls.some(sel=>sel.provider==='gone'));
+  api.remove(agent);await child.dispose();await preset.dispose();
+});
+test('Continuo reaches the unattended-model setting through the real Typert gateway markers; values are checked against the catalog',async()=>{
+  const protocol=await import('../research/installed/dsh/node_modules/@deepseek-ai/dsh-typert-protocol/lib/index.js');
+  const { unattendedService, NAMESPACE }=await import('../src/unattended.mjs');
+  const { readUnattended }=await import('../src/unattended-store.mjs');
+  const dir=await fs.mkdtemp((await import('node:path')).join((await import('node:os')).tmpdir(),'cowork-unattended-'));
+  const file=`${dir}/plugins/cowork-phone/unattended-models.json`;
+  const ctx=new Context();
+  ctx.provide('llm',{resolveCallConfig:async sel=>{if(sel.provider==='gone')throw Error('no such provider');return {provider:sel.provider,model:sel.model,reasoningEffort:sel.reasoningEffort??'adapter-default'};}});
+  const Service=unattendedService(protocol);
+  const fiber=ctx.plugin(Service,{file});if(fiber.inertia)await fiber.inertia;
+  const service=ctx.get(NAMESPACE);
+  assert.ok(service,'registered under its namespace');
+  assert.deepEqual({...service.typertRemote,service:undefined},{service:undefined,serviceKey:NAMESPACE,namespace:NAMESPACE});
+  assert.deepEqual(protocol.remoteMethods(service).map(m=>m.method),['models','setModel'],'what the gateway discovers (SRC markers)');
+  assert.deepEqual(service.models(),{patrol:null,notify:null},'nothing stored yet');
+  assert.deepEqual(await service.setModel({kind:'patrol',selection:{provider:'claude',model:'claude-opus-5-5'}}),{patrol:{provider:'claude',model:'claude-opus-5-5'},notify:null},'no effort stored when none was chosen');
+  assert.deepEqual(await service.setModel({kind:'notify',selection:{provider:'codex',model:'gpt-6-luna',reasoningEffort:'high'}}),{patrol:{provider:'claude',model:'claude-opus-5-5'},notify:{provider:'codex',model:'gpt-6-luna',reasoningEffort:'high'}});
+  assert.deepEqual(readUnattended(file),service.models(),'persisted');
+  await assert.rejects(service.setModel({kind:'notify',selection:{provider:'gone',model:'x'}}),/no such provider/);
+  await assert.rejects(service.setModel({kind:'other',selection:null}),/kind must be one of/);
+  await assert.rejects(service.setModel({kind:'notify',selection:{provider:'codex'}}),/needs a provider and a model/);
+  assert.deepEqual(await service.setModel({kind:'patrol',selection:null}),{patrol:null,notify:{provider:'codex',model:'gpt-6-luna',reasoningEffort:'high'}},'null clears one');
+  await fiber.dispose?.();await fs.rm(dir,{recursive:true,force:true});
 });

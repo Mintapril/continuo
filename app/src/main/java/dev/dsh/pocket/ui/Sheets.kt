@@ -75,7 +75,9 @@ import org.json.JSONObject
 }
 
 /** Provider-grouped route picker. Provider stays visible because model ids can repeat across providers. */
-@Composable internal fun ModelSheet(catalog: JSONObject, current: JSONObject?, dismiss: () -> Unit, select: (String, String, String?) -> Unit) {
+/** [clear], when given, adds a first row that sets no model (the setting then follows the session). */
+@Composable internal fun ModelSheet(catalog: JSONObject, current: JSONObject?, dismiss: () -> Unit, title: String = "模型", clear: (() -> Unit)? = null,
+                                    select: (String, String, String?) -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
     var provider by rememberSaveable { mutableStateOf(current?.text("provider").orEmpty()) }
     var modelId by rememberSaveable { mutableStateOf(current?.text("model").orEmpty()) }
@@ -87,10 +89,11 @@ import org.json.JSONObject
     val total = groups.sumOf { it.objects("models").size }
     val valid = picked != null && (effort == null || efforts.any { it.text("id") == effort })
     PocketSheet(dismiss) {
-        SheetHeader("模型", leading = { CircleButton(Glyph.Close, "关闭", size = 36.dp, onClick = dismiss) },
+        SheetHeader(title, leading = { CircleButton(Glyph.Close, "关闭", size = 36.dp, onClick = dismiss) },
             trailing = { TextButton({ select(provider, modelId, effort) }, enabled = valid) { Text("完成", style = MaterialTheme.typography.titleSmall, color = if (valid) Pocket.accent else Pocket.faint) } })
         if (total > 6) SheetSearch(query, { query = it }, "搜索模型或提供方")
         LazyColumn(Modifier.weight(1f, fill = false)) {
+            if (clear != null) item(key = "clear") { SheetRow("跟随会话", "不指定，用会话自己的模型", checked = current == null) { clear() } }
             var count = 0
             groups.forEach { group ->
                 val matches = group.objects("models").filter { (group.text("id") + " " + group.text("name") + " " + it.text("name") + " " + it.text("id")).contains(query.trim(), true) }

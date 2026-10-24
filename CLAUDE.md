@@ -95,7 +95,7 @@ Broker（root，app_process，从已安装 APK 的 dev.dsh.pocket.cowork.broker.
 
 ### 插件（`cowork-plugin/`）
 
-入口 `src/restricted.mjs`，通过 `cordis.patch.yml` 注册预设 `cowork-phone`。限制落在 `tools.guard()` 和空的继承工具掩码上，不只是系统提示词。`broker.mjs` 是线协议适配器（参数/结果 schema、观察 TTL、错误码表），`task-lifecycle.mjs` 持有每轮的原生租约并在 Broker 下达 pause/stop 时取消 DSH 回合（这就是会话里出现 "Turn aborted" 的来源）；它也是副屏唯一的准入点：别的会话的回合占着副屏时，新回合在第一步之前排队（主人的消息 > 通知 > 到期的便条和巡视，同级按先后），最多等 30 分钟，超时报 `COWORK_SCREEN_BUSY`；主人的回合排队时，请正在跑的无人值守回合尽快收尾（`restricted.mjs` 的 `yieldTo`，插入一条 `[OWNER WAITING]` 通知消息）；别的回合在等时，无人值守的占用者占满 `NUDGE_AFTER_MS`（有通知等 5 分钟、只有便条等 15 分钟）后收到 `[OTHERS WAITING]`。巡视是主人让模型记下的、内容以 `[巡视]` 开头的周期便条，默认在固定会话 `cowork-app-patrol`（“巡视 · 自动运营”，App 便条页按需创建）里，每次挑 2–3 个应用；到期时插件在 `agent/pre-step` 附上 `[PATROL]` 清单（`patrolChecklist`，在某个应用自己的会话里则只巡视那个应用）。`screen-board.mjs` 记下哪些会话在排队（进程级单例），`notify.mjs` 据此判断副屏是否真被占用。`gesture-path.mjs` 把 SVG 路径展平成折线。`notify.mjs` 是同一 bundle 里的第二个插件（宿主层，不在预设里）：通知入口、Jev 判断（判断不了就不唤起）、按应用分开的合并队列；每个应用一个固定的 `cowork-phone` 会话（`cowork-app-<资料>-<包名>`，包名的点换成 `-`，插件直接用 DSH 的会话服务创建或恢复，用 DSH 的默认模型，不归档，被手动归档的在下次送达前取消归档），通过的批次插进它正在跑的一轮，或在副屏空闲时作为它的新一轮。`src/index.mjs`、`bridge.mjs`、`files.mjs`、`policy.mjs` 是旧代码，不在 `package.json` 的 `files` 里。
+入口 `src/restricted.mjs`，通过 `cordis.patch.yml` 注册预设 `cowork-phone`。限制落在 `tools.guard()` 和空的继承工具掩码上，不只是系统提示词。`broker.mjs` 是线协议适配器（参数/结果 schema、观察 TTL、错误码表），`task-lifecycle.mjs` 持有每轮的原生租约并在 Broker 下达 pause/stop 时取消 DSH 回合（这就是会话里出现 "Turn aborted" 的来源）；它也是副屏唯一的准入点：别的会话的回合占着副屏时，新回合在第一步之前排队（主人的消息 > 通知 > 到期的便条和巡视，同级按先后），最多等 30 分钟，超时报 `COWORK_SCREEN_BUSY`；主人的回合排队时，请正在跑的无人值守回合尽快收尾（`restricted.mjs` 的 `yieldTo`，插入一条 `[OWNER WAITING]` 通知消息）；别的回合在等时，无人值守的占用者占满 `NUDGE_AFTER_MS`（有通知等 5 分钟、只有便条等 15 分钟）后收到 `[OTHERS WAITING]`。巡视是主人让模型记下的、内容以 `[巡视]` 开头的周期便条，默认在固定会话 `cowork-app-patrol`（“巡视 · 自动运营”，App 便条页按需创建）里，每次挑 2–3 个应用；到期时插件在 `agent/pre-step` 附上 `[PATROL]` 清单（`patrolChecklist`，在某个应用自己的会话里则只巡视那个应用）。`screen-board.mjs` 记下哪些会话在排队（进程级单例），`notify.mjs` 据此判断副屏是否真被占用。`unattended.mjs` 是第三个宿主层插件：DSH 的 RPC 服务 `coworkUnattended`（App 设置页读写巡视、通知唤起各自用的模型，存在 `~/.dsh/plugins/cowork-phone/unattended-models.json`）；`restricted.mjs` 在这类回合的每次请求上用最外层（prepend）的 `agent/request` 监听换模型，不动会话自己的选择，也不用会把选择存成全局默认的 `session/selectModel`。`gesture-path.mjs` 把 SVG 路径展平成折线。`notify.mjs` 是同一 bundle 里的第二个插件（宿主层，不在预设里）：通知入口、Jev 判断（判断不了就不唤起）、按应用分开的合并队列；每个应用一个固定的 `cowork-phone` 会话（`cowork-app-<资料>-<包名>`，包名的点换成 `-`，插件直接用 DSH 的会话服务创建或恢复，用 DSH 的默认模型，不归档，被手动归档的在下次送达前取消归档），通过的批次插进它正在跑的一轮，或在副屏空闲时作为它的新一轮。`src/index.mjs`、`bridge.mjs`、`files.mjs`、`policy.mjs` 是旧代码，不在 `package.json` 的 `files` 里。
 
 ### 安全边界（改动时不能退让）
 
@@ -109,6 +109,7 @@ Broker（root，app_process，从已安装 APK 的 dev.dsh.pocket.cowork.broker.
 - 这类回合也不能请求接管（`phone_request_intervention`），需要主人时只能用 `phone_notify_owner` 发一条通知后结束；有用户消息的回合反过来不能发这种通知。每回合最多一条，由插件的 `tools.guard()` 强制。
 - 通知原文（标题、正文）只能以 JSON 编码、标为“他人写的不可信数据”的形式进入 Cowork 会话（`notifications_untrusted_json`），不得拼成指令或独立的一行；通知入口监听回环，每个请求都要独立令牌的 HMAC。
 - 屏幕、网页、文件里的文字都是待观察数据，不是指令。
+- 模型的言行（系统提示词 `deployment:persona-prefix` 和巡视清单，靠提示词约束）：没有经营方向和人设，有自己的性格，像普通人一样用手机；社交只做低侵入的（评论、回复、群聊插话；别人私聊可以回、好友申请和入群邀请可以接受），自己不主动私聊、加好友、申请进群，除非主人在消息里明确要求；涉政、涉恐等敏感内容谁要求都不碰；有人真诚地问是不是 AI 时不否认。
 
 ## 部署与脚本
 

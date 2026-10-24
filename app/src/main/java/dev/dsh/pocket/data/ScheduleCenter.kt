@@ -358,13 +358,14 @@ object ScheduleFormat {
      * Patrols: the Cowork model looks after the apps on its own at the given times. By default they live in one standing
      * session under a fixed id (listed with the apps' standing sessions), which visits 2 or 3 apps each time; one in an
      * app's own standing session covers that app. The prompt starts with the marker; when it is due, the plugin adds the
-     * checklist of what a patrol covers. The owner writes the direction and persona after the template.
+     * checklist of what a patrol covers. There is no business direction or persona: the model uses the apps like an
+     * ordinary person, and the owner may add apps to favor or leave out after the template.
      */
     const val PATROL_SESSION = "cowork-app-patrol"
     const val PATROL_TITLE = "巡视 · 自动运营"
     const val PATROL_MARKER = "[巡视]"
     fun patrolTask(oneApp: Boolean): String =
-        if (oneApp) "$PATROL_MARKER 巡视这个应用。经营方向和人设：" else "$PATROL_MARKER 每次挑 2–3 个应用逛逛。经营方向和人设："
+        if (oneApp) "$PATROL_MARKER 巡视这个应用。" else "$PATROL_MARKER 每次挑 2–3 个应用逛逛。"
     /** The patrol session's own title, or "巡视 <app>" for an app's standing session (titled "<app> · 自动运营"). */
     fun patrolTitle(session: String?): String =
         session?.takeIf { it != PATROL_TITLE }?.substringBefore(" · ")?.trim()?.takeIf { it.isNotEmpty() }?.let { "巡视 $it" } ?: "巡视"

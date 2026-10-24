@@ -36,6 +36,8 @@ import dev.dsh.pocket.cowork.CoworkConnection
 import dev.dsh.pocket.cowork.CoworkControllerService
 import dev.dsh.pocket.cowork.CoworkLinkState
 import dev.dsh.pocket.data.TaskMode
+import dev.dsh.pocket.data.UnattendedModels
+import dev.dsh.pocket.data.objects
 import dev.dsh.pocket.island.IslandAccessibilityService
 import dev.dsh.pocket.island.IslandLayerKeeper
 import dev.dsh.pocket.island.IslandRuntime
@@ -205,6 +207,9 @@ private fun reasonText(value: dev.dsh.pocket.island.IslandSuppression) = when (v
         refresh++; if (!granted) vm.showError("通知权限未开启：任务状态和“需要你处理”的提醒将不可见")
     }
     val (executorColor, executorText) = executorSummary(link)
+    val unattended = vm.unattended
+    var modelFor by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(vm.connected) { if (vm.connected) { vm.unattendedRefresh(); if (vm.catalog.objects("groups").isEmpty()) vm.refresh() } }
 
     SettingsPage("Cowork 与任务岛", back) {
         SectionLabel("执行器")
@@ -224,6 +229,21 @@ private fun reasonText(value: dev.dsh.pocket.island.IslandSuppression) = when (v
             })
         }
         Footnote("无需手动连接。任务请求到达时，若应用已被系统结束，执行器会尝试自行重新启动控制服务。需要 KernelSU 对 Continuo 的授权；上滑清除最近任务会被部分系统强行结束，请在系统里锁定本应用。")
+
+        SectionLabel("无人值守时的模型")
+        InsetGroup {
+            if (unattended == null) {
+                GroupRow(if (vm.unattendedError.isBlank()) "正在读取…" else "读不到设置", icon = Glyph.Warning, chevron = false,
+                    subtitle = vm.unattendedError.ifBlank { null }?.let { "$it（手机上的 Cowork 插件可能还是旧版）" }, onClick = { vm.unattendedRefresh() })
+            } else {
+                GroupRow("巡视", icon = Glyph.Clock, subtitle = UnattendedModels.label(UnattendedModels.selection(unattended, UnattendedModels.PATROL), vm.catalog),
+                    onClick = { modelFor = UnattendedModels.PATROL })
+                GroupDivider()
+                GroupRow("通知唤起", icon = Glyph.Filter, subtitle = UnattendedModels.label(UnattendedModels.selection(unattended, UnattendedModels.NOTIFY), vm.catalog),
+                    onClick = { modelFor = UnattendedModels.NOTIFY })
+            }
+        }
+        Footnote("只换这几种回合用的模型：到点的巡视，和通知唤起的回合（各应用的“自动运营”会话）。你自己发消息时仍用会话的模型；DSH 的默认模型不变。")
 
         SectionLabel("任务岛")
         InsetGroup {
@@ -274,9 +294,13 @@ private fun reasonText(value: dev.dsh.pocket.island.IslandSuppression) = when (v
             GroupRow("Cowork 控制中心", icon = Glyph.Play, subtitle = "实时画面、接管与交还、暂停与停止、工作资料应用",
                 onClick = { context.startActivity(Intent(context, CoworkActivity::class.java)) })
         }
-        Footnote("工作资料应用无需逐项加入白名单，由 AI 自行经营；付款、账号安全和清空聊天记录仍需你确认。")
+        Footnote("工作资料应用无需逐项加入白名单，由 AI 像普通人一样自己使用；付款、账号安全和清空聊天记录仍需你确认。")
     }
 
+    modelFor?.let { kind ->
+        ModelSheet(vm.catalog, UnattendedModels.selection(unattended, kind), { modelFor = null }, title = if (kind == UnattendedModels.PATROL) "巡视用的模型" else "通知唤起用的模型",
+            clear = { vm.setUnattendedModel(kind, null, null, null); modelFor = null }) { p, m, e -> vm.setUnattendedModel(kind, p, m, e); modelFor = null }
+    }
     if (overlayDialog) ConfirmDialog("允许显示在其他应用上层", "将打开 Android 系统设置，请手动允许 Continuo。应用不会自行授予任何权限；未授权时只使用通知。", "前往设置", dismiss = { overlayDialog = false }) {
         overlayDialog = false; context.startActivity(IslandRuntime.overlaySettingsIntent(context))
     }

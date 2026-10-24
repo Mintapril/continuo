@@ -92,6 +92,11 @@ class IslandOverlayService : Service() {
     // but below the accessibility layer, so while typing the picture moves to the ordinary overlay layer.
     private var typing = false
     private var keyboardDismissed = false
+    /** The person raised the keyboard with the 键盘 button: typing stays on without a field the broker recognised (a web
+     *  page or a code entry the app draws itself); the keys go to whatever has focus on the owned display. */
+    private var manualTyping = false
+    private var keysButton: View? = null
+    private var appPicker: View? = null
     private var keyboard: RemoteKeyboardView? = null
     private var typingBar: View? = null
     private var typingManager: WindowManager? = null
@@ -273,7 +278,7 @@ class IslandOverlayService : Service() {
             }
             val presentation = snapshot.copy(environment = IslandEnvironment())
             val status = CoworkConnection.status.value
-            val liveKey = "${status.optInt("displayId") > 0 && status.optBoolean("workspaceActive")}|${status.optBoolean("userControl")}|${status.optString("interventionBy")}|$requestAccepted|${status.optString("interventionReason")}"
+            val liveKey = "${status.optInt("displayId") > 0}|${status.optBoolean("userControl")}|${status.optString("interventionBy")}|$requestAccepted|${status.optString("interventionReason")}"
             if (!created && (lastRendered != presentation || lastLiveKey != liveKey)) {
                 lastLiveKey = liveKey
                 applySnapshot(root, snapshot)
@@ -396,7 +401,8 @@ class IslandOverlayService : Service() {
     private fun buildBody(snapshot: IslandSnapshot, task: IslandTaskUpdate): View {
         val context = requireNotNull(overlayContext)
         val status = CoworkConnection.status.value
-        val workspace = status.optInt("displayId") > 0 && status.optBoolean("workspaceActive") && CoworkConnection.connection.value == CoworkLinkState.CONNECTED
+        // The standing display, also between turns: a tap on its preview takes it at any time.
+        val workspace = status.optInt("displayId") > 0 && CoworkConnection.connection.value == CoworkLinkState.CONNECTED
         val pill = requireNotNull(panel)
         val kept = keptBody?.takeIf { it.pill === pill && it.workspace == workspace }
         val body = kept?.view ?: LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
@@ -420,7 +426,7 @@ class IslandOverlayService : Service() {
         if (modelRequestPending(ask)) {
             val reason = ask.optString("interventionReason")
             list.addView(text("AI 请求接管${if (reason.isNotBlank()) "：$reason" else ""}", 14f, Color.rgb(255, 159, 10)).apply { setPadding(0, 0, 0, dp(4)) })
-            list.addView(text("双击右侧画面开始操作", 12f, DIM).apply { setPadding(0, 0, 0, dp(8)) })
+            list.addView(text("点右侧画面开始操作", 12f, DIM).apply { setPadding(0, 0, 0, dp(8)) })
         } else if (ask.optBoolean("userControl")) {
             list.addView(text("你正在操作副屏", 13f, Color.rgb(100, 210, 255)).apply { setPadding(0, 0, 0, dp(8)) })
         }
@@ -439,26 +445,24 @@ class IslandOverlayService : Service() {
             poster.setImageBitmap(CoworkConnection.live.value)
             val box = kept?.box ?: FrameLayout(context).apply {
                 setBackgroundColor(Color.rgb(20, 20, 22))
-                contentDescription = "副屏预览，双击介入"
+                contentDescription = "副屏预览，点一下进入副屏操作"
                 clipToOutline = true
                 outlineProvider = object : android.view.ViewOutlineProvider() {
                     override fun getOutline(v: View, outline: android.graphics.Outline) { outline.setRoundRect(0, 0, v.width, v.height, dp(14).toFloat()) }
                 }
                 addView(poster, FrameLayout.LayoutParams(-1, -1))
                 addView(LiveTextureView(context), FrameLayout.LayoutParams(-1, -1))
+                // One tap enters. A double tap (the old gesture) enters once too: its second tap must not land on the
+                // full screen that the first one opens, so a single tap waits until it cannot be a double tap.
                 val detector = android.view.GestureDetector(context, object : android.view.GestureDetector.SimpleOnGestureListener() {
                     override fun onDown(e: MotionEvent) = true
-                    override fun onDoubleTap(e: MotionEvent): Boolean {
-                        requestAccepted = true
-                        scope.launch { runCatching { CoworkConnection.takeover(true) }; syncIntervention(CoworkConnection.status.value) }
-                        return true
-                    }
+                    override fun onSingleTapConfirmed(e: MotionEvent): Boolean { enterScreen(); return true }
+                    override fun onDoubleTap(e: MotionEvent): Boolean { enterScreen(); return true }
                 })
                 isClickable = true
                 setOnTouchListener { _, event -> if (IslandTouchGuard.isObscured(event)) true else detector.onTouchEvent(event) }
-                setOnClickListener { }
-                // Accessibility has no double-tap gesture of its own: the standard activate action enters intervention too.
-                accessibilityDelegate = object : View.AccessibilityDelegate() {}
+                // The standard accessibility activate action enters too.
+                setOnClickListener { enterScreen() }
             }
             liveView = poster
             if (kept == null) body.addView(box, LinearLayout.LayoutParams(width, height))
@@ -469,9 +473,16 @@ class IslandOverlayService : Service() {
         return body
     }
 
+    /** A tap on the preview: the person takes the AI screen, with or without a turn on it (and accepts the model's
+     *  request for help, if there is one). */
+    private fun enterScreen() {
+        requestAccepted = true
+        scope.launch { runCatching { CoworkConnection.takeover(true) }; syncIntervention(CoworkConnection.status.value) }
+    }
+
     /** The broker state decides: person in control => seamless full screen with the colour frame, else closed. */
     private fun syncIntervention(status: org.json.JSONObject) {
-        val control = status.optBoolean("userControl") && status.optInt("displayId") > 0 && status.optBoolean("workspaceActive") &&
+        val control = status.optBoolean("userControl") && status.optInt("displayId") > 0 &&
             CoworkConnection.connection.value == CoworkLinkState.CONNECTED
         if (!control) { requestAccepted = false; requestExpanded = false }
         val ask = modelRequestPending(status)
@@ -579,11 +590,21 @@ class IslandOverlayService : Service() {
                 val shown = insets.isVisible(WindowInsets.Type.ime())
                 imeBottom = if (shown) insets.getInsets(WindowInsets.Type.ime()).bottom else 0
                 // The keyboard was put away (its own hide key, or BACK): leave typing until the screen is tapped again.
-                if (typing && imeShown && !shown) { keyboardDismissed = true; root.post { syncTyping() } }
+                if (typing && imeShown && !shown) { keyboardDismissed = true; manualTyping = false; root.post { syncTyping() } }
                 imeShown = shown
             }
             updateShift(); insets
         }
+        // Two buttons above the bottom edge: open a work-profile app (the AI desktop has no launcher), and raise this
+        // phone's keyboard when a field was not recognised by itself.
+        val tools = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; alpha = 0.85f }
+        tools.addView(pillButton("应用") { toggleAppPicker() }, LinearLayout.LayoutParams(dp(72), dp(40)).apply { bottomMargin = dp(10) })
+        val keys = pillButton("键盘") { manualTyping = true; keyboardDismissed = false; syncTyping() }
+        tools.addView(keys, LinearLayout.LayoutParams(dp(72), dp(40)))
+        root.addView(tools, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
+            marginEnd = dp(EDGE_GESTURE_DP + 12); bottomMargin = dp(EDGE_GESTURE_DP + 64)
+        })
+        keysButton = keys
         fullImage = poster
         fullVideo = video
         fullView = root
@@ -637,9 +658,43 @@ class IslandOverlayService : Service() {
         }
     }
 
+    /** Work-profile apps over the picture; a tap opens one on the owned display, a tap beside the list closes it. */
+    private fun toggleAppPicker() {
+        val root = fullView ?: return
+        appPicker?.let { root.removeView(it); appPicker = null; return }
+        val context = overlayContext ?: return
+        val list = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(6), dp(6), dp(6), dp(6)) }
+        fun fill() {
+            list.removeAllViews()
+            val apps = CoworkConnection.apps.value
+            if (apps.isEmpty()) list.addView(text("正在读取工作资料应用…", 14f, DIM).apply { setPadding(dp(14), dp(12), dp(14), dp(12)) })
+            apps.forEach { app ->
+                list.addView(text(app.label, 16f).apply {
+                    setPadding(dp(14), dp(12), dp(14), dp(12)); isClickable = true; isFocusable = true
+                    setOnClickListener { CoworkConnection.sendLaunch(app.packageName); appPicker?.let { root.removeView(it) }; appPicker = null }
+                    IslandTouchGuard.protect(this)
+                })
+            }
+        }
+        fill()
+        if (CoworkConnection.apps.value.isEmpty()) scope.launch { runCatching { CoworkConnection.refreshApps() }; if (appPicker != null) fill() }
+        val card = ScrollView(context).apply {
+            background = GradientDrawable().apply { setColor(Color.argb(240, 28, 28, 30)); cornerRadius = dp(18).toFloat() }
+            addView(list)
+        }
+        val scrim = FrameLayout(context).apply {
+            setBackgroundColor(Color.argb(110, 0, 0, 0)); isClickable = true
+            setOnClickListener { root.removeView(this); appPicker = null }
+            addView(card, FrameLayout.LayoutParams(dp(260), (root.height * 0.6f).toInt().coerceAtLeast(dp(200)), Gravity.CENTER))
+        }
+        root.addView(scrim, FrameLayout.LayoutParams(-1, -1))
+        appPicker = scrim
+    }
+
     private fun closeFullScreen() {
         val view = fullView ?: return
         stopTyping(reattach = false)
+        manualTyping = false; appPicker = null; keysButton = null
         fullView = null; fullImage = null; fullVideo = null
         edgeGlow?.hide()
         edgeGlow = null
@@ -650,16 +705,22 @@ class IslandOverlayService : Service() {
         panel?.interventionMode = false
     }
 
-    /** Typing follows the broker: a focused input field on the owned display while the person is in control. */
+    /** Typing follows the broker (a focused input field on the owned display while the person is in control), or the
+     *  person's 键盘 button. */
     private fun syncTyping() {
         val root = fullView ?: return
-        val field = CoworkConnection.field.value?.takeIf { CoworkConnection.status.value.optBoolean("userControl") }
-        if (field == null) { keyboardDismissed = false; stopTyping(); return }
-        if (keyboardDismissed) { stopTyping(); return }
+        val control = CoworkConnection.status.value.optBoolean("userControl")
+        val field = CoworkConnection.field.value?.takeIf { control }
+        if (!control) manualTyping = false
+        if (field == null && !manualTyping) { keyboardDismissed = false; stopTyping(); return }
+        if (keyboardDismissed && !manualTyping) { stopTyping(); return }
         if (!typing && !startTyping(root)) return
         keyboard?.remote = field
-        typingBar?.findViewWithTag<TextView>(TYPING_LABEL)?.text =
-            if (field.password) "正在输入副屏的密码框：用本机键盘输入，AI 看不到" else "正在输入副屏的输入框：用本机键盘输入"
+        typingBar?.findViewWithTag<TextView>(TYPING_LABEL)?.text = when {
+            field == null -> "用本机键盘输入：按键直接发给副屏上选中的地方"
+            field.password -> "正在输入副屏的密码框：用本机键盘输入，AI 看不到"
+            else -> "正在输入副屏的输入框：用本机键盘输入"
+        }
         updateShift()
     }
 
@@ -703,7 +764,7 @@ class IslandOverlayService : Service() {
             refused = { label.text = "密码框只能输入英文字母、数字和符号" },
             composing = { preview.text = it })
         proxy.setOnKeyListener { _, code, event ->
-            if (code == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) { keyboardDismissed = true; syncTyping(); true } else false
+            if (code == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) { keyboardDismissed = true; manualTyping = false; syncTyping(); true } else false
         }
         val texts = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; addView(label); addView(preview) }
         val bar = LinearLayout(context).apply {
@@ -712,7 +773,7 @@ class IslandOverlayService : Service() {
             background = GradientDrawable().apply { setColor(Color.argb(230, 28, 28, 30)); cornerRadius = dp(18).toFloat() }
             addView(texts, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(proxy, LinearLayout.LayoutParams(1, 1))
-            addView(pillButton("收起键盘") { keyboardDismissed = true; syncTyping() }, LinearLayout.LayoutParams(dp(96), dp(40)))
+            addView(pillButton("收起键盘") { keyboardDismissed = true; manualTyping = false; syncTyping() }, LinearLayout.LayoutParams(dp(96), dp(40)))
         }
         val statusId = resources.getIdentifier("status_bar_height", "dimen", "android")
         val statusBar = if (statusId != 0) resources.getDimensionPixelSize(statusId) else dp(32)
@@ -720,6 +781,7 @@ class IslandOverlayService : Service() {
             topMargin = statusBar + dp(60); marginStart = dp(12); marginEnd = dp(12)
         })
         typingBar = bar; keyboard = proxy; typing = true; imeShown = false
+        keysButton?.visibility = View.GONE
         proxy.post { proxy.showKeyboard() }
         root.viewTreeObserver.addOnWindowFocusChangeListener(typingFocus)
         return true
@@ -729,6 +791,7 @@ class IslandOverlayService : Service() {
     private fun stopTyping(reattach: Boolean = true) {
         if (!typing) return
         typing = false; imeShown = false; imeBottom = 0
+        keysButton?.visibility = View.VISIBLE
         fullView?.viewTreeObserver?.removeOnWindowFocusChangeListener(typingFocus)
         keyboard?.hideKeyboard()
         typingBar?.let { (it.parent as? ViewGroup)?.removeView(it) }

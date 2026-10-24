@@ -161,7 +161,7 @@ public final class BrokerMain {
     }
     /** While a turn owns the display its power group must not doze (see {@link ProfileWorkspace#keepAwake}). Runs on its own
      *  clock, so a long tool (phone_wait, a takeover) cannot let the group time out. */
-    private void keepOwnedDisplayAwake(){try{if(gate.owner()!=null)workspace.keepAwake();}catch(Throwable keepAwakeFailure){}} // a throw would cancel the schedule
+    private void keepOwnedDisplayAwake(){try{if(gate.owner()!=null||takeover.active())workspace.keepAwake();}catch(Throwable keepAwakeFailure){}} // a throw would cancel the schedule
     /** A locked phone on battery suspends its CPU within seconds, and a running turn (model calls, tools) then stalls until
      *  the next wake-up. While a turn runs, a kernel wake lock with a timeout is renewed every tick: it lapses on its own a
      *  minute after the turn ends (covering the next queued turn), or after a crash. */
@@ -200,9 +200,14 @@ public final class BrokerMain {
         // display, the pop-up gate refuses screens of apps that are not on it); what still lands on the main screen, e.g.
         // a work-profile notification the user tapped there, is moved to the owned display. A running tool does it in its own check.
         if(toolsInFlight.get()==0)try{workspace.pullBackStrayTasks();}catch(Exception strayTaskFailure){}
-        if(gate.owner()==null){if(tick%5==0&&toolsInFlight.get()==0){keepStandingDisplay();tendParked();}return;}
         long now=SystemClock.elapsedRealtime();
         if(takeover.expired(now))endTakeover("expired");
+        if(gate.owner()==null){
+            // The person may take the screen between turns too: that ends once they can no longer be at it.
+            if(takeover.active()&&(now-controllerSeen>15000||workspace.locked()))endTakeover("cancelled");
+            if(tick%5==0&&toolsInFlight.get()==0){keepStandingDisplay();tendParked();}
+            return;
+        }
         if(toolsInFlight.get()>0||gate.paused())return; // a paused workspace runs nothing; resume re-guards it
         if(workspace.displayId()>0&&workspace.hasLaunched()&&!takeover.active())try{activity.observe(workspace.targetPackage(),workspace::appLabel);}catch(Exception activityFailure){}
         String reason=null;boolean guarded=false;
@@ -338,7 +343,8 @@ public final class BrokerMain {
      *  tool is running: the running tool sees the cancellation at its next guard. */
     private synchronized void closeWorkspace(){
         if(!workspaceExecutionId.isEmpty())workspace.requestCancellation(workspaceExecutionId);
-        treeRead=false;activity.reset();if(takeover.finish("cancelled"))workspace.userRelease();cancellationBinding=new WorkspaceBinding("","");
+        // The model's request for help ends with its turn; a takeover the person started stays theirs until they hand back.
+        treeRead=false;activity.reset();if(takeover.startedBy("model")&&takeover.finish("cancelled"))workspace.userRelease();cancellationBinding=new WorkspaceBinding("","");
         if(gate.owner()!=null)gate.stop(gate.owner());approvals.clear();workspaceExecutionId="";screenSettling.reset();
     }
     /** The one path that clears the standing display: the model called phone.stop, or its turn ended normally. The AI
@@ -348,6 +354,8 @@ public final class BrokerMain {
         String execution=workspaceExecutionId;
         ScreenWatch.Pending unseen=watch.detach();
         closeWorkspace();
+        // The person is using the screen: it is parked when they hand it back (endTakeover), not under their hands.
+        if(takeover.active())return;
         closing=closer.submit(()->{
             reportUnseen(unseen);
             try{workspace.resetContent(execution);}catch(Throwable e){System.err.println("workspace reset failed: "+e.getClass().getSimpleName());}
@@ -403,7 +411,7 @@ public final class BrokerMain {
      *  the display meanwhile; a turn that already owns it is left alone. */
     private void tendParked(){
         synchronized(toolLock){
-            if(gate.owner()!=null||toolsInFlight.get()>0)return;
+            if(gate.owner()!=null||toolsInFlight.get()>0||takeover.active())return;
             try{workspace.restoreParked();workspace.keepDesktopInFront();}catch(Throwable e){System.err.println("parked display upkeep failed: "+e.getClass().getSimpleName());}
         }
     }
@@ -820,16 +828,33 @@ public final class BrokerMain {
         return status();
     }
     private void endTakeover(String outcome){
-        try{if(takeover.finish(outcome)){workspace.userRelease();activity.note(outcome.equals("handed_back")?"已交还给 AI":"接管已结束");gate.invalidate();event("intervention.end",state.equals("idle")?"running":state);}}catch(Exception ignored){}
+        try{if(takeover.finish(outcome)){workspace.userRelease();activity.note(outcome.equals("handed_back")?"已交还给 AI":"接管已结束");gate.invalidate();event("intervention.end",gate.owner()!=null&&state.equals("idle")?"running":state);
+            if(gate.owner()==null)parkAfterUser();}}catch(Exception ignored){}
+    }
+    /** Between turns, a screen the person hands back is parked as after a turn: the AI desktop covers the app they used
+     *  (an app left in front counts as in use and stops posting notifications). Under the tool lock and only while no
+     *  turn owns the display, so a turn that claimed it meanwhile keeps its screen. */
+    private void parkAfterUser(){
+        closing=closer.submit(()->{
+            synchronized(toolLock){
+                if(gate.owner()!=null||!workspaceExecutionId.isEmpty()||takeover.active())return;
+                try{workspace.resetContent("");}catch(Throwable e){System.err.println("workspace reset failed: "+e.getClass().getSimpleName());}
+            }
+        });
     }
     private JSONObject takeoverControl(JSONObject a)throws Exception{
         String action=a.optString("action");
         if(!instanceId.equals(a.optString("instanceId")))ActionGate.fail("EXECUTION_STALE","Workspace changed; review current workspace");
         if(action.equals("start")){
-            if(gate.owner()==null||workspace.displayId()<=0)ActionGate.fail("NO_DISPLAY","No active workspace to take over");
+            // At any time, also between turns: the standing display is all it takes.
+            if(workspace.displayId()<=0)ActionGate.fail("NO_DISPLAY","No AI screen to take over");
             if(takeover.active())return status();
             if(tasks.active()&&!tasks.command().isEmpty())ActionGate.fail("PAUSED","Task is stopping");
-            takeover.start("user","",SystemClock.elapsedRealtime());watch.acting();activity.note("你接管了操作");gate.invalidate();event("intervention.start",state.equals("idle")?"running":state);
+            // No turn keeps an unowned display awake: wake it for the person, after a reset still running has finished.
+            if(gate.owner()==null){awaitClosed();workspace.keepAwake();}
+            takeover.start("user","",SystemClock.elapsedRealtime());watch.acting();activity.note("你接管了操作");gate.invalidate();
+            // With no turn on the display the state stays what it is: the person's use of the screen is no task.
+            event("intervention.start",gate.owner()!=null&&state.equals("idle")?"running":state);
         }else if(action.equals("end")){endTakeover("handed_back");}
         else ActionGate.fail("CONTROL_DENIED","Unknown takeover action");
         return status();
@@ -843,6 +868,8 @@ public final class BrokerMain {
                 case "touch":workspace.userTouch(a.optString("action"),(float)a.optDouble("x",-1),(float)a.optDouble("y",-1));break;
                 case "key":workspace.userKey(a.optString("key"));break;
                 case "text":workspace.userText(a.optString("text"));break;
+                // Opening a work-profile app (the AI desktop has no launcher): the same verified launch as phone_launch_app.
+                case "launch":{String pkg=a.optString("packageName");if(!pkg.matches("[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)+")||pkg.length()>200)ActionGate.fail("ARGUMENTS_INVALID","Invalid package name");workspace.launch(pkg,false);break;}
                 default:ActionGate.fail("ARGUMENTS_INVALID","Unknown input kind");
             }
         }catch(ActionGate.Denied e){throw e;}

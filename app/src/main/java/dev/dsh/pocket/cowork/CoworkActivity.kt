@@ -40,11 +40,18 @@ private data class ControlConfirmation(val action:String,val target:CoworkContro
 
 /** Explicit user control surface. Never exported; credentials cannot arrive in intents. */
 class CoworkActivity : ComponentActivity() {
+    companion object {
+        /** Opened from the controller notification's 操作副屏 action: take the AI screen once connected. */
+        const val EXTRA_TAKEOVER="dev.dsh.pocket.cowork.TAKEOVER"
+    }
+    /** A takeover asked for by the intent that opened this screen, not yet sent. */
+    private var takeoverWanted by mutableStateOf(false)
     override fun dispatchTouchEvent(event:MotionEvent):Boolean =
         if(IslandTouchGuard.isObscured(event))true else super.dispatchTouchEvent(event)
 
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
+        takeoverWanted=savedInstanceState==null&&intent.getBooleanExtra(EXTRA_TAKEOVER,false)
         IslandRuntime.restore(applicationContext)
         CoworkControllerService.ensureRunning(applicationContext)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
@@ -62,11 +69,20 @@ class CoworkActivity : ComponentActivity() {
             var confirm by remember { mutableStateOf<ControlConfirmation?>(null) }
             var appFilter by remember { mutableStateOf("") }
             val hasWorkspace=status.optInt("displayId")>0&&status.optBoolean("workspaceActive")
+            // The standing display: the person may take it at any time, with or without a turn on it.
+            val standing=status.optInt("displayId")>0
+            val canTakeOver=standing&&status.optString("state") !in setOf("stopping","pausing")
             val notificationPermission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){granted->
                 if(!granted)error="通知权限未开启，通知降级入口可能不可见"
             }
             fun perform(action:suspend ()->Unit){scope.launch{busy=true;try{action();error=""}catch(e:CancellationException){throw e}catch(e:Exception){error=e.message?:"操作未完成"}finally{busy=false}}}
             fun confirmation(action:String,approvalId:String?=null,details:String="") = ControlConfirmation(action,CoworkControlTarget.from(status),approvalId,details)
+            LaunchedEffect(takeoverWanted,canTakeOver,status.optString("instanceId")){
+                if(takeoverWanted&&canTakeOver&&status.optString("instanceId").isNotBlank()&&connection==CoworkLinkState.CONNECTED){
+                    takeoverWanted=false
+                    if(!status.optBoolean("userControl"))perform{CoworkConnection.takeover(true)}
+                }
+            }
             Surface(Modifier.fillMaxSize()) {
                 Column(Modifier.systemBarsPadding().verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
                     TextButton(onClick={finish()}){Text("返回工作台")}
@@ -100,8 +116,10 @@ class CoworkActivity : ComponentActivity() {
                         if(!status.optBoolean("taskManaged"))OutlinedButton(onClick={confirm=confirmation("resume")},enabled=!busy&&hasWorkspace&&status.optString("state")=="paused"&&!status.optBoolean("restartRequired")){Text("恢复")}
                         Button(onClick={confirm=confirmation("stop")},enabled=!busy&&(hasWorkspace||status.optString("state") in setOf("running","waiting_user","pausing","stopping"))){Text("停止")}
                     }
-                    if(hasWorkspace){
+                    if(standing){
                         val userControl=status.optBoolean("userControl")
+                        // Opening apps during a takeover needs the list (the AI desktop has no launcher).
+                        LaunchedEffect(userControl){if(userControl&&apps.isEmpty())runCatching{CoworkConnection.refreshApps()}}
                         val liveFrame by CoworkConnection.live.collectAsState()
                         DisposableEffect(Unit){CoworkConnection.acquireLive();onDispose{CoworkConnection.releaseLive()}}
                         var typed by remember { mutableStateOf("") }
@@ -119,7 +137,7 @@ class CoworkActivity : ComponentActivity() {
                             Text("副屏实时画面",style=MaterialTheme.typography.titleMedium)
                             if(userControl&&status.optString("interventionBy")=="model")Text("AI 请求你介入${status.optString("interventionReason").let{if(it.isBlank())"" else "：$it"}}。请在下方画面直接操作，完成后点“交还给 AI”。",color=MaterialTheme.colorScheme.error)
                             else if(userControl)Text("你正在操作副屏，AI 已暂停操作；完成后点“交还给 AI”。")
-                            else Text("只读实时画面（硬件编码视频，最高跟随副屏 120 帧/秒，静止时不耗流量）。双击任务岛预览或点“接管操作”后才能触控，AI 会等待你交还。",style=MaterialTheme.typography.bodySmall)
+                            else Text("只读实时画面（硬件编码视频，最高跟随副屏 120 帧/秒，静止时不耗流量）。随时可以点任务岛预览或“接管操作”来触控；AI 有任务时会等你交还。",style=MaterialTheme.typography.bodySmall)
                             val videoInfo by LiveVideo.info.collectAsState()
                             val vw=(videoInfo?.width ?: 720).toFloat();val vh=(videoInfo?.height ?: 1608).toFloat()
                             Box(Modifier.fillMaxWidth(0.8f).aspectRatio(vw/vh)) {
@@ -140,7 +158,7 @@ class CoworkActivity : ComponentActivity() {
                                 })
                             }
                             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                                if(!userControl)Button(onClick={perform{CoworkConnection.takeover(true)}},enabled=!busy&&status.optString("state")=="running"){Text("接管操作")}
+                                if(!userControl)Button(onClick={perform{CoworkConnection.takeover(true)}},enabled=!busy&&canTakeOver){Text("接管操作")}
                                 else Button(onClick={perform{CoworkConnection.takeover(false)}},enabled=!busy){Text("交还给 AI")}
                             }
                             if(userControl){
@@ -182,10 +200,13 @@ class CoworkActivity : ComponentActivity() {
                     OutlinedButton(onClick={perform{CoworkConnection.refreshApps()}},enabled=!busy&&status.has("revision")){Text("刷新应用列表")}
                     OutlinedTextField(appFilter,{appFilter=it},label={Text("搜索应用名称或包名")},singleLine=true,modifier=Modifier.fillMaxWidth())
                     val filtered=apps.filter{appFilter.isBlank()||it.label.contains(appFilter,true)||it.packageName.contains(appFilter,true)}
+                    val operating=status.optBoolean("userControl")
+                    if(operating)Text("你正在操作副屏：点“打开”在副屏上打开应用。",style=MaterialTheme.typography.bodySmall)
                     filtered.take(20).forEach { app ->
                         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                             Column(Modifier.weight(1f)){Text(app.label);Text(app.packageName,style=MaterialTheme.typography.bodySmall)}
-                            Text("工作资料",style=MaterialTheme.typography.labelMedium)
+                            if(operating)TextButton(onClick={CoworkConnection.sendLaunch(app.packageName)}){Text("打开")}
+                            else Text("工作资料",style=MaterialTheme.typography.labelMedium)
                         }
                     }
                     if(filtered.size>20)Text("还有 ${filtered.size-20} 个应用，请搜索缩小范围。",style=MaterialTheme.typography.bodySmall)

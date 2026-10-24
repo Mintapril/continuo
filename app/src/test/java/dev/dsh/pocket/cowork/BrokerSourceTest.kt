@@ -142,6 +142,33 @@ class BrokerSourceTest {
         assertTrue("the rest of it ends after the checks, right before the stroke", after > last && after < gesture.indexOf("workspace.stroke("))
     }
 
+    /** The person may take the AI screen at any time, also between turns, and keeps it until they hand back: a turn
+     *  that ends or is stopped meanwhile neither cancels their takeover nor parks the screen under them, and nothing
+     *  covers it with the AI desktop until they hand it back. Their own launches and HOME pass the cancelled scope of a
+     *  turn that ended, and the search for a field inside a focused container never runs on the live-view thread. */
+    @Test fun takeoverAtAnyTime() {
+        val broker = code("BrokerMain.java")
+        val start = body(broker, "private JSONObject takeoverControl(")
+        assertTrue("a takeover needs the standing display only", start.contains("if(workspace.displayId()<=0)ActionGate.fail(\"NO_DISPLAY\"") && !start.contains("gate.owner()==null||"))
+        assertTrue("an unowned display is woken for the person", start.contains("if(gate.owner()==null){awaitClosed();workspace.keepAwake();}"))
+        assertTrue("the person's use of the screen between turns is no task: the state stays", start.contains("event(\"intervention.start\",gate.owner()!=null&&state.equals(\"idle\")?\"running\":state)")
+            && body(broker, "private void endTakeover(").contains("event(\"intervention.end\",gate.owner()!=null&&state.equals(\"idle\")?\"running\":state)"))
+        assertTrue("a turn's end cancels only the model's request for help", body(broker, "private synchronized void closeWorkspace(").contains("if(takeover.startedBy(\"model\")&&takeover.finish(\"cancelled\"))"))
+        val clear = body(broker, "private synchronized void clearDisplay(")
+        assertTrue("no reset under the person's hands", clear.indexOf("if(takeover.active())return;") in 0 until clear.indexOf("closer.submit("))
+        assertTrue("nothing re-parks a display the person holds", body(broker, "private void tendParked(").contains("||takeover.active())return;"))
+        val park = body(broker, "private void parkAfterUser(")
+        assertTrue("the hand-back reset runs under the tool lock and only with no turn on the display", park.indexOf("synchronized(toolLock)") in 0 until park.indexOf("if(gate.owner()!=null||!workspaceExecutionId.isEmpty()||takeover.active())return;"))
+        assertTrue(body(broker, "private void endTakeover(").contains("if(gate.owner()==null)parkAfterUser();"))
+        assertTrue("the display stays awake while the person holds it", body(broker, "private void keepOwnedDisplayAwake(").contains("gate.owner()!=null||takeover.active()"))
+        assertTrue("the person's launch is the verified one, outside any turn's scope", body(broker, "private JSONObject userInput(").contains("workspace.launch(pkg,false)"))
+        val workspace = code("ProfileWorkspace.java")
+        assertTrue(body(workspace, "public synchronized void userKey(").contains("home(false)"))
+        val field = body(workspace, "public JSONObject userField(")
+        assertTrue("the poll returns the cached inner field", field.contains("searchInside(container[0]);") && field.contains("return innerField;"))
+        assertTrue("the search runs on its own thread", body(workspace, "private void searchInside(").contains("fieldSearch.execute("))
+    }
+
     /** The native tool sets and the plugin's tool tables must name the same agent tools. */
     /** phone.grant_permission and phone.uninstall_app act for the verified work profile only: the grant names the
      *  profile's UserHandle, the uninstall the profile's user id with flags 0 (never DELETE_ALL_USERS, so a copy of the

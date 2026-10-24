@@ -79,7 +79,8 @@ object CoworkConnection {
         liveUsers++
         if(liveJob?.isActive!=true)liveJob=scope.launch{
             while(isActive){
-                if(link.value==CoworkLinkState.CONNECTED&&mutable.value.optInt("displayId")>0&&mutable.value.optBoolean("workspaceActive")){
+                // The standing display: also between turns, when the person may take it at any time.
+                if(link.value==CoworkLinkState.CONNECTED&&mutable.value.optInt("displayId")>0){
                     try{stream()}catch(e:CancellationException){throw e}catch(_:Exception){}
                     liveBitmap.value=null
                 }
@@ -95,6 +96,8 @@ object CoworkConnection {
     fun sendTouch(action:String,x:Float,y:Float){inputChannel?.trySend(JSONObject().put("kind","touch").put("action",action).put("x",x.toDouble()).put("y",y.toDouble()).toString())}
     fun sendKey(key:String){inputChannel?.trySend(JSONObject().put("kind","key").put("key",key).toString())}
     fun sendText(text:String){inputChannel?.trySend(JSONObject().put("kind","text").put("text",text).toString())}
+    /** Opens a work-profile app on the owned display (the AI desktop has no launcher of its own). */
+    fun sendLaunch(packageName:String){inputChannel?.trySend(JSONObject().put("kind","launch").put("packageName",packageName).toString())}
     suspend fun takeover(start:Boolean){
         val instance=mutable.value.optString("instanceId");check(instance.isNotBlank()){"尚未连接控制服务"}
         apply(request("/v1/takeover",JSONObject().put("action",if(start)"start" else "end").put("instanceId",instance)))

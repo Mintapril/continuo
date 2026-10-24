@@ -8,9 +8,12 @@ import android.hardware.display.*;
 import android.media.*;
 import android.os.*;
 import android.view.*;
+import android.view.accessibility.AccessibilityNodeInfo;
 import org.json.*;
 import java.lang.reflect.*;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /** Profile-only pixel/input driver. No personal-user fallback, application allowlist, clipboard,
  * arbitrary keys or accessibility provider calls. Android profiles are not app-escape containment.
@@ -198,8 +201,8 @@ public final class ProfileWorkspace implements AutoCloseable {
     private final Set<String> cameForward=new HashSet<>();
     /** While parked and nobody owns the display: an app that came to the front on its own (a restored app moving on from
      *  its splash screen, a dialog of a parked app) is covered by the AI desktop again. An app in front on the owned
-     *  display counts as in use and stops posting notifications. The user cannot take over a parked display, so nothing
-     *  of theirs is covered. The caller holds the tool lock and has checked that nobody owns the display. */
+     *  display counts as in use and stops posting notifications. Not while the person holds the screen (the caller skips a
+     *  takeover), so nothing of theirs is covered. The caller holds the tool lock and has checked that nobody owns the display. */
     public synchronized void keepDesktopInFront(){
         if(!parked||!displayAlive())return;
         String top=targetPackage();
@@ -410,10 +413,13 @@ public final class ProfileWorkspace implements AutoCloseable {
     }
     /** An app that was uninstalled is no longer one this display launched. */
     public synchronized void forget(String pkg){launched.remove(pkg);}
-    public synchronized void launch(String pkg)throws Exception{
+    public synchronized void launch(String pkg)throws Exception{launch(pkg,true);}
+    /** {@code byModel} false: the person opens the app during a takeover, which no turn's cancellation scope governs
+     *  (the scope of a turn that ended or was stopped meanwhile stays cancelled until the next turn begins). */
+    public synchronized void launch(String pkg,boolean byModel)throws Exception{
         // check() has already moved a task of this app that leaked to the main screen onto the owned display; starting
         // the app below then brings that task to the front. Only a task that could not be moved is still refused.
-        parked=false;check(false,true);requirePackage(pkg);
+        parked=false;check(false,byModel);requirePackage(pkg);
         for(ActivityManager.RunningTaskInfo t:tasks())if(t.getClass().getField("userId").getInt(t)==profile.userId()&&t.getClass().getField("displayId").getInt(t)!=displayId()&&((t.topActivity!=null&&pkg.equals(t.topActivity.getPackageName()))||(t.baseActivity!=null&&pkg.equals(t.baseActivity.getPackageName()))))ActionGate.fail("APP_CONFLICT","This work-profile app is on another display and could not be moved to the owned display");
         // No MULTIPLE_TASK: switching back to an app that the AI desktop pushed to the background must reuse its task.
         Intent intent=new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(profile.launcher(pkg)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
@@ -431,7 +437,7 @@ public final class ProfileWorkspace implements AutoCloseable {
         // A first start can take many seconds (cold start, installer or first-run screens, ads). Wait longer, then
         // report a distinct retryable code: the display and the started activity stay, the model can wait and observe.
         long until=SystemClock.elapsedRealtime()+8000;
-        do{try{check(false,true);String top=targetPackage();if(pkg.equals(top)||(!top.isEmpty()&&SYSTEM_DIALOG_HOSTS.contains(top))){guard();return;}}catch(ActionGate.Denied notReady){if(!Set.of("APP_DENIED","APP_UNKNOWN","SECURITY_UNAVAILABLE").contains(notReady.code))throw notReady;}SystemClock.sleep(50);}while(SystemClock.elapsedRealtime()<until);
+        do{try{check(false,byModel);String top=targetPackage();if(pkg.equals(top)||(!top.isEmpty()&&SYSTEM_DIALOG_HOSTS.contains(top))){if(byModel)guard();else guardUser();return;}}catch(ActionGate.Denied notReady){if(!Set.of("APP_DENIED","APP_UNKNOWN","SECURITY_UNAVAILABLE").contains(notReady.code))throw notReady;}SystemClock.sleep(50);}while(SystemClock.elapsedRealtime()<until);
         // Do NOT hide the entry here: disabling a live launcher activity force-finishes the app that is still starting.
         ActionGate.fail("LAUNCH_TIMEOUT","The app is starting but has not reached the owned display yet; call phone_wait and then phone_ui_tree");
     }
@@ -439,14 +445,16 @@ public final class ProfileWorkspace implements AutoCloseable {
     /** Profile-owned desktop that stands in for the system home screen on the owned display. */
     public static final String DESKTOP="dev.dsh.pocket.isolation";
     /** Virtual HOME: the running app keeps running in the background and the profile desktop takes the display. */
-    public synchronized void home()throws Exception{
-        parked=false;check(false,true);
+    public synchronized void home()throws Exception{home(true);}
+    /** {@code byModel} false: the person's HOME during a takeover (see {@link #launch(String,boolean)}). */
+    public synchronized void home(boolean byModel)throws Exception{
+        parked=false;check(false,byModel);
         String behind=recents();
         launched.add(DESKTOP);
         int started=startDesktop(behind);
         if(started<0)ActionGate.fail("APP_LAUNCH_DENIED","Profile launch rejected");
         long until=SystemClock.elapsedRealtime()+4000;
-        do{try{check(false,true);if(DESKTOP.equals(targetPackage())){guard();return;}}catch(ActionGate.Denied notReady){if(!Set.of("APP_DENIED","APP_UNKNOWN","SECURITY_UNAVAILABLE").contains(notReady.code))throw notReady;}SystemClock.sleep(50);}while(SystemClock.elapsedRealtime()<until);
+        do{try{check(false,byModel);if(DESKTOP.equals(targetPackage())){if(byModel)guard();else guardUser();return;}}catch(ActionGate.Denied notReady){if(!Set.of("APP_DENIED","APP_UNKNOWN","SECURITY_UNAVAILABLE").contains(notReady.code))throw notReady;}SystemClock.sleep(50);}while(SystemClock.elapsedRealtime()<until);
         ActionGate.fail("LAUNCH_TIMEOUT","The AI desktop has not reached the owned display yet; call phone_wait and then phone_ui_tree");
     }
     /** Starts the profile desktop on the owned display (HOME, and parking at phone_stop). The desktop lists what keeps
@@ -820,7 +828,7 @@ public final class ProfileWorkspace implements AutoCloseable {
         int id=displayId(),user=profile.userId();
         int type;
         switch(action){case "down":type=MotionEvent.ACTION_DOWN;break;case "move":type=MotionEvent.ACTION_MOVE;break;case "up":type=MotionEvent.ACTION_UP;break;case "cancel":type=MotionEvent.ACTION_CANCEL;break;default:ActionGate.fail("ARGUMENTS_INVALID","Unknown touch action");return;}
-        long now=SystemClock.uptimeMillis();
+        long now=SystemClock.uptimeMillis();userTouched=now;
         if(type==MotionEvent.ACTION_DOWN){
             if(userUid>=0){try{ProfileInput.userMotion(id,user,userUid,userDown,now,MotionEvent.ACTION_CANCEL,userX,userY);}catch(Exception ignored){}userUid=-1;}
             guardUser();userUid=targetWait().uid();userDown=now;userX=x;userY=y;userChecked=now;
@@ -840,7 +848,7 @@ public final class ProfileWorkspace implements AutoCloseable {
     public synchronized void userKey(String key)throws Exception{
         // HOME is not a key event on a virtual display (it would address the main screen): the human HOME opens the same
         // profile desktop that the AI HOME key opens.
-        if(key.equals("HOME")){home();return;}
+        if(key.equals("HOME")){home(false);return;}
         int code=key.equals("BACK")?KeyEvent.KEYCODE_BACK:key.equals("ENTER")?KeyEvent.KEYCODE_ENTER:key.equals("DEL")?KeyEvent.KEYCODE_DEL:-1;
         if(code<0)ActionGate.fail("KEY_DENIED","Only BACK, ENTER, DEL and HOME are permitted");
         guardUser();ProfileInput.userKey(displayId(),profile.userId(),targetWait().uid(),code);
@@ -864,7 +872,34 @@ public final class ProfileWorkspace implements AutoCloseable {
      *  live-view thread polls it while the human types, and it must not wait behind their injected input. */
     public JSONObject userField(){
         int id=displayId();if(id<=0)return null;
-        try{return tree.focusedField(id);}catch(Exception unreadable){return null;}
+        try{
+            AccessibilityNodeInfo[] container=new AccessibilityNodeInfo[1];
+            JSONObject field=tree.focusedField(id,container);
+            if(field!=null||container[0]==null){innerField=null;innerContainer=null;return field;}
+            searchInside(container[0]);
+            return innerField;
+        }catch(Exception unreadable){return null;}
+    }
+    // The input focus on a container (a web page, a code entry drawn as boxes): the field inside it is searched on its own
+    // thread, since that reads many nodes and the live view must not stall; the poll returns the last result meanwhile.
+    // A search runs when the focus moved to another container, and while the person's last touch is recent (a tap moves
+    // the focus, sometimes a moment later), at most every FIELD_SEARCH_MS; an untouched page costs nothing.
+    private static final long FIELD_SEARCH_MS=400,FIELD_TOUCH_WINDOW_MS=2000;
+    private final ExecutorService fieldSearch=Executors.newSingleThreadExecutor(r->{Thread t=new Thread(r,"cowork-field");t.setDaemon(true);return t;});
+    private final java.util.concurrent.atomic.AtomicBoolean fieldSearching=new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile JSONObject innerField;
+    private volatile AccessibilityNodeInfo innerContainer;
+    private volatile long innerSearched,userTouched;
+    private void searchInside(AccessibilityNodeInfo container){
+        long now=SystemClock.uptimeMillis();
+        boolean moved=!container.equals(innerContainer),touched=now-userTouched<FIELD_TOUCH_WINDOW_MS;
+        if(!moved&&(!touched||now-innerSearched<FIELD_SEARCH_MS))return;
+        if(!fieldSearching.compareAndSet(false,true))return;
+        float x=userX,y=userY;innerContainer=container;innerSearched=now;
+        try{fieldSearch.execute(()->{
+            try{innerField=ProfileStructure.focusedWithin(container,x,y);}catch(Throwable unreadable){innerField=null;}
+            finally{fieldSearching.set(false);}
+        });}catch(RuntimeException rejected){fieldSearching.set(false);}
     }
     /** Release any half-finished human gesture (takeover hand-back, expiry, stop). */
     public synchronized void userRelease(){

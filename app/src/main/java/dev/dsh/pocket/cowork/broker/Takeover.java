@@ -34,6 +34,8 @@ public final class Takeover {
         outcome = result; return true;
     }
     public synchronized boolean expired(long now) { return active() && now - started > MAX_MS; }
+    /** Whether the active takeover was started by this initiator ("model" asked for help, "user" took the screen). */
+    public synchronized boolean startedBy(String initiator) { return active() && by.equals(initiator); }
     public synchronized String id() { return id; }
     /** Result of the internal phone.intervention_status tool. */
     public synchronized JSONObject status() throws JSONException {

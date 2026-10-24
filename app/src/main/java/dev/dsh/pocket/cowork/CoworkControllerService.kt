@@ -152,8 +152,11 @@ class CoworkControllerService : Service() {
     }
     private fun notification(label:String):Notification {
         val open=PendingIntent.getActivity(this,73,Intent(this,CoworkActivity::class.java),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        // Take the AI screen at any time, with or without a turn on it.
+        val operate=PendingIntent.getActivity(this,76,Intent(this,CoworkActivity::class.java).putExtra(CoworkActivity.EXTRA_TAKEOVER,true),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         return Notification.Builder(this,CHANNEL).setSmallIcon(R.drawable.island_notification)
             .setContentTitle("Cowork 后台控制").setContentText(label).setContentIntent(open)
+            .addAction(Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(this,R.drawable.island_notification),"操作副屏",operate).build())
             .setCategory(Notification.CATEGORY_SERVICE).setOngoing(true).setOnlyAlertOnce(true)
             .setVisibility(Notification.VISIBILITY_PRIVATE).build()
     }

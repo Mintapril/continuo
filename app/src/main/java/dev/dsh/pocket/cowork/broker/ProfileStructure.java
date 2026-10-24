@@ -274,8 +274,10 @@ final class ProfileStructure implements AutoCloseable {
         ActionGate.fail("TEXT_UNSUPPORTED","No focused editable field accepts this text");
     }
     /** User-takeover helper: the input-focused editable field of a work-profile window on the owned display, as metadata
-     *  only (password flag, input type, bounds), never its text. Null when no such field has input focus. */
-    synchronized JSONObject focusedField(int displayId)throws Exception{
+     *  only (password flag, input type, bounds), never its text. Null when no such field has input focus. When the input
+     *  focus sits on something that is not editable itself, a container such as a web page (a WebView reports input
+     *  focus on itself) or a code entry drawn as boxes, {@code container[0]} receives it for {@link #focusedWithin}. */
+    synchronized JSONObject focusedField(int displayId,AccessibilityNodeInfo[] container)throws Exception{
         for(AccessibilityWindowInfo w:windows(displayId)){
             int type=w.getType();
             if(type!=AccessibilityWindowInfo.TYPE_APPLICATION&&type!=AccessibilityWindowInfo.TYPE_SYSTEM)continue;
@@ -283,10 +285,35 @@ final class ProfileStructure implements AutoCloseable {
             if(root==null||root.getPackageName()==null)continue;
             try{profile.app(root.getPackageName().toString());}catch(Exception foreign){continue;}
             AccessibilityNodeInfo focus=root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-            if(focus==null||!focus.isEditable())continue;
-            Rect b=new Rect();focus.getBoundsInScreen(b);
-            return new JSONObject().put("editable",true).put("password",focus.isPassword()).put("inputType",focus.getInputType()).put("multiLine",focus.isMultiLine())
-                .put("bounds",new JSONArray().put(b.left).put(b.top).put(b.right).put(b.bottom));
+            if(focus==null)continue;
+            if(!focus.isEditable()){if(container[0]==null)container[0]=focus;continue;}
+            return fieldOf(focus);
+        }
+        return null;
+    }
+    /** Metadata of an editable node: password flag, input type, lines and bounds; never its text. */
+    private static JSONObject fieldOf(AccessibilityNodeInfo field)throws JSONException{
+        Rect b=new Rect();field.getBoundsInScreen(b);
+        return new JSONObject().put("editable",true).put("password",field.isPassword()).put("inputType",field.getInputType()).put("multiLine",field.isMultiLine())
+            .put("bounds",new JSONArray().put(b.left).put(b.top).put(b.right).put(b.bottom));
+    }
+    /** Nodes one search inside a focused container may read (each child is a call into the app). */
+    static final int FIELD_SEARCH_NODES=150;
+    /** The focused editable node inside {@code container}, as {@link #fieldOf} metadata, or null. Children under the
+     *  person's last touch ({@code x}, {@code y}) are read first, so the field they tapped on a wide page is reached along
+     *  one path; at most {@link #FIELD_SEARCH_NODES} nodes. Holds no lock: it reads no bound observation. */
+    static JSONObject focusedWithin(AccessibilityNodeInfo container,float x,float y)throws JSONException{
+        ArrayDeque<AccessibilityNodeInfo> queue=new ArrayDeque<>();queue.add(container);
+        Rect b=new Rect();int read=0;
+        while(!queue.isEmpty()&&read<FIELD_SEARCH_NODES){
+            AccessibilityNodeInfo node=queue.poll();
+            for(int i=0;i<node.getChildCount()&&read<FIELD_SEARCH_NODES;i++){
+                AccessibilityNodeInfo child=node.getChild(i);read++;
+                if(child==null)continue;
+                if(child.isEditable()&&child.isFocused())return fieldOf(child);
+                child.getBoundsInScreen(b);
+                if(b.contains((int)x,(int)y))queue.addFirst(child);else queue.addLast(child);
+            }
         }
         return null;
     }

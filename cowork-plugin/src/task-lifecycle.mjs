@@ -4,11 +4,11 @@ import { sharedScreenBoard } from './screen-board.mjs';
 const MAX_BYTES = 16 * 1024, TIMEOUT_MS = 6000, RETRY_MS = 300, POLL_MS = 500, OFFLINE_WAIT_MS = 25000, OFFLINE_POLL_MS = 1500;
 // One AI screen: a turn that finds another session's turn on it waits in line instead of failing. Lower goes first;
 // equal priorities keep their arrival order. A turn of the owner (a message they sent) beats a notification trigger,
-// which beats a due automation task or note.
+// which beats a due note.
 export const PRIORITY = Object.freeze({ owner: 0, notification: 1, scheduled: 2 });
 export const SCREEN_WAIT_MS = 30 * 60_000;
 // An unattended turn that has held the screen this long while others wait is asked to wrap up (onYield 'queue'): soon
-// for a notification trigger, later for a due task or note. Both stay well inside SCREEN_WAIT_MS. An owner waiting asks
+// for a notification trigger, later for a due note. Both stay well inside SCREEN_WAIT_MS. An owner waiting asks
 // at once (onYield 'owner'); a turn of the owner is never asked.
 export const NUDGE_AFTER_MS = Object.freeze({ notification: 5 * 60_000, scheduled: 15 * 60_000 });
 function delay(ms, signal) {

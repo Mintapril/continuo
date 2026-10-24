@@ -253,7 +253,7 @@ test('host automation tools (dsh-schedule) are admitted for the top-level Cowork
   // A turn only a due reminder started: list and leave itself notes, never anything else.
   ran.length=0;turn(2,'schedule','time-context');
   {const r=await execute('schedule_create');assert.equal(r.isError,true);assert.match(JSON.stringify(r),/can only leave itself a note/);}
-  for(const n of ['schedule_update','schedule_delete']){const r=await execute(n);assert.equal(r.isError,true,n);assert.match(JSON.stringify(r),/cannot change or delete automation tasks/);}
+  for(const n of ['schedule_update','schedule_delete']){const r=await execute(n);assert.equal(r.isError,true,n);assert.match(JSON.stringify(r),/cannot change or delete notes/);}
   {const r=await execute('schedule_list');assert.equal(r.isError,false,'schedule_list: '+JSON.stringify(r.error));}
   assert.deepEqual(ran,['schedule_list']);
   // A note: title 便条：, prompt [便条]…, after_seconds alone within 10 minutes..7 days. Anything else is refused.
@@ -373,7 +373,10 @@ test('a due note reaches the model, and the session log, as its own note; a turn
     assert.doesNotMatch(own.content[0].text,/from the user|\[便条\]/);
     assert.ok(Object.isFrozen(own)&&Object.isFrozen(own.content)&&Object.isFrozen(own.content[0]));
     assert.match(note.content[0].text,/from the user/,'the delivered message object itself is untouched');}
-  {const decision=await step([task]);assert.equal(decision.messages[0],task,'a task of the owner stays theirs');}
+  {const decision=await step([task]);const [kept]=decision.messages;
+    assert.equal(kept.id,task.id);assert.deepEqual(kept.source,{kind:'schedule'});
+    assert.match(kept.content[0].text,/^\[SELF NOTE\]\nThis is a note you wrote in this conversation while the owner was talking with you/,'what the owner asked for is a note too, kept in their words');
+    assert.match(kept.content[0].text,/\nnote_json: "每天签到"$/);assert.doesNotMatch(kept.content[0].text,/from the user/);}
   const mine=llm.createUserMessage({content:[{type:'text',text:'帮我看看 QQ'}],source:{kind:'user'}});
   const hook=llm.createUserMessage({content:[{type:'text',text:'[NOTIFICATION TRIGGER]'}],source:{kind:'webhook',provider:'cowork-notify',source:'continuo',deliveryId:'d',ruleId:'cowork-notify'}});
   const other=llm.createUserMessage({content:[{type:'text',text:'x'}],source:{kind:'webhook',ruleId:'something-else'}});
@@ -388,7 +391,7 @@ test('a due note reaches the model, and the session log, as its own note; a turn
   agent.status='idle';api.yieldTo(agent);assert.equal(steered.length,1,'a turn already over gets nothing');
   // Other runs waiting a while (task-lifecycle's nudge) get their own wording.
   agent.status='running';api.yieldTo(agent,'queue');
-  assert.equal(steered.length,2);assert.match(steered[1].content[0].text,/^\[OTHERS WAITING\]\nOther runs \(a notification trigger or a due task\) have been waiting/);
+  assert.equal(steered.length,2);assert.match(steered[1].content[0].text,/^\[OTHERS WAITING\]\nOther runs \(a notification trigger or a due note\) have been waiting/);
   assert.equal(steered[1].source.summary,'有其他任务在等副屏：请尽快收尾');
   api.yieldTo(agent,'bogus');assert.equal(steered.length,2,'an unknown reason sends nothing');
   api.remove(agent);await child.dispose();await preset.dispose();

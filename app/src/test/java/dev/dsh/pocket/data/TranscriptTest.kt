@@ -6,14 +6,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TranscriptTest {
-    @Test fun dueAutomationTaskShowsItsPromptAndKeepsTheHostFramingAsDetail() {
+    @Test fun dueReminderShowsAsANoteAndKeepsTheHostFramingAsDetail() {
         val framing = "[SCHEDULE REMINDER]\nThis is a scheduled message from the user\nschedule_id_json: \"s1\"\noccurrence_at: 2026-10-21T01:00:00.000Z\nreminder_prompt_json: \"打开日历签到\""
         val reminder = event(0, "user/message", obj("role" to "user", "content" to array(text(framing)), "source" to obj("kind" to "schedule")))
         val transcript = Transcript()
         transcript.accept(snapshot(0, listOf(reminder)))
         val row = transcript.rows.single()
         assertEquals("user", row.role)
-        assertEquals("自动化任务", row.title)
+        assertEquals("便条", row.title)
         assertEquals("打开日历签到", row.text)
         assertTrue(row.detail.contains("[SCHEDULE REMINDER]"))
     }

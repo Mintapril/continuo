@@ -330,8 +330,8 @@ class Transcript {
                 val role = type.substringBefore('/')
                 val parts = content(message.requiredArray("content"))
                 val source = message.optJSONObject("source")
-                // A due automation task arrives as a user message framed by the host (a note of the model's own, reframed
-                // by the Cowork plugin); show what was scheduled.
+                // A due note arrives as a user message framed by the host and reframed by the Cowork plugin; show the
+                // notes and patrols it carries.
                 val delivery = if (role == "user" && source?.string("kind") == "schedule") ScheduleFormat.delivery(parts.text) else null
                 val title = when {
                     body.optBoolean("interrupted") -> "Assistant (interrupted)"

@@ -28,9 +28,10 @@ import org.json.JSONObject
 private enum class AutomationFilter(val label: String) { ALL("全部"), ACTIVE("已开启"), ENDED("未运行") }
 
 /**
- * DSH's own automation (dsh-schedule): the switch for the optional bundle, every stored task across sessions, and
- * per task its rule, next run, saved runs, edits and deletion. A new task is drafted as a request to the Cowork model,
- * because the host creates tasks only through the model's schedule_create.
+ * DSH's own scheduling (dsh-schedule), shown as notes (便条): there are no automation tasks, only notes the model
+ * keeps. The switch for the optional bundle, every stored note across sessions, and per note its rule, next delivery,
+ * saved deliveries, edits and deletion. A new note is drafted as a request to the Cowork model, because the host
+ * stores them only through the model's schedule_create.
  */
 @Composable internal fun AutomationScreen(vm: PocketViewModel, openDrawer: () -> Unit, draft: (text: String, sessionId: String?) -> Unit) {
     val center = vm.schedules
@@ -45,8 +46,8 @@ private enum class AutomationFilter(val label: String) { ALL("全部"), ACTIVE("
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             CircleButton(Glyph.Menu, "打开菜单", onClick = openDrawer)
-            Text("自动化任务", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
-            CircleButton(Glyph.Plus, "新建自动化任务", enabled = center.service == true, onClick = { creating = true })
+            Text("便条", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+            CircleButton(Glyph.Plus, "新建便条", enabled = center.service == true, onClick = { creating = true })
         }
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 16.dp)) {
             SectionLabel("功能")
@@ -54,15 +55,15 @@ private enum class AutomationFilter(val label: String) { ALL("全部"), ACTIVE("
                 when {
                     !vm.connected -> GroupRow("连接 DSH 后可用", icon = Glyph.Clock, chevron = false)
                     !center.bundleRead -> GroupRow("正在读取…", icon = Glyph.Clock, chevron = false, trailing = { Spinner() })
-                    center.bundle == null && center.bundleError.isBlank() -> GroupRow("本机 DSH 没有自动化任务组件", icon = Glyph.Clock, chevron = false,
+                    center.bundle == null && center.bundleError.isBlank() -> GroupRow("本机 DSH 没有便条组件", icon = Glyph.Clock, chevron = false,
                         subtitle = "插件列表里找不到包含 dsh-schedule 的组件。")
-                    center.builtIn -> GroupRow("自动化任务", icon = Glyph.Clock, chevron = false, value = "已内置",
-                        subtitle = "随 DSH 提供，始终可用：在会话中按时间或周期安排任务，到期后发回原会话执行")
-                    else -> GroupRow("启用自动化任务", icon = Glyph.Clock, chevron = false,
+                    center.builtIn -> GroupRow("便条", icon = Glyph.Clock, chevron = false, value = "已内置",
+                        subtitle = "随 DSH 提供，始终可用：在会话中按时间或周期留便条，到时发回原会话去做")
+                    else -> GroupRow("启用便条", icon = Glyph.Clock, chevron = false,
                         subtitle = when {
                             center.bundleError.isNotBlank() -> "插件列表读取失败：${center.bundleError}"
                             readOnly.isNotBlank() -> "此组件由 profile 配置管理，不能在这里开关"
-                            else -> "DSH 实验功能：在会话中按时间或周期安排任务，到期后发回原会话执行"
+                            else -> "DSH 实验功能：在会话中按时间或周期留便条，到时发回原会话去做"
                         },
                         trailing = {
                             if (center.busy) Spinner(size = 14.dp)
@@ -71,26 +72,26 @@ private enum class AutomationFilter(val label: String) { ALL("全部"), ACTIVE("
                         })
                 }
             }
-            Footnote(if (center.builtIn) "Cowork 和 Code 会话都能用 schedule_create 等 4 个工具创建一次性、间隔、每天、每周或 cron 任务；每次请求会多带这 4 个工具说明。"
-                else "开启后，Cowork 和 Code 会话都能用 schedule_create 等 4 个工具创建一次性、间隔、每天、每周或 cron 任务；每次请求会多带这 4 个工具说明和一条当前时间。关闭后已存的任务留在本机，但不再执行。")
+            Footnote(if (center.builtIn) "Cowork 和 Code 会话都能用 schedule_create 等 4 个工具留一次性、间隔、每天、每周或 cron 便条；每次请求会多带这 4 个工具说明。"
+                else "开启后，Cowork 和 Code 会话都能用 schedule_create 等 4 个工具留一次性、间隔、每天、每周或 cron 便条；每次请求会多带这 4 个工具说明和一条当前时间。关闭后已存的便条留在本机，但不再送达。")
             if (center.service == true) {
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AutomationFilter.entries.forEach { f -> Pill(f.label, selected = filter == f, trailing = null) { filter = f } }
                 }
                 val rows = center.tasks.filter { when (filter) { AutomationFilter.ALL -> true; AutomationFilter.ACTIVE -> it.text("status") == "active"; AutomationFilter.ENDED -> it.text("status") != "active" } }
                 if (rows.isEmpty()) InsetGroup {
-                    GroupRow(if (filter == AutomationFilter.ALL) "还没有自动化任务" else "没有${filter.label}的任务", icon = Glyph.Clock, chevron = false,
+                    GroupRow(if (filter == AutomationFilter.ALL) "还没有便条" else "没有${filter.label}的便条", icon = Glyph.Clock, chevron = false,
                         subtitle = if (filter == AutomationFilter.ALL) "点右上角 + 写下要做的事和时间，或直接在 Cowork 任务里说“每天 9 点帮我……”" else null)
                 }
                 rows.forEach { entry -> TaskCard(vm, entry) { detail = entry.text("id") } }
-                Footnote("任务由手机上的 DSH 执行：DSH 必须在运行。到期时若另一个 Cowork 任务正占用副屏，这一轮会排队，等它结束再开始（最多 30 分钟）；执行器未连接时这次运行会失败，DSH 不会自动重试，周期任务等下一次。" +
-                    "没人看着的运行只能给自己留便条（名称以“便条：”开头的一次性任务），不能修改或删除任务；便条可以在这里删除。")
+                Footnote("便条由手机上的 DSH 送达：DSH 必须在运行。到时若另一个 Cowork 任务正占用副屏，这一轮会排队，等它结束再开始（最多 30 分钟）；执行器未连接时这次会失败，DSH 不会自动重试，周期便条等下一次。" +
+                    "你让模型记下的便条，到时照你的话去做；名称以“便条：”开头的是模型自己留的，到时由它判断还要不要做。没人看着的运行只能自己留一次性便条，不能修改或删除便条；便条都可以在这里修改和删除。")
             } else if (center.error.isNotBlank()) {
-                InsetGroup { GroupRow("任务目录读取失败", icon = Glyph.Warning, chevron = false, subtitle = center.error, onClick = { vm.schedulesRefresh() }) }
+                InsetGroup { GroupRow("便条读取失败", icon = Glyph.Warning, chevron = false, subtitle = center.error, onClick = { vm.schedulesRefresh() }) }
             }
         }
     }
-    // A task that left the catalog (deleted here or elsewhere) closes its sheet.
+    // A note that left the catalog (deleted here or elsewhere) closes its sheet.
     val shown = detail?.let { id -> center.tasks.firstOrNull { it.text("id") == id } }
     LaunchedEffect(detail, shown == null) { if (detail != null && shown == null) detail = null }
     shown?.let { entry ->
@@ -101,7 +102,7 @@ private enum class AutomationFilter(val label: String) { ALL("全部"), ACTIVE("
     editing?.let { entry -> EditTaskSheet(vm, entry) { editing = null } }
     history?.let { entry -> HistorySheet(vm, entry) { history = null } }
     confirmDelete?.let { entry ->
-        ConfirmDialog("删除自动化任务", "「${entry.text("title")}」和它保存的运行记录会被永久删除，之后不再执行；原会话和已发出的消息保留。", "删除", destructive = true,
+        ConfirmDialog("删除便条", "「${entry.text("title")}」和它保存的送达记录会被永久删除，之后不再送达；原会话和已发出的消息保留。", "删除", destructive = true,
             dismiss = { confirmDelete = null }) { vm.scheduleDelete(entry); confirmDelete = null }
     }
     if (creating) {
@@ -127,7 +128,7 @@ private fun sessionName(vm: PocketViewModel, id: String) = vm.sessions.firstOrNu
                 Text(if (active) "已开启" else "未运行", style = MaterialTheme.typography.labelSmall, color = if (active) Pocket.success else Pocket.faint)
             }
             Text(ScheduleFormat.frequency(entry), style = MaterialTheme.typography.bodySmall, color = Pocket.muted)
-            Text(if (active) "下次 ${ScheduleFormat.localTime(entry.text("scheduledAt"))} · ${ScheduleFormat.relative(entry.text("scheduledAt"))}" else "不再执行",
+            Text(if (active) "下次 ${ScheduleFormat.localTime(entry.text("scheduledAt"))} · ${ScheduleFormat.relative(entry.text("scheduledAt"))}" else "不再送达",
                 style = MaterialTheme.typography.labelSmall, color = Pocket.faint)
             Text(sessionName(vm, entry.text("sessionId")), style = MaterialTheme.typography.labelSmall, color = Pocket.faint, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
@@ -146,20 +147,20 @@ private fun sessionName(vm: PocketViewModel, id: String) = vm.sessions.firstOrNu
     PocketSheet(dismiss) {
         SheetHeader(entry.text("title"), ScheduleFormat.frequency(entry))
         Column(Modifier.fillMaxWidth().heightIn(max = 460.dp).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
-            DetailLine("状态", if (active) "已开启" else "未运行（不再执行，可查看和删除）")
-            if (active) DetailLine("下次运行", "${ScheduleFormat.localTime(entry.text("scheduledAt"))}（${ScheduleFormat.relative(entry.text("scheduledAt"))}）")
+            DetailLine("状态", if (active) "已开启" else "未运行（不再送达，可查看和删除）")
+            if (active) DetailLine("下次送达", "${ScheduleFormat.localTime(entry.text("scheduledAt"))}（${ScheduleFormat.relative(entry.text("scheduledAt"))}）")
             entry.text("timeZone").takeIf { it.isNotBlank() }?.let { DetailLine("时区", it) }
             if (entry.text("kind") == "cron") DetailLine("表达式", entry.text("expression"))
             entry.optJSONObject("lastDelivery")?.let { DetailLine("上次发出", ScheduleFormat.localTime(it.text("deliveredAt"))) }
             DetailLine("会话", sessionName(vm, entry.text("sessionId")))
             Text("到时要做", Modifier.padding(top = 10.dp, bottom = 4.dp), style = MaterialTheme.typography.labelMedium, color = Pocket.muted)
             Text(entry.text("prompt"), style = MaterialTheme.typography.bodyMedium)
-            Text("“上次发出”只表示提醒已送进会话，不代表任务已完成；结果请在会话里查看。", Modifier.padding(top = 10.dp), style = MaterialTheme.typography.labelSmall, color = Pocket.faint)
+            Text("“上次发出”只表示便条已送进会话，不代表事情已做完；结果请在会话里查看。", Modifier.padding(top = 10.dp), style = MaterialTheme.typography.labelSmall, color = Pocket.faint)
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             TextButton(open) { Text("打开会话", color = Pocket.accent) }
             TextButton(edit, enabled = active) { Text("编辑", color = if (active) Pocket.accent else Pocket.faint) }
-            TextButton(runs) { Text("运行记录", color = Pocket.accent) }
+            TextButton(runs) { Text("送达记录", color = Pocket.accent) }
             Spacer(Modifier.weight(1f))
             TextButton(remove) { Text("删除", color = MaterialTheme.colorScheme.error) }
         }
@@ -205,7 +206,7 @@ private fun sessionName(vm: PocketViewModel, id: String) = vm.sessions.firstOrNu
     val timingChanged = timing != initial
     val valid = title.isNotBlank() && title.trim().length <= 120 && prompt.isNotBlank() && (!timingChanged || timing.problem() == null)
     PocketSheet(dismiss) {
-        SheetHeader("编辑自动化任务", "修改后立即生效，会话不受影响")
+        SheetHeader("编辑便条", "修改后立即生效，会话不受影响")
         Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
             OutlinedTextField(title, { title = it.take(120) }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("名称") }, shape = RoundedCornerShape(12.dp))
             Spacer(Modifier.height(8.dp))
@@ -237,14 +238,14 @@ private fun sessionName(vm: PocketViewModel, id: String) = vm.sessions.firstOrNu
             val result = vm.schedules.history(entry, before)
             records = (if (before == null) emptyList() else records) + result.objects("records")
             next = result.text("nextBefore").ifBlank { null }; page = result
-        } catch (e: CancellationException) { throw e } catch (e: Exception) { vm.showError(e.message ?: "运行记录读取失败") }
+        } catch (e: CancellationException) { throw e } catch (e: Exception) { vm.showError(e.message ?: "送达记录读取失败") }
         finally { loading = false }
     }
     LaunchedEffect(entry.text("id")) { load(null) }
     PocketSheet(dismiss) {
-        SheetHeader("运行记录", entry.text("title"))
+        SheetHeader("送达记录", entry.text("title"))
         Column(Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
-            if (records.isEmpty() && !loading) Text("还没有运行过。", style = MaterialTheme.typography.bodySmall, color = Pocket.muted)
+            if (records.isEmpty() && !loading) Text("还没有送达过。", style = MaterialTheme.typography.bodySmall, color = Pocket.muted)
             records.forEach { record ->
                 Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                     Text("${ScheduleFormat.localTime(record.text("scheduledAt"))} 到期 · ${ScheduleFormat.localTime(record.text("deliveredAt"))} 发出",
@@ -261,7 +262,7 @@ private fun sessionName(vm: PocketViewModel, id: String) = vm.sessions.firstOrNu
                     Text("更早的记录不可用${retention?.let { "（保留最近 ${it.optInt("days")} 天、最多 ${it.optInt("records")} 条）" }.orEmpty()}。",
                         Modifier.padding(top = 8.dp), style = MaterialTheme.typography.labelSmall, color = Pocket.faint)
             }
-            Text("记录只表示提醒已送进会话；执行结果在会话里。", Modifier.padding(vertical = 10.dp), style = MaterialTheme.typography.labelSmall, color = Pocket.faint)
+            Text("记录只表示便条已送进会话；做得怎样在会话里。", Modifier.padding(vertical = 10.dp), style = MaterialTheme.typography.labelSmall, color = Pocket.faint)
         }
     }
 }
@@ -273,7 +274,7 @@ private fun sessionName(vm: PocketViewModel, id: String) = vm.sessions.firstOrNu
     var target by remember { mutableStateOf<String?>(null) }
     val valid = title.isNotBlank() && task.isNotBlank() && timing.problem() == null
     PocketSheet(dismiss) {
-        SheetHeader("新建自动化任务", "生成一条 Cowork 请求，由模型创建任务")
+        SheetHeader("新建便条", "生成一条 Cowork 请求，由模型记下这张便条")
         Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
             Text("在哪里运行", Modifier.padding(bottom = 6.dp), style = MaterialTheme.typography.labelMedium, color = Pocket.muted)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -297,11 +298,11 @@ private fun sessionName(vm: PocketViewModel, id: String) = vm.sessions.firstOrNu
             OutlinedTextField(task, { task = it }, Modifier.fillMaxWidth().heightIn(min = 110.dp, max = 240.dp), label = { Text("到时要做什么") }, shape = RoundedCornerShape(12.dp))
             Text("时间", Modifier.padding(top = 12.dp, bottom = 6.dp), style = MaterialTheme.typography.labelMedium, color = Pocket.muted)
             TimingEditor(timing) { timing = it }
-            Text(if (target == null) "点“写入新任务”后会回到首页，请求已填进 Cowork 输入框；检查后由你发送。"
-                else "点“写入新任务”后会打开所选会话（巡视会话第一次用时会自动建好），请求已填进输入框；检查后由你发送。", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.labelSmall, color = Pocket.faint)
+            Text(if (target == null) "点“写入请求”后会回到首页，请求已填进 Cowork 输入框；检查后由你发送。"
+                else "点“写入请求”后会打开所选会话（巡视会话第一次用时会自动建好），请求已填进输入框；检查后由你发送。", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.labelSmall, color = Pocket.faint)
             Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
                 TextButton(dismiss) { Text("取消", color = Pocket.muted) }
-                TextButton({ draft(ScheduleFormat.request(title, task, timing), target) }, enabled = valid) { Text("写入新任务", color = if (valid) Pocket.accent else Pocket.faint) }
+                TextButton({ draft(ScheduleFormat.request(title, task, timing), target) }, enabled = valid) { Text("写入请求", color = if (valid) Pocket.accent else Pocket.faint) }
             }
         }
         Spacer(Modifier.height(12.dp))

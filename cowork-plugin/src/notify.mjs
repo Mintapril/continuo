@@ -12,10 +12,10 @@ import { sharedScreenBoard } from './screen-board.mjs';
 // (one the owner archived is unarchived before its next turn), so
 // the model keeps what it already did in that app. A batch for an app whose session has a turn open goes straight
 // into that turn; any other waits until no Cowork turn holds the AI screen and then starts a new turn there, the app
-// that waited longest first. A turn queued for the screen in task-lifecycle (a due task, a note) holds nothing yet:
+// that waited longest first. A turn queued for the screen in task-lifecycle (a due note) holds nothing yet:
 // the batch goes ahead and its turn takes the higher place in that line. The notification text reaches the model JSON-encoded and labelled as other people's
 // words (data, never instructions); it is never logged or stored here. The messages carry source kind webhook (the
-// same shape dsh-webhook gives), so restricted.mjs treats the turn as unattended: no automation-task writes, no
+// same shape dsh-webhook gives), so restricted.mjs treats the turn as unattended: no note writes but its own notes, no
 // screen takeover; what needs the owner becomes one phone_notify_owner, then the task ends.
 
 export const name = 'cowork-notify';

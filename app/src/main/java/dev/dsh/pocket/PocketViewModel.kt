@@ -189,16 +189,16 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     fun memoryReclaimNow() = task { memoryReclaim = memory.reclaim(dryRun = false); memory.refresh() }
     fun clearMemorySheets() { memoryInjection = null; memoryReclaim = null }
 
-    // ── DSH 自动化任务（dsh-schedule）──────────────────────────────────────
-    // The host owns the tasks and delivers each due one back into its session; the app switches the bundle on/off,
+    // ── 便条（DSH 的 dsh-schedule）──────────────────────────────────────
+    // The host keeps the notes and delivers each due one back into its session; the app switches the bundle on/off,
     // lists, edits and deletes. Creating stays with the model (no remote create), so "new" drafts a Cowork request.
     val schedules = ScheduleCenter(api)
     fun schedulesRefresh() = task { schedules.refresh() }
     fun schedulesEnable(on: Boolean) = task { notice = schedules.setEnabled(on) }
     fun scheduleUpdate(entry: JSONObject, title: String?, prompt: String?, change: JSONObject?, saved: () -> Unit) =
         task { schedules.update(entry, title, prompt, change); notice = "已保存"; saved() }
-    fun scheduleDelete(entry: JSONObject) = task { schedules.delete(entry); notice = "任务已删除" }
-    /** A drafted request to create an automation task: in a new Cowork chat, or in an existing session ([sessionId]),
+    fun scheduleDelete(entry: JSONObject) = task { schedules.delete(entry); notice = "便条已删除" }
+    /** A drafted request to keep a note: in a new Cowork chat, or in an existing session ([sessionId]),
      *  such as an app's standing session for a patrol of that app. The patrol session ([ScheduleFormat.PATROL_SESSION])
      *  is created on first use under its fixed id, and brought back if it was archived. The owner checks and sends it. */
     fun draftAutomation(text: String, sessionId: String? = null) {

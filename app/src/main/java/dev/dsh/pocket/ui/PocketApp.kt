@@ -123,7 +123,7 @@ private val SETTINGS_PAGES = setOf(Screen.CONNECTION, Screen.COWORK, Screen.NOTI
             DrawerItem("Cowork", Glyph.Cowork, selected = screen == Screen.TASKS && vm.mode == TaskMode.COWORK && vm.selected == null,
                 badge = if (!vm.modeAvailable(TaskMode.COWORK)) "未配置" else null) { tasks(TaskMode.COWORK) }
             DrawerItem("Code", Glyph.Code, selected = screen == Screen.TASKS && vm.mode == TaskMode.CODE && vm.selected == null) { tasks(TaskMode.CODE) }
-            DrawerItem("自动化", Glyph.Clock, selected = screen == Screen.AUTOMATION && vm.selected == null,
+            DrawerItem("便条", Glyph.Clock, selected = screen == Screen.AUTOMATION && vm.selected == null,
                 badge = when (vm.schedules.enabled) { true -> vm.schedules.tasks.count { it.text("status") == "active" }.takeIf { it > 0 }?.toString(); false -> "未启用"; null -> null }) { automation() }
             Text("最近", Modifier.padding(start = 28.dp, top = 18.dp, bottom = 6.dp), style = MaterialTheme.typography.labelMedium, color = Pocket.muted)
             LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)) {

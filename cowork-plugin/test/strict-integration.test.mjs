@@ -73,7 +73,7 @@ test('bundle is additive and packages only tested active implementation',async()
   const pkg=JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8'));
   const patch=await fs.readFile(new URL('../cordis.patch.yml',import.meta.url),'utf8');
   assert.equal(pkg.exports['.'],'./src/restricted.mjs');
-  assert.deepEqual(pkg.files.filter(p=>p.startsWith('src/')).sort(),['src/restricted.mjs','src/validation.mjs','src/broker.mjs','src/auth.mjs','src/task-lifecycle.mjs','src/bounded-files.mjs','src/web.mjs','src/gesture-path.mjs','src/notify.mjs','src/screen-board.mjs','src/unattended-store.mjs','src/unattended.mjs','src/jev-board.mjs','src/jev-focus-store.mjs','src/jev-focus.mjs'].sort());
+  assert.deepEqual(pkg.files.filter(p=>p.startsWith('src/')).sort(),['src/restricted.mjs','src/validation.mjs','src/broker.mjs','src/auth.mjs','src/task-lifecycle.mjs','src/bounded-files.mjs','src/web.mjs','src/gesture-path.mjs','src/notify.mjs','src/screen-board.mjs','src/unattended-store.mjs','src/unattended.mjs','src/jev-board.mjs','src/jev-focus-store.mjs','src/jev-focus.mjs','src/tool-groups.mjs','src/notes-view.mjs'].sort());
   // Every module a packaged one imports is packaged too (a missing file only shows up when DSH loads the bundle).
   for(const file of pkg.files.filter(p=>p.endsWith('.mjs'))){
     const text=await fs.readFile(new URL(`../${file}`,import.meta.url),'utf8');
@@ -491,15 +491,16 @@ test('Continuo reaches the unattended-model setting through the real Typert gate
 });
 // Jev as the model's reflex: one tool sets the focus of an app; a run nobody watches only for the app it works in, every
 // few hours; a due patrol brings what Jev held back. Real DSH tool registry, stub lifecycle and bridge.
-async function jevHarness(sessionId){
+async function jevHarness(sessionId,{schedule}={}){
   const ctx=new Context();
+  if(schedule)ctx.provide('schedule',schedule);
   ctx.provide('systemPrompt',{tools:()=>{},section:()=>{},getSectionOrder:()=>0});
   ctx.provide('attachments',{saveImage:async()=>({})});
   ctx.provide('web',{search:async()=>({content:'fact',sources:[]})});
   ctx.provide('llm',{stream:()=>{throw Error('No model calls during tests');}});
   const liveAgents=new Map();ctx.provide('agents',{get:id=>liveAgents.get(id),roots:()=>[...liveAgents.values()]});
   const runtimeFiber=ctx.plugin(ToolRuntime,{mode:'native'});if(runtimeFiber.inertia)await runtimeFiber.inertia;
-  let owner;const ownerFiber=ctx.inject(['tools','systemPrompt','attachments','web','llm','agents'],c=>{owner=c;});if(ownerFiber.inertia)await ownerFiber.inertia;
+  let owner;const ownerFiber=ctx.inject(['tools','systemPrompt','attachments','web','llm','agents',...(schedule?['schedule']:[])],c=>{owner=c;});if(ownerFiber.inertia)await ownerFiber.inertia;
   const key={},preset=scope.createScope(owner,key),agent={id:sessionId,session:{id:sessionId,snapshotEvents:()=>[],requestHeader:()=>undefined}};
   const child=scope.createScope(owner,agent,{parent:key});agent.ctx=child.ctx;
   const lifecycle={runTool:(a,exec,body)=>body(exec),preStep:async()=>{},observe(){},remove(){},dispose(){},flush:async()=>{}};
@@ -513,7 +514,13 @@ async function jevHarness(sessionId){
   ctx.emit('session/event',agent.session,{type:'agent-preset/selected',data:{agentPreset:'cowork-phone'}});
   const signal=new AbortController().signal;let serial=0;
   h.ctx=ctx;h.agent=agent;h.focusFile=focusFile;
-  h.execute=args=>{const callId='j'+serial++;ctx.emit('session/event',agent.session,{type:'tool/call',data:{turn:1,callId,name:'cowork_jev_focus',arguments:args}});return ctx.tools.execute({name:'cowork_jev_focus',arguments:args,agent,signal,callId});};
+  h.call=(name,args={})=>{const callId='j'+serial++;ctx.emit('session/event',agent.session,{type:'tool/call',data:{turn:1,callId,name,arguments:args}});return ctx.tools.execute({name,arguments:args,agent,signal,callId});};
+  h.execute=args=>h.call('cowork_jev_focus',args);
+  // The tool list of the next request, as DSH's system prompt assembles it from the registry for this agent.
+  h.listed=async(target=agent)=>{
+    const base={sections:[],contexts:[],tools:ctx.tools.schemas(target),variables:{}};
+    return (await ctx.waterfall(scope.scopeTarget({},target),'system-prompt/assemble',base,{agent:target,scope:target},()=>Promise.resolve(base))).tools.map(t=>t.name);
+  };
   h.turn=(n,...kinds)=>{ctx.emit('session/event',agent.session,{type:'turn/start',data:{turn:n}});for(const kind of kinds)ctx.emit('session/event',agent.session,{type:'user/message',data:{source:{kind}}});};
   h.step=(turn,messages)=>agentEvents(ctx,agent).waterfall('agent/pre-step',{turn,step:1,signal,messages},async()=>({kind:'enter',messages}));
   h.reminder=prompt=>llm.createUserMessage({content:[{type:'text',text:['[SCHEDULE REMINDER BATCH]','This is a scheduled message from the user',`reminders_json: ${JSON.stringify([{schedule_id:'p1',occurrence_at:'2026-10-24T01:00:00.000Z',reminder_prompt:prompt}])}`].join('\n')}],source:{kind:'schedule'}});
@@ -577,4 +584,60 @@ test('a due patrol brings what Jev held back since the model last looked: the wo
   assert.deepEqual(JSON.parse(mine.messages[0].content[0].text.split('\n\n')[1].split('\n')[2].slice('jev_held_untrusted_json: '.length)).map(x=>x.app),['QQ'],'that app only');
   assert.equal(own.board.size(),1);
   await own.done();
+});
+// The tool list of a request: everyday tools from the start, a group once loaded (cowork_tools, a message that calls for
+// it, or calling one of its tools by name), and it never shrinks. Real DSH registry and assembly waterfall.
+test('the tool list: everyday tools first, a group once loaded, never shrinking',async()=>{
+  const h=await jevHarness('cowork-app-work-com-tencent-mobileqq');
+  const { TOOL_GROUPS, HIDDEN_TOOLS }=await import('../src/tool-groups.mjs');
+  const registered=h.ctx.tools.schemas(h.agent).map(t=>t.name);
+  const first=await h.listed();
+  for(const name of ['phone_ui_tree','phone_tap','phone_type_text','phone_launch_app','phone_notify_owner','phone_request_intervention','cowork_tools'])assert.ok(first.includes(name),name);
+  for(const name of [...Object.values(TOOL_GROUPS).flatMap(g=>g.tools),...HIDDEN_TOOLS])assert.ok(!first.includes(name),name+' waits');
+  for(const name of ['phone_gesture','phone_start','cowork_notes','web_search'])assert.ok(registered.includes(name),name+' is still registered: only the list is shorter');
+  assert.deepEqual(await h.listed(),first,'the same list request after request');
+  h.turn(1,'user');
+  {const r=await h.call('cowork_tools',{load:['gesture']});assert.equal(r.isError,false,JSON.stringify(r));assert.deepEqual(r.value.added,['phone_gesture']);}
+  {const r=await h.call('cowork_tools',{load:['gesture']});assert.deepEqual(r.value.added,[]);}
+  assert.equal((await h.call('cowork_tools',{load:['shell']})).isError,true);
+  assert.ok((await h.listed()).includes('phone_gesture'));
+  // Called by name before its group was loaded: it runs, and the group is listed from then on.
+  {const r=await h.call('web_search',{queries:['天气']});assert.equal(r.isError,false,JSON.stringify(r));}
+  {const now=await h.listed();assert.ok(now.includes('web_search')&&now.includes('web_fetch'));}
+  // A due note brings the notes, a notification with what Jev held back the Jev focus.
+  await h.step(2,[h.reminder('[巡视] 逛逛')]);
+  assert.ok((await h.listed()).includes('cowork_notes'));
+  await h.step(3,[llm.createUserMessage({content:[{type:'text',text:'[NOTIFICATION TRIGGER]\njev_held_untrusted_json: []'}],source:{kind:'webhook',provider:'cowork-notify',source:'continuo',deliveryId:'d',ruleId:'cowork-notify'}})]);
+  const last=await h.listed();assert.ok(last.includes('cowork_jev_focus'));
+  for(const name of first)assert.ok(last.includes(name),name+' stays');
+  await h.done();
+});
+test('cowork_notes lists the notes of every session, the patrol included, that schedule_list in another session does not show',async()=>{
+  const entries=[
+    {id:'p1',kind:'cron',title:'巡视',prompt:'[巡视] 每次挑 2–3 个应用逛逛。',expression:'0 9-21/3 * * *',timeZone:'Asia/Shanghai',scheduledAt:'2026-10-24T13:00:00.000Z',sessionId:'cowork-app-patrol',status:'active'},
+    {id:'n1',kind:'after',title:'便条：看小王回没回',prompt:'[便条] 看小王回没回',afterSeconds:3600,scheduledAt:'2026-10-24T11:00:00.000Z',sessionId:'cowork-app-work-com-tencent-mobileqq',status:'active'},
+    {id:'o1',kind:'daily',title:'早上看 B站',prompt:'每天早上看看 B站',time:'08:00:00',timeZone:'Asia/Shanghai',scheduledAt:'2026-10-25T00:00:00.000Z',sessionId:'session-1234',status:'active'},
+    {id:'x1',kind:'at',title:'过去的',prompt:'早就过了',scheduledAt:'2026-10-20T00:00:00.000Z',sessionId:'session-1234',status:'inactive'},
+  ];
+  const h=await jevHarness('cowork-app-work-com-tencent-mobileqq',{schedule:{catalog:async()=>entries,list:async()=>[]}});
+  h.clock=Date.parse('2026-10-24T11:40:00Z');
+  await new Promise(resolve=>setImmediate(resolve)); // the plugin takes the schedule service when it appears
+  h.turn(1,'webhook');
+  const r=await h.call('cowork_notes');assert.equal(r.isError,false,JSON.stringify(r));
+  assert.deepEqual(r.value.notes.map(n=>n.id),['p1','n1','o1'],'the active ones, in the catalog order');
+  const [patrol,own,owner]=r.value.notes;
+  assert.deepEqual([patrol.session,patrol.patrol,patrol.whose,patrol.nextDueAt,patrol.overdue],['the patrol session (巡视 · 自动运营)',true,"the owner's (written while they talked with you)",'2026-10-24T13:00:00.000Z',false]);
+  assert.deepEqual(patrol.timing,{expression:'0 9-21/3 * * *',timeZone:'Asia/Shanghai'});
+  assert.deepEqual([own.session,own.whose,own.overdue,own.timing],['this session','yours (left on your own)',true,{afterSeconds:3600}]);
+  assert.deepEqual([owner.session,owner.timing],['another conversation',{time:'08:00:00',timeZone:'Asia/Shanghai'}]);
+  await h.done();
+});
+test('the catalog of the installed dsh-schedule has the fields cowork_notes reads',async()=>{
+  const source=await fs.readFile(new URL('../research/installed/dsh/node_modules/@deepseek-ai/dsh-schedule/lib/index.js',import.meta.url),'utf8');
+  const catalog=source.match(/async catalog\(\) \{[\s\S]*?\n\t\t\}/)?.[0]??'';
+  for(const piece of ['...task.record,','sessionId: task.sessionId,','status: task.status,'])assert.ok(catalog.includes(piece),piece);
+  assert.match(source,/task\.sessionId === request\.sessionId && task\.status === "active"/,'schedule_list: this session, active only');
+  for(const fields of ['id, kind, title, prompt, afterSeconds, and scheduledAt','id, kind, title, prompt, and scheduledAt','id, kind, title, prompt, everySeconds, and scheduledAt',
+    'id, kind, title, prompt, time, timeZone, and scheduledAt','id, kind, title, prompt, time, timeZone, weekdays, and scheduledAt','id, kind, title, prompt, expression, timeZone, and scheduledAt'])
+    assert.ok(source.includes(`must contain exactly ${fields}`),fields);
 });

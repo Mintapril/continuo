@@ -116,12 +116,45 @@
 | 控制 | `phone.pause`、`phone.stop`、`phone.request_intervention`、`phone.notify_owner`（没人看着的回合给你发一条通知） |
 | 应用管理 | `phone.grant_permission`（按组给第三方应用开运行时权限）、`phone.uninstall_app`（只从工作资料卸载），见上文“开权限和卸载” |
 
-另有 `cowork_files_read/write/list`（固定 `/workspace/cowork`，只能新建文件）、`web_search`、`web_fetch`（仅公网 HTTP(S)），共 27 个。宿主装有对应插件时，还会放行上下文管理工具（`compress`、`decompress`、`search_context`、`acp_status`）和记忆工具（`memory_search/get/list/save/update/archive`），但只认宿主的全局定义，带文件参数的调用一律拒绝。
+另有 `cowork_files_read/write/list`（固定 `/workspace/cowork`，只能新建文件）、`web_search`、`web_fetch`（仅公网 HTTP(S)）、`cowork_jev_focus`（见下文[关注说明](#关注说明)）、`cowork_notes` 和 `cowork_tools`（见下），共 30 个。宿主装有对应插件时，还会放行上下文管理工具（`compress`、`decompress`、`search_context`、`acp_status`）和记忆工具（`memory_search/get/list/save/update/archive`），但只认宿主的全局定义，带文件参数的调用一律拒绝。
 
 DSH 0.2.1 起 `dsh-schedule`（App 和提示词里都叫便条）随 DSH 内置（`dsh-web-app` 挂载它，不再有开关），工具由各预设自己声明：Cowork 预设声明 `@deepseek-ai/dsh-tool-schedule`，把 `schedule_create`、`schedule_list`、`schedule_update`、`schedule_delete` 注册在预设作用域里，同时声明每轮开头注入当前时间的 `dsh-time-context`。Cowork 会放行这四个工具，放行条件有三条：
 - 调用方是顶层会话；
 - 同名工具没有全局定义；
 - 会话解析到的正是预设作用域里那一份（会话自己作用域里的同名定义会被拒绝）。
+
+### 每次请求列出的工具（按需加载）
+
+工具照旧全部注册，放行规则也不变，变的只是每次请求带给模型的工具清单。原来每次都带全部 42 个工具，约 5 万字符；现在每次只带常用的 20 个，约 2.5 万字符，其余分组，模型用到时再加载（`tool-groups.mjs`，2026-10-24 你要的）：
+
+| 组 | 工具 |
+|---|---|
+| 常用（一直在） | 手机的观察、点按、长按、滑动、滚动、输入、按键、批量、读长页、截图、启动应用、等待、应用列表、状态、停止、请求接管、通知主人，`memory_search`、`memory_save`、`cowork_tools` |
+| notes | `schedule_create/list/update/delete`、`cowork_notes` |
+| memory | `memory_get/list/update/archive` |
+| context | `compress`、`decompress`、`search_context`、`acp_status` |
+| web | `web_search`、`web_fetch` |
+| files | `cowork_files_read/write/list` |
+| gesture | `phone_gesture` |
+| apps | `phone_grant_permission`、`phone_uninstall_app` |
+| jev | `cowork_jev_focus` |
+
+`phone_start`（副屏一直在，不用开）和 `phone_pause` 不再列出，但照样能调用。
+
+- **怎么加载**：模型调 `cowork_tools({load: [组名]})`，下一步起清单里就有这组工具。直接按名字调用一个还没加载的工具也照常执行，它所在的组从下一步起列出。消息需要的组会自动加载：到期的便条或巡视带上 notes；带被拦通知或关注说明的消息带上 jev；DSH 上下文插件提醒压缩时带上 context，从下一步起生效。
+- **只增不减**：加载过的组在这个会话里一直留着，直到 DSH 重启。清单一变，模型服务的提示词缓存就失效一次；只增不减，保证每组最多失效一次，而不是每轮都失效。也因此清单不随回合类型变化：你的回合和无人值守的回合用同一份清单，哪些工具能用仍由 `tools.guard()` 决定。
+- **实现**：插件挂在 DSH 的 `system-prompt/assemble` 上，等 DSH 拼好请求，再按这个会话加载过的组过滤工具清单；只隐藏，不新增。DSH 自带的 `deferLoading` 是为提示词缓存服务的声明方式，模型不能用它自己加载工具，所以没用它。
+- **还没验证**：手机上已有的固定会话，历史里有调用过现在被隐藏的工具，部署后各个模型服务（lithosai 的 DeepSeek、订阅插件的 Claude 和 antigravity）是否都接受，要各跑一轮真实的看。
+
+### 所有会话的便条（cowork_notes）
+
+`schedule_list` 只列当前会话的便条。巡视在它自己的巡视会话里，所以在 QQ 会话里问“你有没有定时任务”，模型查到的是空的（2026-10-24 你遇到的）。`cowork_notes`（`notes-view.mjs`）是只读的，列出 dsh-schedule 里所有有效的便条，和 App 便条页看到的一样。每条注明：
+- 在哪个会话：这个会话、巡视会话、某个应用的固定会话，或别的对话；
+- 谁记的：你让记的，还是它自己留的；
+- 是不是巡视；
+- 时间规则和下次到期时间。
+
+改和删仍然只能在便条所在的会话里用宿主工具做，规则不变。系统提示词要求它说“没有便条或巡视”之前先查 `cowork_notes`。dsh-schedule 服务没在运行时，这个工具报“便条不可用”，Cowork 预设照常加载。
 
 Continuo 的便条页只给可选组件显示开关；服务在不可选的 `dsh-web-app` 里时显示“已内置”，不给开关，免得把整个网页组件关掉。
 

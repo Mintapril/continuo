@@ -372,7 +372,7 @@ AI 不只等你派任务或等通知，也会自己想起来做事。没有新�
 
 巡视和通知唤起可以各用一个模型（2026-10-24 你要的），在 App 的“设置 → Cowork 与任务岛 → 无人值守时的模型”里选，不选就跟随会话。
 
-- **只换这两种回合**：一轮由到期的巡视开始（到期消息里有 `[巡视]` 开头的便条），或由通知触发开始（来源 `webhook`、规则 `cowork-notify`），这一轮的每次请求换成设置里的模型。本轮有你的消息（包括中途插进来的）就不换，用会话自己的模型；到点的普通便条也不换。
+- **只换这两种回合**：一轮由到期的巡视开始（到期消息里有 `[巡视]` 开头的便条），或由通知触发开始（来源 `webhook`、规则 `cowork-notify`），这一轮的每次请求换成设置里的模型。本轮有你的消息（包括中途插进来的）就不换，用会话自己的模型；你发起的一轮中途插进通知也不换（v19 曾在这时换成通知唤起的模型）；到点的普通便条也不换。
 - **不动别的**：DSH 自己的 `session/selectModel` 会顺手把所选模型存成全局默认，所以 App 不用它。插件在 `agent/request` 上加一个最外层（prepend）的监听：先让里面算完（包括 DSH 为会话装的模型选择），再把 provider、model 换掉；没选思考强度时去掉会话的强度，让模型用自己的默认。会话日志会记下这次实际用的模型。
 - **存在哪、怎么读写**：第三个宿主层插件 `src/unattended.mjs` 注册 DSH 的 RPC 服务 `coworkUnattended`（`models()`、`setModel({request: {kind, selection}})`，和 dsh-schedule 一样继承 `TypertRemoteService`，走 App 登录 DSH 的那套鉴权），写进 `~/.dsh/plugins/cowork-phone/unattended-models.json`（`unattended-store.mjs`）。保存时用 `llm.resolveCallConfig` 核对模型目录；请求时再核对一次，模型没了（比如 provider 被卸载）就退回会话自己的模型并记一条警告，不让回合失败。
 - **真机核对（2026-10-24，v19）**：DSH 的网关发现了这个服务，`models` 和 `setModel({request})` 都能经 App 用的那套鉴权调用，错误的 kind 被拒绝。**还没验证**：`agent/request` 的覆盖在一次真实的巡视或通知回合里是否生效（离线测试用真实的 cordis 分发顺序验证了它压过会话的选择）。

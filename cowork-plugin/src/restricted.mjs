@@ -374,8 +374,9 @@ export function installRestrictedCowork(ctx, config, peers, services = {}) {
     // Admission first (it may wait in line for the AI screen), so next() assembles a fresh runtime context after it.
     // The messages decide the place in line: the user/message events (origins) are only appended after this step.
     await lifecycle.preStep(agent,turn,signal,priorityOf(messages));
-    // A notification or patrol start marks the turn; the owner's message, or a later turn without one, clears it.
-    const kind = unattendedKind(messages);
+    // A notification or patrol start marks the turn; the owner's message, or a later turn without one, clears it. A
+    // notification steered into a turn the owner's message started (origins, from step 2 on) leaves it the owner's.
+    const kind = origins.get(agent.session?.id)?.user ? undefined : unattendedKind(messages);
     if (kind) unattendedTurns.set(agent, { turn, kind });
     else if (messages?.some?.(m => m?.source?.kind === 'user') || unattendedTurns.get(agent)?.turn !== turn) unattendedTurns.delete(agent);
     const decision = await next();

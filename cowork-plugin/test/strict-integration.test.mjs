@@ -446,6 +446,16 @@ test('a patrol and a notification-triggered turn run on the owner\'s unattended 
   store={patrol:{provider:'gone',model:'x'},notify:null};
   await step(8,[reminder('[巡视] 逛逛')]);assert.deepEqual(await request(8),own,'an unavailable setting falls back');
   assert.ok(resolveCalls.some(sel=>sel.provider==='gone'));
+  // A notification steered into a turn the owner's message started (its user/message came after step 1, as in DSH):
+  // still the owner's turn, on the session's model; the next turn a notification starts is unattended again.
+  store={patrol:null,notify:{provider:'codex',model:'gpt-6-luna'}};
+  const event=(type,data)=>ctx.emit('session/event',agent.session,{type,data});
+  event('turn/start',{turn:9});await step(9,[mine]);event('user/message',mine);
+  assert.deepEqual(await request(9),own);
+  await step(9,[hook]);event('user/message',hook);
+  assert.deepEqual(await request(9),own,'a notification joining the owner\'s turn keeps their model');
+  event('turn/start',{turn:10});await step(10,[hook]);event('user/message',hook);
+  assert.deepEqual(await request(10),{provider:'codex',model:'gpt-6-luna',maxTokens:100});
   api.remove(agent);await child.dispose();await preset.dispose();
 });
 test('Continuo reaches the unattended-model setting through the real Typert gateway markers; values are checked against the catalog',async()=>{

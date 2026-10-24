@@ -4,7 +4,7 @@
 
 ## 副屏的生命周期
 
-- **常驻**：Broker 启动时创建一块虚拟显示（`DSH-Cowork-Profile`，宽 720、高按主屏比例取 1280–2000，密度按主屏换算，请求 120 Hz），带 `OWN_FOCUS`、`STEAL_TOP_FOCUS_DISABLED`、独立显示组与 `ALWAYS_UNLOCKED` 等标记，之后一直保留；丢失（如 system_server 重启）时由看门狗重建。
+- **常驻**：Broker 启动时创建一块虚拟显示（`DSH-Cowork-Profile`，尺寸和密度与主屏当时的显示设置一致（这台手机是 1080×2414、436 dpi），请求 120 Hz），带 `OWN_FOCUS`、`STEAL_TOP_FOCUS_DISABLED`、独立显示组与 `ALWAYS_UNLOCKED` 等标记，之后一直保留；丢失（如 system_server 重启）时由看门狗重建。
 - **占用与释放**：每轮任务的第一个手机工具调用自动占用副屏（不需要 `phone_start`）；轮次结束只释放占用和撤销观察，**副屏上的应用和画面保留**到下一轮。模型调用 `phone_stop` 时，AI 桌面盖住副屏，工作资料任务留在它下面继续运行，不再被移除（原因见下文“工作资料界面不会落到主屏”）。
 - **副屏重建后恢复后台应用**：副屏带“移除时销毁内容”标记创建，Broker 重启或 system_server 重启都会让副屏连同停在上面的任务一起消失。应用没了界面就成了空进程，ColorOS 很快会把它清掉。2026-10-23 实测：重建约 20 分钟后，工作资料里的 QQ 被 `o-kill`，之后收不到消息，也就不发通知，通知触发不会被唤起。所以：
   - Broker 在副屏停放期间每 3 秒记一次上面有哪些工作资料应用（AI 桌面除外），写进 root 私有的 `/data/local/dsh-native/cowork/parked-apps`（每行一个包名）。

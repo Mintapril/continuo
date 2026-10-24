@@ -40,7 +40,7 @@ public final class ProfileWorkspace implements AutoCloseable {
     private long userDown,userCheck;
     private int userUid=-1;
     private float userX,userY;
-    /** Same aspect ratio and density feel as the main screen (set once from the real default display). */
+    /** The main screen's size and density (set once from the real default display); these values only if that read fails. */
     static volatile int W=720,H=1600,DPI=290;static final int FPS=120;
     private static final int FLAG_OWN_DISPLAY_GROUP=1<<11,FLAG_ALWAYS_UNLOCKED=1<<12;
     /** True once the owned display really retained ALWAYS_UNLOCKED + OWN_DISPLAY_GROUP: the main-screen lock no longer gates it. */
@@ -81,7 +81,8 @@ public final class ProfileWorkspace implements AutoCloseable {
             android.util.DisplayMetrics m=new android.util.DisplayMetrics();
             context.getSystemService(DisplayManager.class).getDisplay(Display.DEFAULT_DISPLAY).getRealMetrics(m);
             int mw=Math.min(m.widthPixels,m.heightPixels),mh=Math.max(m.widthPixels,m.heightPixels);
-            if(mw>0&&mh>0){int h=(int)Math.round(720.0*mh/mw);h=Math.max(1280,Math.min(2000,h))&~1;W=720;H=h;DPI=Math.max(120,Math.round(m.densityDpi*720f/mw));}
+            // Display size and scaling as the owner set them, so apps lay out and render here as on the main screen.
+            if(mw>=128&&mh<=ToolContract.MAX_PX&&m.densityDpi>=120){W=mw&~1;H=mh&~1;DPI=m.densityDpi;}
         }catch(Exception e){System.err.println("main screen size unavailable; using "+W+"x"+H);}
     }
     /** The touch slop apps use, in dp: config_viewConfigurationTouchSlop (devices may change it), else AOSP's. */

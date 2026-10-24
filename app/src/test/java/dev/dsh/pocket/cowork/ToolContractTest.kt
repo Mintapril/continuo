@@ -18,7 +18,8 @@ class ToolContractTest {
         valid("phone.key","""{"key":"HOME"}""");valid("phone.key","""{"key":"RECENTS"}""");valid("phone.key","""{"observationId":"one","key":"HOME"}""")
         denied("phone.key","""{"key":"MENU"}""");denied("phone.key","""{"observationId":"one"}""");denied("phone.launch_app","""{"observationId":"one","packageName":"intent://shell"}""")
     }
-    @Test fun boundsAndObservationRequired(){denied("phone.tap","""{"observationId":"one","x":720,"y":0}""");denied("phone.tap","""{"x":20,"y":30}""");denied("phone.wait","""{"timeoutMs":10001}""")}
+    // The schema only caps pixels at MAX_PX; the live screen size (the main screen's) is checked when the input runs.
+    @Test fun boundsAndObservationRequired(){valid("phone.tap","""{"observationId":"one","x":1079,"y":2413}""");denied("phone.tap","""{"observationId":"one","x":4096,"y":0}""");denied("phone.tap","""{"observationId":"one","x":0,"y":4096}""");denied("phone.tap","""{"x":20,"y":30}""");denied("phone.wait","""{"timeoutMs":10001}""")}
     @Test fun elementTargetsAreExclusiveWithCoordinates(){
         valid("phone.tap","""{"observationId":"one","elementId":"n12"}""");valid("phone.long_press","""{"observationId":"one","elementId":"n0","durationMs":800}""")
         denied("phone.tap","""{"observationId":"one","elementId":"n12","x":1,"y":2}""");denied("phone.tap","""{"observationId":"one","elementId":"12"}""")
@@ -48,7 +49,7 @@ class ToolContractTest {
     private fun fingers(fingers:String,duration:Int=200,start:Int=0,end:Int=0)="""{"fingers":[$fingers],"durationMs":$duration,"holdStartMs":$start,"holdEndMs":$end}"""
     private fun gesture(vararg strokes:String)="""{"observationId":"one","strokes":[${strokes.joinToString(",")}]}"""
     @Test fun gestureWireForm(){
-        valid("phone.gesture",gesture(stroke("0,0,719,1999,360,800")))
+        valid("phone.gesture",gesture(stroke("0,0,1079,2413,360,800")))
         valid("phone.gesture",gesture(stroke("30,40",20),stroke("10,10,20,20",10000,3000,1500)))
         valid("phone.gesture",gesture(*Array(32){stroke("1,1,2,2",360)}))
         valid("phone.gesture",gesture(stroke((0 until 3000).joinToString(","){"${it%700},${it%1900}"},1000)))
@@ -60,7 +61,7 @@ class ToolContractTest {
     @Test fun gestureFingers(){
         denied("phone.gesture",gesture(fingers("",200)))
         denied("phone.gesture",gesture(fingers("[1,1],[2,2],[3,3]")))
-        denied("phone.gesture",gesture(fingers("[1,1],[]")));denied("phone.gesture",gesture(fingers("[1,1],[2]")));denied("phone.gesture",gesture(fingers("[1,1],[720,0]")))
+        denied("phone.gesture",gesture(fingers("[1,1],[]")));denied("phone.gesture",gesture(fingers("[1,1],[2]")));denied("phone.gesture",gesture(fingers("[1,1],[4096,0]")))
         denied("phone.gesture",gesture(fingers("[1,1],5")));denied("phone.gesture",gesture(fingers("[[1,1]]")))
         // The point limit counts every finger.
         denied("phone.gesture",gesture(fingers((0 until 2).joinToString(","){"[${(0 until 1501).joinToString(","){k->"${k%700},${k%1900}"}}]"},1000)))
@@ -71,7 +72,7 @@ class ToolContractTest {
         denied("phone.gesture",gesture(*Array(33){stroke("1,1",20)}))
         denied("phone.gesture",gesture(stroke((0 until 3001).joinToString(","){"${it%700},${it%1900}"},1000)))
         denied("phone.gesture",gesture(stroke("1,1,2")));denied("phone.gesture",gesture(stroke("")))
-        denied("phone.gesture",gesture(stroke("720,0")));denied("phone.gesture",gesture(stroke("0,2000")));denied("phone.gesture",gesture(stroke("-1,0")))
+        denied("phone.gesture",gesture(stroke("4096,0")));denied("phone.gesture",gesture(stroke("0,4096")));denied("phone.gesture",gesture(stroke("-1,0")))
         denied("phone.gesture",gesture(stroke("1.5,2")));denied("phone.gesture",gesture(stroke("\"1\",2")))
         denied("phone.gesture",gesture(stroke("1,1",19)));denied("phone.gesture",gesture(stroke("1,1",10001)))
         denied("phone.gesture",gesture(stroke("1,1",200,3001)));denied("phone.gesture",gesture(stroke("1,1",200,0,-1)))
@@ -87,7 +88,8 @@ class ToolContractTest {
     @Test fun screenshotZoomWireForm(){
         // The plugin always sends region and scale together; ScreenZoom checks them against the screen.
         valid("phone.screenshot","""{"region":[100,200,220,320],"scale":4}""")
-        valid("phone.screenshot","""{"region":[0,0,720,1600],"scale":1}""")
+        valid("phone.screenshot","""{"region":[0,0,720,1600],"scale":1}""");valid("phone.screenshot","""{"region":[0,1200,1080,2414],"scale":1}""")
+        denied("phone.screenshot","""{"region":[0,0,1080,4097],"scale":1}""")
         denied("phone.screenshot","""{"region":[100,200,220,320]}""");denied("phone.screenshot","""{"scale":2}""")
         denied("phone.screenshot","""{"region":[100,200,220],"scale":2}""");denied("phone.screenshot","""{"region":[100,200,220,320,1],"scale":2}""")
         denied("phone.screenshot","""{"region":[100,200.5,220,320],"scale":2}""");denied("phone.screenshot","""{"region":[-1,200,220,320],"scale":2}""")

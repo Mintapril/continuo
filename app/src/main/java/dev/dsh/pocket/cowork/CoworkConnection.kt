@@ -264,7 +264,7 @@ object CoworkConnection {
         frames.value=null
         val frame=request("/v1/preview",limit=12*1024*1024)
         val bitmap=withContext(Dispatchers.Default){
-            check(frame.getString("mimeType")=="image/png"&&frame.getInt("width")==720&&frame.getInt("height") in 1280..2000)
+            check(frame.getString("mimeType")=="image/png"&&frame.getInt("width") in 128..4096&&frame.getInt("height") in 128..4096)
             val bytes=Base64.decode(frame.getString("base64"),Base64.DEFAULT);check(bytes.size<=8*1024*1024)
             val options=BitmapFactory.Options().apply{inJustDecodeBounds=true};BitmapFactory.decodeByteArray(bytes,0,bytes.size,options)
             check(options.outWidth==frame.getInt("width")&&options.outHeight==frame.getInt("height")){"副屏图像尺寸不匹配"}

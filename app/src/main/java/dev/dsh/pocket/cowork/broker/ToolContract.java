@@ -15,7 +15,9 @@ public final class ToolContract {
     private static String text(JSONObject a,String k,int min,int max){Object v=a.opt(k);if(!(v instanceof String))fail();String s=(String)v;if(s.length()<min||s.length()>max)fail();return s;}
     private static int number(JSONObject a,String k,int min,int max){Object v=a.opt(k);if(!(v instanceof Number))fail();double d=((Number)v).doubleValue();if(!Double.isFinite(d)||d!=Math.rint(d)||d<min||d>max)fail();return (int)d;}
     private static void obs(JSONObject a){if(!text(a,"observationId",1,100).matches("[A-Za-z0-9_-]+"))fail();}
-    private static void point(JSONObject a,String x,String y){number(a,x,0,719);number(a,y,0,1999);}
+    /** Upper bound for screen pixels here; the AI screen's actual size is checked when the input runs. */
+    static final int MAX_PX=4096;
+    private static void point(JSONObject a,String x,String y){number(a,x,0,MAX_PX-1);number(a,y,0,MAX_PX-1);}
     /** Exactly one mode: both x and y, or a semantic elementId from the latest ui_tree observation. */
     private static void target(JSONObject a){
         if(a.has("elementId")){if(a.has("x")||a.has("y"))fail();if(!text(a,"elementId",2,6).matches("n[0-9]{1,4}"))fail();}
@@ -61,7 +63,7 @@ public final class ToolContract {
                 if(!(fingers.opt(f) instanceof JSONArray))fail();
                 JSONArray p=fingers.optJSONArray(f);
                 points+=p.length()/2;if(p.length()<2||p.length()%2!=0||points>StrokePath.MAX_POINTS)fail();
-                for(int j=0;j<p.length();j++){Object v=p.opt(j);if(!(v instanceof Number))fail();double d=((Number)v).doubleValue();if(!Double.isFinite(d)||d!=Math.rint(d)||d<0||d>(j%2==0?719:1999))fail();}
+                for(int j=0;j<p.length();j++){Object v=p.opt(j);if(!(v instanceof Number))fail();double d=((Number)v).doubleValue();if(!Double.isFinite(d)||d!=Math.rint(d)||d<0||d>MAX_PX-1)fail();}
             }
             total+=number(stroke,"durationMs",StrokePath.MIN_DURATION_MS,StrokePath.MAX_DURATION_MS)+number(stroke,"holdStartMs",0,StrokePath.MAX_HOLD_MS)+number(stroke,"holdEndMs",0,StrokePath.MAX_HOLD_MS);
         }
@@ -75,7 +77,7 @@ public final class ToolContract {
         if(!a.has("region"))return;
         if(!(a.opt("region") instanceof JSONArray))fail();
         JSONArray r=a.optJSONArray("region");if(r.length()!=4)fail();
-        for(int i=0;i<4;i++){Object v=r.opt(i);if(!(v instanceof Number))fail();double d=((Number)v).doubleValue();if(!Double.isFinite(d)||d!=Math.rint(d)||d<0||d>2000)fail();}
+        for(int i=0;i<4;i++){Object v=r.opt(i);if(!(v instanceof Number))fail();double d=((Number)v).doubleValue();if(!Double.isFinite(d)||d!=Math.rint(d)||d<0||d>MAX_PX)fail();}
         number(a,"scale",1,ScreenZoom.MAX_SCALE);
     }
     public static void validate(String tool,JSONObject a){

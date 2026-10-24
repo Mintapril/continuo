@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { reframeReminder, reframeMessage, noteRefusal, priorityOf, patrolChecklist, NOTE, PATROL } from '../src/restricted.mjs';
 import { PRIORITY } from '../src/task-lifecycle.mjs';
+import { heldSection } from '../src/jev-focus.mjs';
 
 // Notes (便条): everything dsh-schedule delivers. It arrives under the host's fixed "from the user" framing and is
 // reframed before the model sees it: a note written while the owner was talking keeps their words, a note the model
@@ -111,19 +112,28 @@ test('the note marker wins over the patrol marker; a patrol marker anywhere else
   assert.match(reframeReminder('[SCHEDULE REMINDER]\n[巡视] free text', PATROL.session), KEPT, 'an unrecognised patrol is one note of the owner, without the checklist');
 });
 
-test('Continuo parses the same note and patrol text this writes (ScheduleFormatTest holds these four lines byte for byte)', async () => {
+// A due patrol with what Jev held back since the model last looked (restricted.mjs appends it in pre-step).
+export const HELD_ITEMS = Object.freeze([
+  { key: 'work:com.tencent.mobileqq', app: 'QQ', package: 'com.tencent.mobileqq', profile: 'work', sender: '李四', text: '群里在说周末去哪', at: Date.parse('2026-10-24T00:50:00.000Z'), p: 0.12, focus: true },
+  { key: 'work:com.shop', app: '购物', package: 'com.shop', profile: 'work', sender: '优惠', text: '限时特价', at: Date.parse('2026-10-24T00:55:00.000Z'), p: null, unjudged: 'timeout', focus: false }]);
+export const patrolHeldText = () => `${reframeReminder(batch([r('p1', '[巡视] 喜欢画画，常看 B 站教程')]), PATROL.session)}\n\n`
+  + heldSection({ items: HELD_ITEMS, omitted: 1 }, { 'work:com.tencent.mobileqq': '内部测试群有人 @ 我才算' });
+
+test('Continuo parses the same note and patrol text this writes (ScheduleFormatTest holds these five lines byte for byte)', async () => {
   const kotlin = await readFile(new URL('../../app/src/test/java/dev/dsh/pocket/data/ScheduleFormatTest.kt', import.meta.url), 'utf8');
   const own = reframeReminder(single('[便条] 问问小王面试结果'));
   const kept = reframeReminder(single('每天签到', 't1'));
   const mixed = reframeReminder(batch([r('t1', '每天签到'), r('n1', '[便条] 看看说说的回复')]));
   const patrol = reframeReminder(batch([r('t1', '每天签到'), r('p1', '[巡视] 喜欢画画，常看 B 站教程')]), PATROL.session);
+  const held = patrolHeldText();
   // A Kotlin string literal with \n and \" escapes reads exactly like JSON.stringify (no $ in these texts).
-  assert.ok(![own, kept, mixed, patrol].some(text => text.includes('$')));
+  assert.ok(![own, kept, mixed, patrol, held].some(text => text.includes('$')));
   const holds = (name, text) => new RegExp(`^ *private val ${name} = (.*?)\\r?$`, 'm').exec(kotlin)?.[1] === JSON.stringify(text);
   assert.ok(holds('selfNote', own), 'selfNote');
   assert.ok(holds('keptNote', kept), 'keptNote');
   assert.ok(holds('selfNoteBatch', mixed), 'selfNoteBatch');
   assert.ok(holds('patrolBatch', patrol), 'patrolBatch');
+  assert.ok(holds('patrolHeld', held), 'patrolHeld');
 });
 
 test('noteRefusal admits exactly a note', () => {

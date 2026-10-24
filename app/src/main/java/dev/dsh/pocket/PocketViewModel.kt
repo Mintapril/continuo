@@ -249,6 +249,19 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         api.rpc("credentials/set", obj("ref" to JEV_CREDENTIAL, "value" to key.trim())); notice = "Jev 密钥已保存到 DSH"; jevRefresh()
     }
     fun jevClear() = task { api.rpc("credentials/unset", obj("ref" to JEV_CREDENTIAL)); notice = "Jev 密钥已从 DSH 移除"; jevRefresh() }
+
+    // The Jev focus the Cowork model keeps per app (coworkUnattended/jevFocus); null means not read yet, or the plugin is
+    // too old to have it ([jevFocusError]). The owner can clear one.
+    var jevFocus by mutableStateOf<List<JevFocus.Entry>?>(null); private set
+    var jevFocusError by mutableStateOf(""); private set
+    fun jevFocusRefresh() = viewModelScope.launch {
+        try { jevFocus = JevFocus.entries(api.rpc(JevFocus.READ) as? JSONObject); jevFocusError = "" }
+        catch (e: CancellationException) { throw e } catch (e: Exception) { jevFocus = null; jevFocusError = e.message ?: "读取失败" }
+    }
+    fun clearJevFocus(app: String) = task {
+        jevFocus = JevFocus.entries(api.rpc(JevFocus.CLEAR, JevFocus.clearRequest(app)) as? JSONObject)
+        notice = "已清除：Jev 对这个应用恢复默认问题"
+    }
     fun changeMode(value: TaskMode) {
         mode = value; prefs.edit().putString("mode", value.name).apply()
         if (selected == null) restoreComposer(homeKey(value))

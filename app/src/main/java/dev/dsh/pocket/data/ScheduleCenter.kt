@@ -276,13 +276,27 @@ object ScheduleFormat {
         return runCatching { JSONArray(raw).objects().map { it.text("direction") } }.getOrNull()
     }
 
-    /** A delivered reminder message: its due notes and patrols. Everything scheduled is a note (便条). */
-    data class Delivery(val notes: List<String>, val patrols: List<String> = emptyList()) {
+    /**
+     * How many notifications a `[JEV HELD]` section brings (those listed plus the omitted rest): what the Jev judge held
+     * back, or could not judge, since the model last looked, which the plugin appends to a due patrol
+     * (cowork-plugin/src/jev-focus.mjs `heldSection`). Null when the text is not that section.
+     */
+    fun heldCount(text: String): Int? {
+        val lines = text.lines()
+        if (lines.firstOrNull()?.trim() != "[JEV HELD]") return null
+        val raw = lines.firstOrNull { it.startsWith("jev_held_untrusted_json: ") }?.removePrefix("jev_held_untrusted_json: ") ?: return null
+        val listed = runCatching { JSONArray(raw).length() }.getOrNull() ?: return null
+        return listed + (lines.firstOrNull { it.startsWith("jev_held_omitted: ") }?.removePrefix("jev_held_omitted: ")?.trim()?.toIntOrNull() ?: 0)
+    }
+
+    /** A delivered reminder message: its due notes and patrols, and how many held notifications came with a patrol. */
+    data class Delivery(val notes: List<String>, val patrols: List<String> = emptyList(), val held: Int = 0) {
         private val kinds get() = listOfNotNull("巡视".takeIf { patrols.isNotEmpty() }, "便条".takeIf { notes.isNotEmpty() })
         val title get() = kinds.joinToString(" · ").ifEmpty { "便条" }
         val body get(): String {
             val labelled = kinds.size > 1
-            return (patrols.map { if (labelled) "巡视：$it" else it.ifBlank { "巡视" } } + notes.map { if (labelled) "便条：$it" else it }).joinToString("\n\n")
+            return (patrols.map { if (labelled) "巡视：$it" else it.ifBlank { "巡视" } } + notes.map { if (labelled) "便条：$it" else it } +
+                listOfNotNull("附带 $held 条被 Jev 拦下的通知".takeIf { held > 0 })).joinToString("\n\n")
         }
     }
 
@@ -294,13 +308,15 @@ object ScheduleFormat {
      * notes as well.
      */
     fun delivery(text: String): Delivery? {
-        val notes = mutableListOf<String>(); val patrols = mutableListOf<String>()
+        val notes = mutableListOf<String>(); val patrols = mutableListOf<String>(); var held = 0
         for (section in text.split("\n\n")) {
             val directions = patrolDirections(section)
             if (directions != null) { patrols += directions; continue }
+            val count = heldCount(section)
+            if (count != null) { held += count; continue }
             notes += reminderPrompts(section) ?: notePrompts(section) ?: return null
         }
-        return Delivery(notes, patrols)
+        return Delivery(notes, patrols, held)
     }
 
     private fun JSONArray?.ints(): List<Int> = if (this == null) emptyList() else (0 until length()).map { optInt(it) }

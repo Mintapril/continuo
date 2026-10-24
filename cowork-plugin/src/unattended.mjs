@@ -1,8 +1,12 @@
 import { UNATTENDED_KINDS, readUnattended, writeUnattended, selectionOf, unattendedFile } from './unattended-store.mjs';
+import { readFocus, writeFocus, isFocusKey, focusFile } from './jev-focus-store.mjs';
 
-// Continuo reads and sets the model of unattended runs over DSH's own authenticated RPC (the cookie session the app
-// logs in with), namespace `coworkUnattended`: `models()` and `setModel({request: {kind, selection}})`. A selection
-// must resolve in the live model catalog; null clears it. restricted.mjs applies the stored value per request.
+// Continuo reads and sets the owner's settings for unattended runs over DSH's own authenticated RPC (the cookie session
+// the app logs in with), namespace `coworkUnattended`:
+// - `models()` and `setModel({request: {kind, selection}})`: the model patrols and notification triggers use. A
+//   selection must resolve in the live model catalog; null clears it. restricted.mjs applies the stored value per request.
+// - `jevFocus()` and `clearJevFocus({request: {app}})`: the Jev focus the model keeps per app (jev-focus.mjs). The
+//   owner can only clear one; the clear is kept with its time, so a run nobody watches cannot set it again at once.
 export const name = 'cowork-unattended';
 export const inject = ['llm'];
 export const NAMESPACE = 'coworkUnattended';
@@ -14,8 +18,10 @@ export function unattendedService({ Remote, TypertRemoteService }) {
     constructor(ctx, config = {}) {
       super(ctx, NAMESPACE);
       this.file = config.file ?? unattendedFile();
+      this.focusFile = config.focusFile ?? focusFile();
+      this.now = config.now ?? Date.now;
       // Plain JavaScript has no decorator syntax: mark the Remote methods exactly as @Remote would.
-      for (const method of ['models', 'setModel'])
+      for (const method of ['models', 'setModel', 'jevFocus', 'clearJevFocus'])
         Remote(method)(this[method], { kind: 'method', name: method, static: false, private: false, addInitializer: init => init.call(this) });
     }
     models() { return readUnattended(this.file); }
@@ -31,6 +37,14 @@ export function unattendedService({ Remote, TypertRemoteService }) {
           reasoningEffort: selection.reasoningEffort === undefined ? undefined : (resolved.reasoningEffort ?? selection.reasoningEffort) });
       }
       return writeUnattended({ ...readUnattended(this.file), [kind]: selection }, this.file);
+    }
+    /** Every app's focus entry ({text, at, by, revision}; text '' is a cleared one), by `<profile>:<package>`. */
+    jevFocus() { return readFocus(this.focusFile); }
+    clearJevFocus(request) {
+      const app = request?.app;
+      if (!isFocusKey(app)) throw new Error('app must be <work|personal>:<package>');
+      writeFocus(app, null, { by: 'app', at: this.now() }, this.focusFile);
+      return readFocus(this.focusFile);
     }
   };
 }

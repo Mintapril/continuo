@@ -73,7 +73,7 @@ test('bundle is additive and packages only tested active implementation',async()
   const pkg=JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8'));
   const patch=await fs.readFile(new URL('../cordis.patch.yml',import.meta.url),'utf8');
   assert.equal(pkg.exports['.'],'./src/restricted.mjs');
-  assert.deepEqual(pkg.files.filter(p=>p.startsWith('src/')).sort(),['src/restricted.mjs','src/validation.mjs','src/broker.mjs','src/auth.mjs','src/task-lifecycle.mjs','src/bounded-files.mjs','src/web.mjs','src/gesture-path.mjs','src/notify.mjs','src/screen-board.mjs','src/unattended-store.mjs','src/unattended.mjs'].sort());
+  assert.deepEqual(pkg.files.filter(p=>p.startsWith('src/')).sort(),['src/restricted.mjs','src/validation.mjs','src/broker.mjs','src/auth.mjs','src/task-lifecycle.mjs','src/bounded-files.mjs','src/web.mjs','src/gesture-path.mjs','src/notify.mjs','src/screen-board.mjs','src/unattended-store.mjs','src/unattended.mjs','src/jev-board.mjs','src/jev-focus-store.mjs','src/jev-focus.mjs'].sort());
   // Every module a packaged one imports is packaged too (a missing file only shows up when DSH loads the bundle).
   for(const file of pkg.files.filter(p=>p.endsWith('.mjs'))){
     const text=await fs.readFile(new URL(`../${file}`,import.meta.url),'utf8');
@@ -453,15 +453,22 @@ test('Continuo reaches the unattended-model setting through the real Typert gate
   const { unattendedService, NAMESPACE }=await import('../src/unattended.mjs');
   const { readUnattended }=await import('../src/unattended-store.mjs');
   const dir=await fs.mkdtemp((await import('node:path')).join((await import('node:os')).tmpdir(),'cowork-unattended-'));
-  const file=`${dir}/plugins/cowork-phone/unattended-models.json`;
+  const file=`${dir}/plugins/cowork-phone/unattended-models.json`, focusFile=`${dir}/plugins/cowork-phone/jev-focus.json`;
   const ctx=new Context();
   ctx.provide('llm',{resolveCallConfig:async sel=>{if(sel.provider==='gone')throw Error('no such provider');return {provider:sel.provider,model:sel.model,reasoningEffort:sel.reasoningEffort??'adapter-default'};}});
   const Service=unattendedService(protocol);
-  const fiber=ctx.plugin(Service,{file});if(fiber.inertia)await fiber.inertia;
+  const fiber=ctx.plugin(Service,{file,focusFile,now:()=>1_792_000_000_000});if(fiber.inertia)await fiber.inertia;
   const service=ctx.get(NAMESPACE);
   assert.ok(service,'registered under its namespace');
   assert.deepEqual({...service.typertRemote,service:undefined},{service:undefined,serviceKey:NAMESPACE,namespace:NAMESPACE});
-  assert.deepEqual(protocol.remoteMethods(service).map(m=>m.method),['models','setModel'],'what the gateway discovers (SRC markers)');
+  assert.deepEqual(protocol.remoteMethods(service).map(m=>m.method),['models','setModel','jevFocus','clearJevFocus'],'what the gateway discovers (SRC markers)');
+  // The Jev focus the model keeps: Continuo lists it and can clear one; the clear stays with its time.
+  const { writeFocus }=await import('../src/jev-focus-store.mjs');
+  assert.deepEqual(service.jevFocus(),{},'no focus yet');
+  writeFocus('work:com.tencent.mobileqq','内部测试群有人 @ 我才算',{by:'patrol',at:1_791_999_000_000},focusFile);
+  assert.deepEqual(service.jevFocus(),{'work:com.tencent.mobileqq':{text:'内部测试群有人 @ 我才算',at:1_791_999_000_000,by:'patrol',revision:1}});
+  assert.deepEqual(service.clearJevFocus({app:'work:com.tencent.mobileqq'}),{'work:com.tencent.mobileqq':{text:'',at:1_792_000_000_000,by:'app',revision:2}});
+  assert.throws(()=>service.clearJevFocus({app:'com.tencent.mobileqq'}),/app must be/);
   assert.deepEqual(service.models(),{patrol:null,notify:null},'nothing stored yet');
   assert.deepEqual(await service.setModel({kind:'patrol',selection:{provider:'claude',model:'claude-opus-5-5'}}),{patrol:{provider:'claude',model:'claude-opus-5-5'},notify:null},'no effort stored when none was chosen');
   assert.deepEqual(await service.setModel({kind:'notify',selection:{provider:'codex',model:'gpt-6-luna',reasoningEffort:'high'}}),{patrol:{provider:'claude',model:'claude-opus-5-5'},notify:{provider:'codex',model:'gpt-6-luna',reasoningEffort:'high'}});
@@ -471,4 +478,93 @@ test('Continuo reaches the unattended-model setting through the real Typert gate
   await assert.rejects(service.setModel({kind:'notify',selection:{provider:'codex'}}),/needs a provider and a model/);
   assert.deepEqual(await service.setModel({kind:'patrol',selection:null}),{patrol:null,notify:{provider:'codex',model:'gpt-6-luna',reasoningEffort:'high'}},'null clears one');
   await fiber.dispose?.();await fs.rm(dir,{recursive:true,force:true});
+});
+// Jev as the model's reflex: one tool sets the focus of an app; a run nobody watches only for the app it works in, every
+// few hours; a due patrol brings what Jev held back. Real DSH tool registry, stub lifecycle and bridge.
+async function jevHarness(sessionId){
+  const ctx=new Context();
+  ctx.provide('systemPrompt',{tools:()=>{},section:()=>{},getSectionOrder:()=>0});
+  ctx.provide('attachments',{saveImage:async()=>({})});
+  ctx.provide('web',{search:async()=>({content:'fact',sources:[]})});
+  ctx.provide('llm',{stream:()=>{throw Error('No model calls during tests');}});
+  const liveAgents=new Map();ctx.provide('agents',{get:id=>liveAgents.get(id),roots:()=>[...liveAgents.values()]});
+  const runtimeFiber=ctx.plugin(ToolRuntime,{mode:'native'});if(runtimeFiber.inertia)await runtimeFiber.inertia;
+  let owner;const ownerFiber=ctx.inject(['tools','systemPrompt','attachments','web','llm','agents'],c=>{owner=c;});if(ownerFiber.inertia)await ownerFiber.inertia;
+  const key={},preset=scope.createScope(owner,key),agent={id:sessionId,session:{id:sessionId,snapshotEvents:()=>[],requestHeader:()=>undefined}};
+  const child=scope.createScope(owner,agent,{parent:key});agent.ctx=child.ctx;
+  const lifecycle={runTool:(a,exec,body)=>body(exec),preStep:async()=>{},observe(){},remove(){},dispose(){},flush:async()=>{}};
+  const dir=await fs.mkdtemp((await import('node:path')).join((await import('node:os')).tmpdir(),'cowork-jev-'));
+  const focusFile=`${dir}/jev-focus.json`;
+  const { createJevBoard }=await import('../src/jev-board.mjs');
+  const h={clock:Date.parse('2026-10-24T00:00:00Z')};
+  h.board=createJevBoard({now:()=>h.clock});
+  const api=installRestrictedCowork(preset.ctx,{},{...scope,...llm,Session},{lifecycle,bridge:{call:async()=>({}),forget:()=>{}},files:{},now:()=>h.clock,focusFile,jevBoard:h.board,unattended:()=>({patrol:null,notify:null})});
+  liveAgents.set(agent.id,agent);
+  ctx.emit('session/event',agent.session,{type:'agent-preset/selected',data:{agentPreset:'cowork-phone'}});
+  const signal=new AbortController().signal;let serial=0;
+  h.ctx=ctx;h.agent=agent;h.focusFile=focusFile;
+  h.execute=args=>{const callId='j'+serial++;ctx.emit('session/event',agent.session,{type:'tool/call',data:{turn:1,callId,name:'cowork_jev_focus',arguments:args}});return ctx.tools.execute({name:'cowork_jev_focus',arguments:args,agent,signal,callId});};
+  h.turn=(n,...kinds)=>{ctx.emit('session/event',agent.session,{type:'turn/start',data:{turn:n}});for(const kind of kinds)ctx.emit('session/event',agent.session,{type:'user/message',data:{source:{kind}}});};
+  h.step=(turn,messages)=>agentEvents(ctx,agent).waterfall('agent/pre-step',{turn,step:1,signal,messages},async()=>({kind:'enter',messages}));
+  h.reminder=prompt=>llm.createUserMessage({content:[{type:'text',text:['[SCHEDULE REMINDER BATCH]','This is a scheduled message from the user',`reminders_json: ${JSON.stringify([{schedule_id:'p1',occurrence_at:'2026-10-24T01:00:00.000Z',reminder_prompt:prompt}])}`].join('\n')}],source:{kind:'schedule'}});
+  h.hook=llm.createUserMessage({content:[{type:'text',text:'[NOTIFICATION TRIGGER]'}],source:{kind:'webhook',provider:'cowork-notify',source:'continuo',deliveryId:'d',ruleId:'cowork-notify'}});
+  h.done=async()=>{api.remove(agent);await child.dispose();await preset.dispose();await fs.rm(dir,{recursive:true,force:true});};
+  return h;
+}
+const heldEntry=(over={})=>({key:'work:com.tencent.mobileqq',app:'QQ',package:'com.tencent.mobileqq',profile:'work',sender:'李四',text:'群里在说周末去哪',at:Date.parse('2026-10-23T23:50:00Z'),p:0.12,focus:false,...over});
+test('the Jev focus tool: the owner\'s turns change any app; a run nobody watches only its own app, once in 6 hours, also after the owner cleared it',async()=>{
+  const h=await jevHarness('cowork-app-work-com-tencent-mobileqq');
+  const { readFocus, writeFocus }=await import('../src/jev-focus-store.mjs');
+  assert.ok(h.ctx.tools.schemas(h.agent).map(t=>t.name).includes('cowork_jev_focus'));
+  h.turn(1,'user');
+  {const r=await h.execute({package:'com.tencent.mm',focus:'只看私信'});assert.equal(r.isError,false,JSON.stringify(r.error));}
+  {const r=await h.execute({focus:'内部测试群有人 @ 我才算'});assert.equal(r.isError,false);}
+  assert.deepEqual(Object.fromEntries(Object.entries(readFocus(h.focusFile)).map(([k,v])=>[k,[v.text,v.by]])),{'work:com.tencent.mm':['只看私信','owner'],'work:com.tencent.mobileqq':['内部测试群有人 @ 我才算','owner']});
+  // A notification trigger in the QQ session: only QQ, and not within 6 hours of the last change.
+  h.turn(2,'webhook');await h.step(2,[h.hook]);
+  {const r=await h.execute({focus:'私聊和 @ 我都算'});assert.equal(r.isError,true);assert.match(JSON.stringify(r),/6 hours after that/);}
+  {const r=await h.execute({});assert.equal(r.isError,false,'reading is always fine');}
+  h.clock+=6*3_600_000;
+  {const r=await h.execute({package:'com.tencent.mm',focus:'都看'});assert.equal(r.isError,true);assert.match(JSON.stringify(r),/this session's own app only/);}
+  {const r=await h.execute({focus:'私聊和 @ 我都算'});assert.equal(r.isError,false,JSON.stringify(r.error));}
+  assert.deepEqual([readFocus(h.focusFile)['work:com.tencent.mobileqq'].text,readFocus(h.focusFile)['work:com.tencent.mobileqq'].by],['私聊和 @ 我都算','notify']);
+  // The owner clears it in Continuo: the next unattended run waits the same 6 hours before setting it again.
+  h.clock+=7*3_600_000;writeFocus('work:com.tencent.mobileqq',null,{by:'app',at:h.clock},h.focusFile);
+  h.turn(3,'webhook');await h.step(3,[h.hook]);
+  {const r=await h.execute({focus:'私聊和 @ 我都算'});assert.equal(r.isError,true,'the owner\'s clear is not undone at once');}
+  h.turn(4,'user');
+  {const r=await h.execute({focus:'只看内部测试群'});assert.equal(r.isError,false,'the owner can always ask');}
+  await h.done();
+});
+test('a due patrol brings what Jev held back since the model last looked: the work profile\'s in the patrol session, one app\'s in that app\'s session',async()=>{
+  const h=await jevHarness('cowork-app-patrol');
+  const { writeFocus }=await import('../src/jev-focus-store.mjs');
+  writeFocus('work:com.tencent.mobileqq','内部测试群有人 @ 我才算',{by:'owner',at:h.clock-1},h.focusFile);
+  h.board.record([heldEntry({focus:true}),heldEntry({key:'work:com.shop',app:'购物',package:'com.shop',sender:'优惠',text:'限时特价',p:null,unjudged:'timeout',at:Date.parse('2026-10-23T23:55:00Z')}),
+    heldEntry({key:'personal:com.tencent.mm',app:'微信',package:'com.tencent.mm',profile:'personal',text:'妈妈：晚饭回来吃吗'})]);
+  // Not a patrol: nothing is shown, nothing counts as seen.
+  h.turn(1,'webhook');await h.step(1,[h.hook]);assert.equal(h.board.size(),3);
+  h.turn(2,'schedule');
+  const decision=await h.step(2,[h.reminder('[巡视] 逛逛')]);
+  const text=decision.messages[0].content[0].text, sections=text.split('\n\n');
+  assert.equal(sections.length,2);assert.match(sections[0],/^\[PATROL\]\n/);
+  const held=sections[1].split('\n');
+  assert.equal(held[0],'[JEV HELD]');
+  assert.equal(held[2],`jev_focus_json: ${JSON.stringify({'work:com.tencent.mobileqq':'内部测试群有人 @ 我才算'})}`);
+  const listed=JSON.parse(held[3].slice('jev_held_untrusted_json: '.length));
+  assert.deepEqual(listed.map(x=>[x.app,x.jev_p??x.jev]),[['QQ',0.12],['购物','not judged (timeout)']],'the work profile only');
+  assert.equal(h.board.size(),1,'shown counts as seen; the personal one waits for its own session');
+  assert.ok(Object.isFrozen(decision.messages[0])&&Object.isFrozen(decision.messages[0].content[0]));
+  // The next patrol with nothing new held: no section.
+  h.turn(3,'schedule');
+  const again=await h.step(3,[h.reminder('[巡视] 逛逛')]);
+  assert.equal(again.messages[0].content[0].text.split('\n\n').length,1);
+  await h.done();
+  const own=await jevHarness('cowork-app-work-com-tencent-mobileqq');
+  own.board.record([heldEntry(),heldEntry({key:'work:com.shop',app:'购物',package:'com.shop',text:'限时特价'})]);
+  own.turn(1,'schedule');
+  const mine=await own.step(1,[own.reminder('[巡视] 逛逛')]);
+  assert.deepEqual(JSON.parse(mine.messages[0].content[0].text.split('\n\n')[1].split('\n')[2].slice('jev_held_untrusted_json: '.length)).map(x=>x.app),['QQ'],'that app only');
+  assert.equal(own.board.size(),1);
+  await own.done();
 });

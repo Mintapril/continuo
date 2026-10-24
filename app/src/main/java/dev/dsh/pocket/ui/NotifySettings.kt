@@ -11,6 +11,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.dsh.pocket.PocketViewModel
+import dev.dsh.pocket.data.JevFocus
 import dev.dsh.pocket.notify.NotifyCenter
 import dev.dsh.pocket.notify.NotifyDefaults
 import kotlinx.coroutines.Dispatchers
@@ -20,7 +21,13 @@ import java.util.Date
 import java.util.Locale
 
 // Notification triggers (cowork-plugin/src/notify.mjs): every app's notifications join one batch that goes to Jev; a
-// batch it judges meaningful wakes a Cowork session, and the model decides what to do. No per-app rules.
+// batch it judges meaningful wakes a Cowork session, and the model decides what to do. No per-app rules of the owner:
+// the model keeps a Jev focus per app itself (listed here, and the owner can clear one).
+
+/** An app's name when this user can see the package (the owner's own apps), else its package name. */
+private fun appLabel(context: android.content.Context, packageName: String): String = runCatching {
+    context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(packageName, 0)).toString()
+}.getOrNull()?.ifBlank { null } ?: packageName
 
 @Composable private fun Toggle(checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) =
     androidx.compose.material3.Switch(checked, onChange, enabled = enabled,
@@ -42,8 +49,9 @@ import java.util.Locale
     }
     var ingress by remember { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(refresh) { ingress = null; ingress = withContext(Dispatchers.IO) { NotifyCenter.ingressListening() } }
-    LaunchedEffect(vm.connected) { if (vm.connected) vm.jevRefresh() }
+    LaunchedEffect(vm.connected) { if (vm.connected) { vm.jevRefresh(); vm.jevFocusRefresh() } }
     var keyDialog by remember { mutableStateOf(false) }
+    var clearing by remember { mutableStateOf<JevFocus.Entry?>(null) }
     var excludeDialog by remember { mutableStateOf(false) }
     var quietDialog by remember { mutableStateOf(false) }
     val clock = remember { SimpleDateFormat("MM-dd HH:mm", Locale.CHINA) }
@@ -62,7 +70,7 @@ import java.util.Locale
                 value = "$quiet 秒", onClick = { quietDialog = true })
         }
         Footnote("开启后，除排除的应用外，所有应用的通知标题和正文都会经 OpenRouter 发给 TypeSafe 的 Jev（typesafe/jev-1.14）判断；" +
-            "判为有实际意义的那几条再作为“他人写的、不可信的内容”交给 Cowork 会话，也就会发到模型服务。验证码、银行、私密聊天也不例外，建议把这类应用加入排除。Jev 无法判断（无密钥、超时等）时不唤起。")
+            "判为有实际意义的那几条再作为“他人写的、不可信的内容”交给 Cowork 会话，也就会发到模型服务；被拦下的那些也会在模型下次被这个应用唤起或巡视时给它看（一天内）。验证码、银行、私密聊天也不例外，建议把这类应用加入排除。Jev 无法判断（无密钥、超时等）时不唤起。")
 
         SectionLabel("状态")
         InsetGroup {
@@ -86,6 +94,24 @@ import java.util.Locale
             else "收到通知后先等 $quiet 秒；期间任何应用的新通知都并进同一批并重新计时，$quiet 秒没有新通知就整批交给 Jev" +
                 "（一直不停时最多攒 ${NotifyDefaults.MAX_WAIT_MS / 60_000} 分钟）。Jev 逐条判断，判为有意义的那几条交给该应用固定的 Cowork 会话；副屏正被任务占用时排队，空闲后开始。")
 
+        SectionLabel("Jev 关注说明")
+        InsetGroup {
+            val focus = vm.jevFocus
+            when {
+                !vm.connected -> GroupRow("需先连接本机 DSH", icon = Glyph.Filter, chevron = false)
+                focus == null && vm.jevFocusError.isNotBlank() -> GroupRow("读取失败", icon = Glyph.Filter, subtitle = vm.jevFocusError, chevron = false, onClick = { vm.jevFocusRefresh() })
+                focus == null -> GroupRow("读取中", icon = Glyph.Filter, chevron = false)
+                focus.isEmpty() -> GroupRow("还没有", icon = Glyph.Filter, subtitle = "所有应用都用 Jev 的默认问题", chevron = false)
+                else -> focus.forEachIndexed { index, entry ->
+                    if (index > 0) GroupDivider()
+                    GroupRow(appLabel(context, entry.packageName) + if (entry.profile == "personal") "（个人）" else "", icon = Glyph.Filter, subtitle = entry.text,
+                        value = clock.format(Date(entry.at)) + JevFocus.byLabel(entry.by).let { if (it.isEmpty()) "" else " · $it" }, onClick = { clearing = entry })
+                }
+            }
+        }
+        Footnote("关注说明由 Cowork 自己写，补在 Jev 对这个应用的问题后面，决定这个应用的哪些通知值得叫醒它；无论怎么写，私聊和 @ 这个账号的消息都算，广告都不算。" +
+            "Jev 拦下的通知只留在 DSH 的内存里，模型下次被这个应用唤起或巡视时会看到。无人值守时，模型只能改它正在用的那个应用，每个应用 6 小时最多改一次；点一条可以清除，清除后 6 小时内它不能再改。")
+
         SectionLabel("最近记录")
         InsetGroup {
             if (log.isEmpty()) GroupRow("暂无记录", icon = Glyph.Clock, chevron = false)
@@ -105,6 +131,14 @@ import java.util.Locale
         NotifyDefaults.QUIET_CHOICES.forEach { seconds ->
             SheetRow("$seconds 秒", if (seconds == NotifyDefaults.DEFAULT_QUIET_SECONDS) "默认" else null, Glyph.Clock, checked = seconds == quiet) {
                 NotifyCenter.setQuietSeconds(seconds); quietDialog = false
+            }
+        }
+    }
+    clearing?.let { entry ->
+        ChoiceDialog({ clearing = null }) {
+            SheetHeader(appLabel(context, entry.packageName), entry.text)
+            SheetRow("清除这条关注说明", "Jev 对这个应用恢复默认问题", Glyph.Trash, tint = MaterialTheme.colorScheme.error) {
+                vm.clearJevFocus(entry.app); clearing = null
             }
         }
     }

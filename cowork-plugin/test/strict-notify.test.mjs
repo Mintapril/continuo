@@ -5,6 +5,7 @@ import { mkdtemp, writeFile, chmod, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { createScreenBoard } from '../src/screen-board.mjs';
 import { notifyMac, parseNotify, framePrompt, titleOf, mergeBatches, createCoalescer, createNotifyHandler, installNotify, loadNotifySecret,
   createJudge, jevBody, jevProbabilities, keepItems, splitByApp, appKey, sessionIdOf, inject,
   SIGNATURE_HEADER, RULE_ID, KIND, LIMITS, MAX_BODY_BYTES, MAX_ITEMS, PRESET, JEV, INSTRUCTION, WORKSPACE } from '../src/notify.mjs';
@@ -245,6 +246,20 @@ test('coalescer: a batch for an app whose session has a turn open joins that tur
   q.dispose();
 });
 
+test('coalescer: a delivered turn that waits in line for the screen has started; it holds the queue like an adopted one', () => {
+  const c = clock(), sent = [], waiting = new Set();
+  const q = createCoalescer({ ...c, isWaiting: id => waiting.has(id), deliver: (key, batch) => { sent.push({ key, batch }); } });
+  q.submit(QQ, parsed());
+  waiting.add(sessionIdOf(QQ)); // its turn started and waits behind a due task holding the screen
+  q.submit(BILI, parsed({ items: [bili()] }));
+  c.advance(LIMITS.adoptMs + 1);
+  assert.equal(sent.length, 1, 'not mistaken for a turn that never started');
+  assert.equal(q.snapshot().inflight.adopted, true);
+  q.finish(sessionIdOf(QQ));
+  assert.deepEqual(sent.map(x => x.key), [QQ, BILI]);
+  q.dispose();
+});
+
 test('coalescer waits for any open Cowork turn, and frees a delivery whose turn never starts', async () => {
   const c = clock(), sent = []; let busy = 0;
   const q = createCoalescer({ ...c, busyUntil: () => busy, deliver: (key, batch) => { sent.push(batch); } });
@@ -448,6 +463,26 @@ test('installNotify: an archived app session comes back before its next turn, or
   await settle();
   assert.deepEqual(h.messages.map(m => m.archived), [false, false]);
   assert.deepEqual(h.unarchived, [id, id]); assert.deepEqual(h.resumed, [id], 'the live agent is reused');
+  h.effects.forEach(dispose => dispose?.());
+});
+
+test('installNotify: a Cowork turn still waiting in line for the screen holds nothing; batches go ahead and wait there with a higher place', async () => {
+  const c = clock(), h = host(), board = createScreenBoard();
+  const { accept } = install(h, { ...c, board });
+  const reminder = { id: 'cowork-reminder', header: { agentPreset: PRESET } };
+  h.emit(reminder, { type: 'turn/start', data: { turn: 1 } });
+  board.enter(reminder.id); // a due task waits behind some other turn
+  assert.equal((await accept(parsed())).queued, true);
+  await settle();
+  assert.equal(h.messages.length, 1, 'delivered at once');
+  h.start(sessionIdOf(QQ), h.messages[0].m.source.deliveryId); h.end(sessionIdOf(QQ)); await settle();
+  board.leave(reminder.id); // the line moved: the reminder holds the screen now
+  await accept(parsed({ items: [bili()] }));
+  await settle();
+  assert.equal(h.messages.length, 1, 'held while the reminder holds the screen');
+  h.emit(reminder, { type: 'turn/end', data: { reason: { kind: 'completed' } } });
+  await settle();
+  assert.equal(h.messages.length, 2);
   h.effects.forEach(dispose => dispose?.());
 });
 

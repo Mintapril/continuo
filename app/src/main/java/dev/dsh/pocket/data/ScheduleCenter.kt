@@ -248,6 +248,61 @@ object ScheduleFormat {
         }
     }
 
+    /**
+     * The note(s) inside a `[SELF NOTE]` / `[SELF NOTE BATCH]` section: a note (便条) the Cowork model left itself, which
+     * the plugin reframes before the model sees it (cowork-plugin/src/restricted.mjs `reframeReminder`). A note the plugin
+     * could not parse carries the whole delivered text as `raw_reminder_json`. Null when the text is not that framing.
+     */
+    fun notePrompts(text: String): List<String>? {
+        val lines = text.lines()
+        fun payload(prefix: String) = lines.firstOrNull { it.startsWith(prefix) }?.removePrefix(prefix)
+        fun string(prefix: String) = payload(prefix)?.let { runCatching { JSONTokener(it).nextValue() as? String }.getOrNull() }
+        return when (lines.firstOrNull()?.trim()) {
+            "[SELF NOTE]" -> (string("note_json: ") ?: string("raw_reminder_json: "))?.let { listOf(it) }
+            "[SELF NOTE BATCH]" -> payload("notes_json: ")?.let { raw -> runCatching { JSONArray(raw).objects().map { it.text("note") } }.getOrNull() }
+            else -> null
+        }
+    }
+
+    /**
+     * The owner's direction(s) inside a `[PATROL]` section: a due patrol, which the plugin sends with its fixed checklist
+     * (cowork-plugin/src/restricted.mjs `patrolChecklist`). Null when the text is not that section.
+     */
+    fun patrolDirections(text: String): List<String>? {
+        val lines = text.lines()
+        if (lines.firstOrNull()?.trim() != "[PATROL]") return null
+        val raw = lines.firstOrNull { it.startsWith("patrols_json: ") }?.removePrefix("patrols_json: ") ?: return null
+        return runCatching { JSONArray(raw).objects().map { it.text("direction") } }.getOrNull()
+    }
+
+    /** A delivered reminder message: the owner's due tasks, their patrols and the model's own notes. */
+    data class Delivery(val tasks: List<String>, val notes: List<String>, val patrols: List<String> = emptyList()) {
+        private val kinds get() = listOfNotNull("自动化任务".takeIf { tasks.isNotEmpty() }, "巡视".takeIf { patrols.isNotEmpty() }, "便条".takeIf { notes.isNotEmpty() })
+        val title get() = kinds.joinToString(" · ").ifEmpty { "自动化任务" }
+        val body get(): String {
+            val labelled = kinds.size > 1
+            return (tasks + patrols.map { if (labelled) "巡视：$it" else it.ifBlank { "巡视" } } + notes.map { if (labelled) "便条：$it" else it }).joinToString("\n\n")
+        }
+    }
+
+    /**
+     * What a user message from source kind `schedule` delivered, or null when it is not a framing this app knows. The
+     * plugin may split one batch into the host's section (the owner's tasks), a patrol section and a note section,
+     * separated by a blank line; each framing joins its own lines with single newlines and JSON-encodes every value, so
+     * no section has one.
+     */
+    fun delivery(text: String): Delivery? {
+        val tasks = mutableListOf<String>(); val notes = mutableListOf<String>(); val patrols = mutableListOf<String>()
+        for (section in text.split("\n\n")) {
+            val reminders = reminderPrompts(section)
+            if (reminders != null) { tasks += reminders; continue }
+            val directions = patrolDirections(section)
+            if (directions != null) { patrols += directions; continue }
+            notes += notePrompts(section) ?: return null
+        }
+        return Delivery(tasks, notes, patrols)
+    }
+
     private fun JSONArray?.ints(): List<Int> = if (this == null) emptyList() else (0 until length()).map { optInt(it) }
 
     /**
@@ -299,7 +354,25 @@ object ScheduleFormat {
         }
     }
 
-    /** The request a new task starts from: the model creates it with schedule_create in a new Cowork session. */
+    /**
+     * Patrols: the Cowork model looks after the apps on its own at the given times. By default they live in one standing
+     * session under a fixed id (listed with the apps' standing sessions), which visits 2 or 3 apps each time; one in an
+     * app's own standing session covers that app. The prompt starts with the marker; when it is due, the plugin adds the
+     * checklist of what a patrol covers. The owner writes the direction and persona after the template.
+     */
+    const val PATROL_SESSION = "cowork-app-patrol"
+    const val PATROL_TITLE = "巡视 · 自动运营"
+    const val PATROL_MARKER = "[巡视]"
+    fun patrolTask(oneApp: Boolean): String =
+        if (oneApp) "$PATROL_MARKER 巡视这个应用。经营方向和人设：" else "$PATROL_MARKER 每次挑 2–3 个应用逛逛。经营方向和人设："
+    /** The patrol session's own title, or "巡视 <app>" for an app's standing session (titled "<app> · 自动运营"). */
+    fun patrolTitle(session: String?): String =
+        session?.takeIf { it != PATROL_TITLE }?.substringBefore(" · ")?.trim()?.takeIf { it.isNotEmpty() }?.let { "巡视 $it" } ?: "巡视"
+    /** Daily at 9, 12, 15, 18 and 21 o'clock, in this phone's zone. */
+    fun patrolTiming(zone: String = ZoneId.systemDefault().id) = TimingDraft("cron", cron = "0 9-21/3 * * *", zone = zone)
+
+    /** The request a new task starts from: the model creates it with schedule_create in the session it is sent to. The
+     *  task text goes in verbatim, so a patrol keeps its marker. */
     fun request(title: String, task: String, timing: TimingDraft): String =
-        "请用自动化任务（schedule_create）安排下面这件事，创建后告诉我结果，现在不用执行：\n名称：${title.trim()}\n时间：${timing.describe()}\n到时要做：${task.trim()}"
+        "请用自动化任务（schedule_create）安排下面这件事，创建后告诉我结果，现在不用执行：\n名称：${title.trim()}\n时间：${timing.describe()}\n到时要做（原样写进任务内容）：${task.trim()}"
 }

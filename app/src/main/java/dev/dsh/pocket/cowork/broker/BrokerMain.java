@@ -191,6 +191,8 @@ public final class BrokerMain {
         if(tick%10==0)try{workspace.closeBackgroundPopups();}catch(Exception popupGateFailure){}
         // Every 10 s: work-profile notification channels held at the lowest importance (apps add channels at any time).
         if(tick%10==0)try{workspace.quietNotifications();}catch(Exception quietFailure){}
+        // Every 10 s: work-profile apps kept silent (their sound would come out of the phone's speaker).
+        if(tick%10==0)try{workspace.quietAudio();}catch(Exception audioFailure){}
         // 1 Hz: an app installed into the work profile must never stay visible to the personal launcher long enough
         // for an icon of it to land on the home screen (the user's report: icon shows up and only a reboot clears it).
         try{workspace.hideNewInstalls();}catch(Exception installSweepFailure){}

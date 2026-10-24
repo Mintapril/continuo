@@ -51,6 +51,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import dev.dsh.pocket.PocketViewModel
 import dev.dsh.pocket.data.*
+import dev.dsh.pocket.island.IslandRuntime
 import io.noties.markwon.AbstractMarkwonPlugin
 import io.noties.markwon.Markwon
 import io.noties.markwon.core.MarkwonTheme
@@ -206,8 +207,10 @@ import org.json.JSONObject
 
 @Composable private fun Working(vm: PocketViewModel) {
     val active = vm.rows.lastOrNull()
+    val island by IslandRuntime.store.snapshots.collectAsState()
     val state = when {
         vm.pending.any { it.text("agentId") == vm.selected } -> "等待你的回答"
+        waitsForScreen(vm.selected.orEmpty(), vm.running, sessionMode(vm.selectedSummary), island.screenHolder) -> "等副屏：另一个 Cowork 任务正在用，结束后自动开始"
         active?.role == "tool" && active.streaming -> "${toolLabel(toolName(active)).verb}…"
         active?.streaming == true && active.text.isNotBlank() -> "正在回复…"
         active?.streaming == true && active.reasoning.isNotBlank() -> "正在思考…"

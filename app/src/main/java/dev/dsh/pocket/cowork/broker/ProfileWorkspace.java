@@ -58,6 +58,7 @@ public final class ProfileWorkspace implements AutoCloseable {
         launchers.reconcile();
         try{popups=new BackgroundPopupGate(context,profile);popups.enforce();}catch(Exception e){System.err.println("background pop-up gate unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
         try{quiet=new QuietNotificationGate(profile);quiet.enforce();}catch(Exception e){System.err.println("notification quieting unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
+        try{audio=new QuietAudioGate(context,profile);audio.enforce();}catch(Exception e){System.err.println("audio silencing unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
         try{apps=new ProfileApps(profile);}catch(Exception e){System.err.println("app management unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
     }
     private volatile ProfileApps apps;
@@ -69,6 +70,9 @@ public final class ProfileWorkspace implements AutoCloseable {
     private volatile QuietNotificationGate quiet;
     /** See {@link QuietNotificationGate}: from the watchdog every 10 s and on every package change of the profile. */
     public void quietNotifications(){QuietNotificationGate gate=quiet;if(gate!=null)gate.enforce();}
+    private volatile QuietAudioGate audio;
+    /** See {@link QuietAudioGate}: from the watchdog every 10 s and on every package change of the profile. */
+    public void quietAudio(){QuietAudioGate gate=audio;if(gate!=null)gate.enforce();}
     private volatile NotificationGrant notifications;
     /** See {@link NotificationGrant}: only for the packages a change read names, so only apps installed from now on. */
     private void allowNotifications(List<String> changed){NotificationGrant gate=notifications;if(gate!=null)gate.allow(changed);}
@@ -914,9 +918,9 @@ public final class ProfileWorkspace implements AutoCloseable {
      * which the personal launcher can put an icon of it on the home screen. A package change of the profile since the
      * previous call (also one the install watch does not see) hides again the entries we hid of that package that are
      * visible again (an app uninstalled from the profile and installed back), allows notifications of an app it newly
-     * names ({@link NotificationGrant}), and quiets notification channels ({@link QuietNotificationGate}) and closes
-     * background pop-ups at once instead of at the next drift repair. Takes only the launcher-hider, notification grant,
-     * notification quieting and pop-up gate locks. */
+     * names ({@link NotificationGrant}), and quiets notification channels ({@link QuietNotificationGate}), closes
+     * background pop-ups and silences the apps ({@link QuietAudioGate}) at once instead of at the next drift repair.
+     * Takes only the launcher-hider, notification grant, notification quieting, pop-up gate and audio gate locks. */
     public void hideNewInstalls(){sweepInstalls(false);}
     /** {@link #hideNewInstalls}, from the watchdog and the install watch. {@code installed}: an install session of the
      *  profile just finished, so background pop-ups are closed even when the change read fails. */
@@ -924,7 +928,7 @@ public final class ProfileWorkspace implements AutoCloseable {
         try{launchers.hideUnseen();}catch(Exception e){System.err.println("launcher install sweep failed: "+e.getClass().getSimpleName());}
         List<String> changed=changedPackages();
         if(changed!=null){launchers.hideVisibleAgain(changed);allowNotifications(changed);quietNotifications();}
-        if(installed||changed!=null)closeBackgroundPopups();
+        if(installed||changed!=null){closeBackgroundPopups();quietAudio();}
     }
     private final InstallWatch.Changes changes=new InstallWatch.Changes();
     private volatile String changesFailure="";

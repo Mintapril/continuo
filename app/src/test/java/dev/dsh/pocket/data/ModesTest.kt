@@ -1,5 +1,8 @@
 package dev.dsh.pocket.data
 
+import dev.dsh.pocket.island.IslandSnapshot
+import dev.dsh.pocket.island.IslandTaskState
+import dev.dsh.pocket.island.IslandTaskUpdate
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -125,5 +128,24 @@ class ModesTest {
         assertEquals(greeting(9, Calendar.MONDAY, 3), greeting(9, Calendar.MONDAY, 3))
         assertEquals("workspace", workspaceLabel("/workspace/"))
         assertEquals("本机", workspaceLabel(""))
+    }
+
+    @Test fun aCoworkTurnWaitsForTheScreenOnlyWhileAnotherSessionHoldsIt() {
+        fun snapshot(id: String, state: IslandTaskState, connected: Boolean = true) =
+            IslandSnapshot(task = IslandTaskUpdate(id, 1, state), backendConnected = connected)
+        assertEquals("qq", snapshot("qq", IslandTaskState.RUNNING).screenHolder)
+        assertEquals("qq", snapshot("qq", IslandTaskState.PAUSING).screenHolder)
+        assertEquals("qq", snapshot("qq", IslandTaskState.STOPPING).screenHolder)
+        // Waiting for the owner: a turn in line is turned away, not kept waiting. Over or disconnected: nobody holds it.
+        for (state in listOf(IslandTaskState.WAITING, IslandTaskState.APPROVAL, IslandTaskState.PAUSED, IslandTaskState.COMPLETED, IslandTaskState.STOPPED, IslandTaskState.ERROR))
+            assertNull(state.name, snapshot("qq", state).screenHolder)
+        assertNull(snapshot("qq", IslandTaskState.RUNNING, connected = false).screenHolder)
+        assertNull(IslandSnapshot().screenHolder)
+
+        assertTrue(waitsForScreen("mine", true, TaskMode.COWORK, "qq"))
+        assertFalse("it holds the screen itself", waitsForScreen("qq", true, TaskMode.COWORK, "qq"))
+        assertFalse("not running", waitsForScreen("mine", false, TaskMode.COWORK, "qq"))
+        assertFalse("Code turns never use the AI screen", waitsForScreen("mine", true, TaskMode.CODE, "qq"))
+        assertFalse("nobody holds it", waitsForScreen("mine", true, TaskMode.COWORK, null))
     }
 }

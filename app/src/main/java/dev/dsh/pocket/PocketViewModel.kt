@@ -198,7 +198,29 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     fun scheduleUpdate(entry: JSONObject, title: String?, prompt: String?, change: JSONObject?, saved: () -> Unit) =
         task { schedules.update(entry, title, prompt, change); notice = "已保存"; saved() }
     fun scheduleDelete(entry: JSONObject) = task { schedules.delete(entry); notice = "任务已删除" }
-    fun draftAutomation(text: String) { if (selected != null) leaveChat(); changeMode(TaskMode.COWORK); updateDraft(text) }
+    /** A drafted request to create an automation task: in a new Cowork chat, or in an existing session ([sessionId]),
+     *  such as an app's standing session for a patrol of that app. The patrol session ([ScheduleFormat.PATROL_SESSION])
+     *  is created on first use under its fixed id, and brought back if it was archived. The owner checks and sends it. */
+    fun draftAutomation(text: String, sessionId: String? = null) {
+        if (sessionId == ScheduleFormat.PATROL_SESSION) {
+            task {
+                val id = if (sessions.any { it.text("sessionId") == sessionId }) {
+                    if (sessionId in archived) api.call("workspace/unarchiveSession", obj("sessionId" to sessionId))
+                    sessionId
+                } else {
+                    val created = api.call("session/create", obj("sessionId" to sessionId, "agentPreset" to TaskMode.COWORK.preset, "cwd" to "/workspace")).getString("sessionId")
+                    // Another id means a stored session already holds the fixed one (this list had not shown it yet):
+                    // the host made a blank one instead, and the stored patrol session is the one to use.
+                    if (created == sessionId) api.call("session/rename", obj("sessionId" to created, "title" to ScheduleFormat.PATROL_TITLE))
+                    sessionId
+                }
+                refreshSessions(); openSession(id); updateDraft(text)
+            }
+            return
+        }
+        if (sessionId != null) { openSession(sessionId); updateDraft(text); return }
+        if (selected != null) leaveChat(); changeMode(TaskMode.COWORK); updateDraft(text)
+    }
 
     // ── 通知触发的 Jev 判断 ──────────────────────────────────────────────
     // The Cowork plugin calls Jev with a key from DSH's own credential store; the app only hands the key over once

@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import dev.dsh.pocket.BuildConfig
 import dev.dsh.pocket.PocketViewModel
 import dev.dsh.pocket.data.*
+import dev.dsh.pocket.island.IslandRuntime
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.util.Calendar
@@ -73,7 +74,7 @@ private val SETTINGS_PAGES = setOf(Screen.CONNECTION, Screen.COWORK, Screen.NOTI
                     else when (target) {
                         Screen.HOME -> Home(vm, openDrawer) { screen = Screen.TASKS }
                         Screen.TASKS -> Tasks(vm, openDrawer) { screen = Screen.HOME }
-                        Screen.AUTOMATION -> AutomationScreen(vm, openDrawer) { text -> vm.draftAutomation(text); screen = Screen.HOME }
+                        Screen.AUTOMATION -> AutomationScreen(vm, openDrawer) { text, sessionId -> vm.draftAutomation(text, sessionId); screen = Screen.HOME }
                         Screen.SETTINGS -> Settings(vm, openDrawer) { screen = it }
                         Screen.CONNECTION -> ConnectionSettings(vm) { screen = Screen.SETTINGS }
                         Screen.COWORK -> CoworkSettings(vm) { screen = Screen.SETTINGS }
@@ -342,6 +343,8 @@ private val SETTINGS_PAGES = setOf(Screen.CONNECTION, Screen.COWORK, Screen.NOTI
 @Composable private fun TaskRow(vm: PocketViewModel, row: JSONObject, now: Long, pendingAgents: Set<String>, more: () -> Unit) {
     val id = row.text("sessionId")
     val running = row.optBoolean("running"); val waiting = needsInput(row, pendingAgents)
+    val island by IslandRuntime.store.snapshots.collectAsState()
+    val queued = !waiting && waitsForScreen(id, running, sessionMode(row), island.screenHolder)
     val haptic = rememberHaptic()
     Column(Modifier.fillMaxWidth().combinedClickable(onClick = { vm.openSession(id) }, onLongClick = { haptic(); more() })) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -361,8 +364,9 @@ private val SETTINGS_PAGES = setOf(Screen.CONNECTION, Screen.COWORK, Screen.NOTI
                     Spacer(Modifier.width(8.dp))
                     Text(relativeTime(row.optLong("updatedAt"), now), style = MaterialTheme.typography.labelSmall, color = Pocket.faint)
                     if (waiting || running) {
-                        Spacer(Modifier.width(10.dp)); ContinuoCursor(height = 12.dp, color = if (waiting) Pocket.warning else Pocket.accent, mode = if (waiting) CursorMode.STEADY else CursorMode.BLINK); Spacer(Modifier.width(6.dp))
-                        Text(if (waiting) "需要输入" else "运行中", style = MaterialTheme.typography.labelSmall, color = if (waiting) Pocket.warning else Pocket.accent)
+                        val tint = when { waiting -> Pocket.warning; queued -> Pocket.muted; else -> Pocket.accent }
+                        Spacer(Modifier.width(10.dp)); ContinuoCursor(height = 12.dp, color = tint, mode = if (waiting || queued) CursorMode.STEADY else CursorMode.BLINK); Spacer(Modifier.width(6.dp))
+                        Text(when { waiting -> "需要输入"; queued -> "等副屏"; else -> "运行中" }, style = MaterialTheme.typography.labelSmall, color = tint)
                     }
                 }
             }

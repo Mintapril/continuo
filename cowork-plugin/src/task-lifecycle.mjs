@@ -1,6 +1,16 @@
 import { authenticatedRequest } from './auth.mjs';
+import { sharedScreenBoard } from './screen-board.mjs';
 
 const MAX_BYTES = 16 * 1024, TIMEOUT_MS = 6000, RETRY_MS = 300, POLL_MS = 500, OFFLINE_WAIT_MS = 25000, OFFLINE_POLL_MS = 1500;
+// One AI screen: a turn that finds another session's turn on it waits in line instead of failing. Lower goes first;
+// equal priorities keep their arrival order. A turn of the owner (a message they sent) beats a notification trigger,
+// which beats a due automation task or note.
+export const PRIORITY = Object.freeze({ owner: 0, notification: 1, scheduled: 2 });
+export const SCREEN_WAIT_MS = 30 * 60_000;
+// An unattended turn that has held the screen this long while others wait is asked to wrap up (onYield 'queue'): soon
+// for a notification trigger, later for a due task or note. Both stay well inside SCREEN_WAIT_MS. An owner waiting asks
+// at once (onYield 'owner'); a turn of the owner is never asked.
+export const NUDGE_AFTER_MS = Object.freeze({ notification: 5 * 60_000, scheduled: 15 * 60_000 });
 function delay(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(unavailable());
@@ -22,6 +32,9 @@ const offline = () => Object.assign(new Error('Cowork 控制器无法自动启�
 // state word is surfaced so the user can clear it on the phone instead of guessing.
 const busy = state => Object.assign(new Error(`Cowork 原生任务尚未结束（状态 ${state}）：请在 Continuo / DSH Pocket 中查看并结束或交还该 Cowork 任务，然后重新发送。`
   + ` (Cowork native task is still active: state=${state}. Finish or hand back the phone task in the app, then send the turn again.)`), { code: 'COWORK_TASK_BUSY' });
+// Plugin-side, like COWORK_TASK_BUSY: no broker code. The turn ends with this visible error instead of silently.
+const screenBusy = minutes => Object.assign(new Error(`AI 副屏一直被另一个 Cowork 会话占用，排队 ${minutes} 分钟仍没轮到，这一轮没有开始。`
+  + ` (The AI screen stayed in use by another Cowork session; this turn waited ${minutes} minutes in line and did not start.)`), { code: 'COWORK_SCREEN_BUSY' });
 function refusedOffline(bytes) {
   try {
     const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
@@ -59,9 +72,12 @@ function snapshot(bytes) {
  * Active waiting_user drains the captured turn; exact approval never resumes or replays its tools.
  * A later waiting_user GET refuses admission until native stop, without poisoning the transport.
  */
-export function createTaskLifecycle({ secret, transport = authenticatedRequest, offlineWaitMs = OFFLINE_WAIT_MS, now = Date.now, sleep = delay } = {}) {
+export function createTaskLifecycle({ secret, transport = authenticatedRequest, offlineWaitMs = OFFLINE_WAIT_MS, now = Date.now, sleep = delay,
+  screenWaitMs = SCREEN_WAIT_MS, nudgeAfterMs = NUDGE_AFTER_MS, board = sharedScreenBoard(), onYield } = {}) {
   const pause = (ms, signal) => ms <= 0 ? Promise.resolve() : sleep(ms, signal);
   const records = new Map(), pending = new Map();
+  // Turns of other sessions waiting for the screen this lease holds (see waitForScreen).
+  const waiters = [];
   let lease, fault = false, disposed = false, ioTail = Promise.resolve();
   function track(task, promise) {
     pending.set(promise, task?.agent);
@@ -80,6 +96,8 @@ export function createTaskLifecycle({ secret, transport = authenticatedRequest, 
   }
   function fail(task) {
     fault = true;
+    // The fault is sticky for every session: nobody in line can begin until a later turn recovers it.
+    for (const waiter of [...waiters]) waiter.fail(unavailable());
     // A failed task is finished locally at once: it never polls, ends or acks again (an old
     // execution's late 409 must not re-poison a recovered host). Its lease is kept until a
     // verified native snapshot proves the execution is gone or retires it (see recover).
@@ -137,7 +155,74 @@ export function createTaskLifecycle({ secret, transport = authenticatedRequest, 
     task.native = value;
     return value;
   }
-  function release(task) { stopTimer(task); task.closed = true; task.calls.clear(); if (lease === task) lease = undefined; }
+  function release(task) {
+    stopTimer(task); clearTimeout(task.nudgeTimer); task.nudgeTimer = undefined;
+    task.closed = true; task.calls.clear();
+    if (lease === task) { lease = undefined; grant(); }
+  }
+  /** Hand a free screen to the first turn in line: reserved here, synchronously, so a newcomer cannot slip in. */
+  function grant() {
+    if (lease || !waiters.length) return;
+    let next = 0;
+    for (let i = 1; i < waiters.length; i++) if (waiters[i].priority < waiters[next].priority) next = i;
+    const [waiter] = waiters.splice(next, 1);
+    lease = waiter.task; waiter.task.heldSince = now();
+    waiter.admit();
+    nudge();
+  }
+  /** Ask an unattended holder to wrap up when someone waits: the owner at once, other runs once it held the screen for
+   *  nudgeAfterMs (by the most urgent waiter). Each kind of request is made once per holder; the owner's always can be. */
+  function nudge() {
+    const holder = lease;
+    if (!holder || holder.ended || !(holder.priority > PRIORITY.owner) || !waiters.length) return;
+    const first = Math.min(...waiters.map(w => w.priority));
+    if (first === PRIORITY.owner) {
+      if (holder.ownerAsked) return;
+      holder.ownerAsked = true; clearTimeout(holder.nudgeTimer); holder.nudgeTimer = undefined;
+      try { onYield?.(holder.agent, 'owner'); } catch {}
+      return;
+    }
+    if (holder.ownerAsked || holder.queueAsked) return;
+    const at = (holder.heldSince ?? now()) + (first === PRIORITY.notification ? nudgeAfterMs.notification : nudgeAfterMs.scheduled);
+    if (holder.nudgeTimer && holder.nudgeAt <= at) return;
+    clearTimeout(holder.nudgeTimer);
+    holder.nudgeAt = at;
+    holder.nudgeTimer = setTimeout(() => {
+      holder.nudgeTimer = undefined;
+      if (lease !== holder || holder.ended || !waiters.length || holder.ownerAsked || holder.queueAsked) return;
+      holder.queueAsked = true;
+      try { onYield?.(holder.agent, 'queue'); } catch {}
+    }, Math.max(0, at - now()));
+    holder.nudgeTimer.unref?.();
+  }
+  /**
+   * Wait in line while another session's turn holds the screen: until grant() reserves it for this task, the turn
+   * or its caller is cancelled, the fault becomes sticky, or screenWaitMs passes (a visible error, not silence).
+   * An owner's turn asks an unattended holder, once, to wrap up (onYield); it never cuts a step short.
+   */
+  function waitForScreen(task, signal) {
+    return new Promise((resolve, reject) => {
+      const barrier = AbortSignal.any([task.control.signal, signal]);
+      let timer, done = false;
+      const settle = error => {
+        if (done) return;
+        done = true; clearTimeout(timer); barrier.removeEventListener('abort', abort);
+        const index = waiters.indexOf(waiter);
+        if (index >= 0) waiters.splice(index, 1);
+        board.leave(task.taskId);
+        if (error) reject(error); else resolve();
+      };
+      const waiter = { task, priority: task.priority, admit: () => settle(), fail: error => settle(error) };
+      const abort = () => settle(unavailable());
+      if (disposed || barrier.aborted) return reject(unavailable());
+      barrier.addEventListener('abort', abort, { once: true });
+      timer = setTimeout(() => settle(screenBusy(Math.round(screenWaitMs / 60_000))), screenWaitMs);
+      timer.unref?.();
+      waiters.push(waiter);
+      board.enter(task.taskId);
+      nudge();
+    });
+  }
   async function acknowledge(task, value) {
     task.command = value;
     let result = matching(task, await wire(task, 'POST', { ...ids(task), operation: 'ack', commandId: value.commandId }));
@@ -271,13 +356,20 @@ export function createTaskLifecycle({ secret, transport = authenticatedRequest, 
     if (task.admission) return task.admission;
     task.admission = track(task, Promise.resolve().then(async () => {
       eligible(task, signal);
-      if (lease && lease !== task) {
+      while (lease && lease !== task) {
         const previous = lease;
-        if (!previous.ended || !previous.finish) throw unavailable();
-        await afterPrevious(task, previous, signal);
-        eligible(task, signal);
+        if (previous.ended && previous.finish) {
+          // The holder's turn is over and its native end is in flight: follow it closely, and refuse when it fails.
+          await afterPrevious(task, previous, signal);
+          eligible(task, signal);
+          if (lease === previous) throw unavailable();
+        } else {
+          // Another turn is on the screen (or was handed it first): wait in line.
+          await waitForScreen(task, signal);
+          eligible(task, signal);
+        }
       }
-      if (lease && lease !== task) throw unavailable();
+      if (lease !== task) task.heldSince = now();
       lease = task; // Reserve before GET; a failed/uncertain begin must not permit replacement overlap.
       let current, value;
       // Native wakes the app-side controller on demand when begin finds a stale heartbeat; wait for it briefly.
@@ -357,8 +449,8 @@ export function createTaskLifecycle({ secret, transport = authenticatedRequest, 
       finish(task); // Starts only in a microtask, after synchronous event emission returns.
     }
   }
-  async function preStep(agent, turn, signal) {
-    if (!turnValid(turn) || !id(agent?.session?.id) || !signal
+  async function preStep(agent, turn, signal, priority = PRIORITY.owner) {
+    if (!turnValid(turn) || !id(agent?.session?.id) || !signal || !Object.values(PRIORITY).includes(priority)
       || typeof agent.cancel !== 'function' || typeof agent.whenIdle !== 'function') throw unavailable();
     let record = records.get(agent);
     if (record?.removed) throw unavailable();
@@ -380,6 +472,8 @@ export function createTaskLifecycle({ secret, transport = authenticatedRequest, 
         control: new AbortController(), calls: new Set(), tools: new Set(), outcome: 'error' };
       record.current = task;
     }
+    // A turn keeps the place in line its first step asked for (only the first step can wait).
+    task.priority ??= priority;
     // A sticky fault is recoverable exactly once per turn, from a verified native snapshot only.
     if (!disposed && fault && !await recover(task)) throw unavailable();
     eligible(task, signal);
@@ -417,7 +511,13 @@ export function createTaskLifecycle({ secret, transport = authenticatedRequest, 
       track(task, Promise.resolve().then(() => { cancel(task); return finish(task); }));
     }
   }
-  function dispose() { if (!disposed) { for (const agent of records.keys()) remove(agent); disposed = true; } }
+  function dispose() {
+    if (disposed) return;
+    for (const agent of records.keys()) remove(agent);
+    disposed = true;
+    for (const waiter of [...waiters]) waiter.fail(unavailable());
+    if (lease) { clearTimeout(lease.nudgeTimer); lease.nudgeTimer = undefined; }
+  }
   async function flush(agent) {
     // Drain deferred work, not the future polling timer. Useful for deterministic offline tests/shutdown.
     for (;;) {

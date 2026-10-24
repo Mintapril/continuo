@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import dev.dsh.pocket.PocketViewModel
 import dev.dsh.pocket.data.ScheduleFormat
 import dev.dsh.pocket.data.ScheduleFormat.TimingDraft
+import dev.dsh.pocket.data.isAppSession
 import dev.dsh.pocket.data.objects
 import dev.dsh.pocket.data.text
 import kotlinx.coroutines.CancellationException
@@ -31,7 +32,7 @@ private enum class AutomationFilter(val label: String) { ALL("全部"), ACTIVE("
  * per task its rule, next run, saved runs, edits and deletion. A new task is drafted as a request to the Cowork model,
  * because the host creates tasks only through the model's schedule_create.
  */
-@Composable internal fun AutomationScreen(vm: PocketViewModel, openDrawer: () -> Unit, draft: (String) -> Unit) {
+@Composable internal fun AutomationScreen(vm: PocketViewModel, openDrawer: () -> Unit, draft: (text: String, sessionId: String?) -> Unit) {
     val center = vm.schedules
     LaunchedEffect(vm.connected) { if (vm.connected) vm.schedulesRefresh() }
     var filter by remember { mutableStateOf(AutomationFilter.ALL) }
@@ -82,7 +83,8 @@ private enum class AutomationFilter(val label: String) { ALL("全部"), ACTIVE("
                         subtitle = if (filter == AutomationFilter.ALL) "点右上角 + 写下要做的事和时间，或直接在 Cowork 任务里说“每天 9 点帮我……”" else null)
                 }
                 rows.forEach { entry -> TaskCard(vm, entry) { detail = entry.text("id") } }
-                Footnote("任务由手机上的 DSH 执行：DSH 必须在运行。到期时若另一个 Cowork 任务正占用副屏，或执行器未连接，这次运行会失败，DSH 不会自动重试；周期任务等下一次。Cowork 的定时运行不能新建、修改或删除任务，高影响操作仍需你确认。")
+                Footnote("任务由手机上的 DSH 执行：DSH 必须在运行。到期时若另一个 Cowork 任务正占用副屏，这一轮会排队，等它结束再开始（最多 30 分钟）；执行器未连接时这次运行会失败，DSH 不会自动重试，周期任务等下一次。" +
+                    "没人看着的运行只能给自己留便条（名称以“便条：”开头的一次性任务），不能修改或删除任务；便条可以在这里删除。")
             } else if (center.error.isNotBlank()) {
                 InsetGroup { GroupRow("任务目录读取失败", icon = Glyph.Warning, chevron = false, subtitle = center.error, onClick = { vm.schedulesRefresh() }) }
             }
@@ -102,7 +104,13 @@ private enum class AutomationFilter(val label: String) { ALL("全部"), ACTIVE("
         ConfirmDialog("删除自动化任务", "「${entry.text("title")}」和它保存的运行记录会被永久删除，之后不再执行；原会话和已发出的消息保留。", "删除", destructive = true,
             dismiss = { confirmDelete = null }) { vm.scheduleDelete(entry); confirmDelete = null }
     }
-    if (creating) NewTaskSheet(dismiss = { creating = false }) { text -> creating = false; draft(text) }
+    if (creating) {
+        // Patrols go to the patrol session by default (a few apps each time); an app's own standing session (from the
+        // notification trigger) takes a patrol of just that app. Archived app sessions are left out.
+        val apps = vm.sessions.filter { isAppSession(it) && it.text("sessionId") != ScheduleFormat.PATROL_SESSION && it.text("sessionId") !in vm.archived }
+            .map { it.text("sessionId") to sessionTitle(it) }
+        NewTaskSheet(apps, dismiss = { creating = false }) { text, sessionId -> creating = false; draft(text, sessionId) }
+    }
 }
 
 private fun sessionName(vm: PocketViewModel, id: String) = vm.sessions.firstOrNull { it.text("sessionId") == id }?.let { sessionTitle(it) } ?: "会话 ${id.take(8)}"
@@ -258,23 +266,42 @@ private fun sessionName(vm: PocketViewModel, id: String) = vm.sessions.firstOrNu
     }
 }
 
-@Composable private fun NewTaskSheet(dismiss: () -> Unit, draft: (String) -> Unit) {
+@Composable private fun NewTaskSheet(apps: List<Pair<String, String>>, dismiss: () -> Unit, draft: (text: String, sessionId: String?) -> Unit) {
     var title by remember { mutableStateOf("") }
     var task by remember { mutableStateOf("") }
     var timing by remember { mutableStateOf(TimingDraft()) }
+    var target by remember { mutableStateOf<String?>(null) }
     val valid = title.isNotBlank() && task.isNotBlank() && timing.problem() == null
     PocketSheet(dismiss) {
         SheetHeader("新建自动化任务", "生成一条 Cowork 请求，由模型创建任务")
         Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
+            Text("在哪里运行", Modifier.padding(bottom = 6.dp), style = MaterialTheme.typography.labelMedium, color = Pocket.muted)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill("新的 Cowork 对话", selected = target == null, trailing = null) { target = null }
+                Pill("巡视会话", selected = target == ScheduleFormat.PATROL_SESSION, trailing = null) { target = ScheduleFormat.PATROL_SESSION }
+                apps.forEach { (id, name) -> Pill(name, selected = target == id, trailing = null) { target = id } }
+            }
+            Text(when (target) {
+                ScheduleFormat.PATROL_SESSION -> "巡视会话每次挑 2–3 个应用逛，不同应用轮流去；所有巡视的记录都在这一个会话里。"
+                null -> "巡视建议放在巡视会话里：点下面的模板会自动选它。"
+                else -> "放在这个应用自己的会话里，只巡视这个应用，适合想重点照看的应用。"
+            }, Modifier.padding(top = 6.dp), style = MaterialTheme.typography.labelSmall, color = Pocket.faint)
+            TextButton({
+                if (target == null) target = ScheduleFormat.PATROL_SESSION
+                val oneApp = target != ScheduleFormat.PATROL_SESSION
+                title = ScheduleFormat.patrolTitle(if (oneApp) apps.firstOrNull { it.first == target }?.second else null)
+                task = ScheduleFormat.patrolTask(oneApp); timing = ScheduleFormat.patrolTiming()
+            }, Modifier.padding(top = 4.dp)) { Text("填入巡视模板", color = Pocket.accent) }
             OutlinedTextField(title, { title = it.take(120) }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("名称，如“每日签到”") }, shape = RoundedCornerShape(12.dp))
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(task, { task = it }, Modifier.fillMaxWidth().heightIn(min = 110.dp, max = 240.dp), label = { Text("到时要做什么") }, shape = RoundedCornerShape(12.dp))
             Text("时间", Modifier.padding(top = 12.dp, bottom = 6.dp), style = MaterialTheme.typography.labelMedium, color = Pocket.muted)
             TimingEditor(timing) { timing = it }
-            Text("点“写入新任务”后会回到首页，请求已填进 Cowork 输入框；检查后由你发送。", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.labelSmall, color = Pocket.faint)
+            Text(if (target == null) "点“写入新任务”后会回到首页，请求已填进 Cowork 输入框；检查后由你发送。"
+                else "点“写入新任务”后会打开所选会话（巡视会话第一次用时会自动建好），请求已填进输入框；检查后由你发送。", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.labelSmall, color = Pocket.faint)
             Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
                 TextButton(dismiss) { Text("取消", color = Pocket.muted) }
-                TextButton({ draft(ScheduleFormat.request(title, task, timing)) }, enabled = valid) { Text("写入新任务", color = if (valid) Pocket.accent else Pocket.faint) }
+                TextButton({ draft(ScheduleFormat.request(title, task, timing), target) }, enabled = valid) { Text("写入新任务", color = if (valid) Pocket.accent else Pocket.faint) }
             }
         }
         Spacer(Modifier.height(12.dp))

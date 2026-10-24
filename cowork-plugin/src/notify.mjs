@@ -3,6 +3,7 @@ import path from 'node:path';
 import { homedir } from 'node:os';
 import { lstat, readFile } from 'node:fs/promises';
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { sharedScreenBoard } from './screen-board.mjs';
 
 // Notification triggers. Continuo batches every app's notifications on the phone (excluded apps never leave it) and
 // sends each batch here, signed. This host-plane plugin asks the Jev judge model about each notification separately;
@@ -11,7 +12,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 // (one the owner archived is unarchived before its next turn), so
 // the model keeps what it already did in that app. A batch for an app whose session has a turn open goes straight
 // into that turn; any other waits until no Cowork turn holds the AI screen and then starts a new turn there, the app
-// that waited longest first. The notification text reaches the model JSON-encoded and labelled as other people's
+// that waited longest first. A turn queued for the screen in task-lifecycle (a due task, a note) holds nothing yet:
+// the batch goes ahead and its turn takes the higher place in that line. The notification text reaches the model JSON-encoded and labelled as other people's
 // words (data, never instructions); it is never logged or stored here. The messages carry source kind webhook (the
 // same shape dsh-webhook gives), so restricted.mjs treats the turn as unattended: no automation-task writes, no
 // screen takeover; what needs the owner becomes one phone_notify_owner, then the task ends.
@@ -228,7 +230,7 @@ export function mergeBatches(older, newer) {
  * waits until the AI screen is free: no delivered turn of ours is pending and `busyUntil()` (any open Cowork turn)
  * has passed; then the app that waited longest goes first. `poke()` re-checks after a Cowork turn ends.
  */
-export function createCoalescer({ deliver, busyUntil = () => 0, isOpen = () => false, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, limits = LIMITS }) {
+export function createCoalescer({ deliver, busyUntil = () => 0, isOpen = () => false, isWaiting = () => false, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, limits = LIMITS }) {
   const pending = new Map();
   let inflight, timer, disposed = false;
   function wake(at) {
@@ -245,6 +247,8 @@ export function createCoalescer({ deliver, busyUntil = () => 0, isOpen = () => f
     if (disposed) return;
     const t = now();
     if (inflight) {
+      // Its turn started and waits in line for the screen: it has begun, only its message is not logged yet.
+      if (!inflight.adopted && isWaiting(inflight.sessionId)) { inflight.adopted = true; inflight.startedAt = t; }
       const until = inflight.startedAt + (inflight.adopted ? limits.holdMs : limits.adoptMs);
       if (t < until) return wake(until);
       inflight = undefined;
@@ -404,14 +408,15 @@ export function createAppSessions(ctx, llm) {
 }
 
 /** Wires the ingress, judge, queue and the apps' standing sessions into ctx. `listen: false` keeps tests off the fixed port. */
-export function installNotify(ctx, { listen = true, readSecret, now = Date.now, setTimer, clearTimer, fetch, llm } = {}) {
-  // Open Cowork turns (any session on the cowork-phone preset): each holds the AI screen.
+export function installNotify(ctx, { listen = true, readSecret, now = Date.now, setTimer, clearTimer, fetch, llm, board = sharedScreenBoard() } = {}) {
+  // Open Cowork turns (any session on the cowork-phone preset): each holds the AI screen, unless it is still waiting
+  // in line for it (board).
   const presets = new Map(), open = new Map();
   const presetOf = session => presets.get(session.id) ?? session.header?.agentPreset;
-  const busyUntil = () => { let until = 0; for (const started of open.values()) until = Math.max(until, started + LIMITS.holdMs); return until; };
+  const busyUntil = () => { let until = 0; for (const [id, started] of open) if (!board.has(id)) until = Math.max(until, started + LIMITS.holdMs); return until; };
   const judge = createJudge({ resolveKey: () => ctx.credentials.resolve(JEV.credential), fetch, now });
   const sessions = createAppSessions(ctx, llm);
-  const coalescer = createCoalescer({ now, setTimer, clearTimer, busyUntil, isOpen: id => open.has(id),
+  const coalescer = createCoalescer({ now, setTimer, clearTimer, busyUntil, isOpen: id => open.has(id), isWaiting: id => board.has(id),
     deliver: (key, batch, mode) => sessions.deliver(key, batch, mode).catch(error => {
       ctx.logger?.warn?.(`cowork-notify: ${sessionIdOf(key)} not reached (${error?.name ?? 'Error'})`); throw error; }) });
   function observe(session, event) {
@@ -440,6 +445,8 @@ export function installNotify(ctx, { listen = true, readSecret, now = Date.now, 
   }
   const handler = createNotifyHandler({ accept, readSecret, now });
   ctx.effect(() => {
+    // A turn joining or leaving the line for the screen changes what busyUntil sees.
+    const unsubscribe = board.subscribe(() => coalescer.poke());
     let server;
     if (listen) {
       server = http.createServer({ maxHeaderSize: 16 * 1024 }, (request, response) => {
@@ -451,7 +458,7 @@ export function installNotify(ctx, { listen = true, readSecret, now = Date.now, 
       server.on('error', error => ctx.logger?.warn?.(`cowork-notify: ingress unavailable (${error?.code ?? 'error'})`));
       server.listen(PORT, HOST);
     }
-    return () => { server?.close(); coalescer.dispose(); };
+    return () => { unsubscribe(); server?.close(); coalescer.dispose(); };
   }, 'cowork-notify: ingress');
   return { coalescer, handler, observe, accept, busyUntil };
 }

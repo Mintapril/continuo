@@ -35,6 +35,13 @@ enum class SessionFilter(val label: String) {
 /** The standing session the notification trigger keeps for each app (cowork-app-<profile>-<package>): listed only under APPS. */
 fun isAppSession(row: JSONObject): Boolean = row.text("sessionId").startsWith("cowork-app-")
 
+/**
+ * A running Cowork turn waiting in line for the AI screen: the Cowork plugin queues a turn before its first step while
+ * another session's turn holds the screen ([holder], see `IslandSnapshot.screenHolder`).
+ */
+fun waitsForScreen(sessionId: String, running: Boolean, mode: TaskMode, holder: String?): Boolean =
+    running && mode == TaskMode.COWORK && holder != null && holder != sessionId
+
 fun needsInput(row: JSONObject, pendingAgents: Set<String>): Boolean = row.text("sessionId") in pendingAgents ||
     values(row)?.optJSONObject("userQuestions")?.objects("active")?.any { it.text("state") == "open" } == true
 

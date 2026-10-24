@@ -77,6 +77,16 @@ data class IslandSnapshot(
     val backendConnected: Boolean = true,
 ) {
     val statusLabel: String get() = if (!backendConnected) "连接中断" else task?.state?.label ?: "暂无任务"
+
+    /**
+     * The session (broker task id) whose turn holds the AI screen while it runs, pauses or stops, or null. A task left
+     * waiting for the owner is not counted: a turn in line is turned away then (COWORK_TASK_BUSY), it does not wait.
+     */
+    val screenHolder: String? get() = task?.takeIf { backendConnected && it.state in HOLDING }?.taskId
+
+    private companion object {
+        val HOLDING = setOf(IslandTaskState.RUNNING, IslandTaskState.PAUSING, IslandTaskState.STOPPING)
+    }
 }
 
 /** Defense in depth, not a claim to detect all PII. Texts come from fixed native broker strings and app labels. */

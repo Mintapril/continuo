@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { setImmediate as tick, setTimeout as delay } from 'node:timers/promises';
-import { createTaskLifecycle } from '../src/task-lifecycle.mjs';
+import { createTaskLifecycle, PRIORITY } from '../src/task-lifecycle.mjs';
+import { createScreenBoard } from '../src/screen-board.mjs';
 
 const ERROR = { message: 'Native task lifecycle unavailable' };
 // A verified native snapshot that still shows a retained approval/display refuses the turn with an
@@ -35,7 +36,7 @@ function native() {
   const state = { instanceId: 'native-instance', executionId: '', taskId: '', revision: 0, state: 'idle', command: '', commandId: '' };
   const assign = next => { for (const key of Object.keys(state)) delete state[key]; Object.assign(state, next); };
   // Offline native-contract fixture only; no device operation or validation.
-  const api = { calls, polls: 0, maxPolls: 0, pollGate: undefined, endGate: undefined, fail: undefined,
+  const api = { calls, sessions: ['session-id'], polls: 0, maxPolls: 0, pollGate: undefined, endGate: undefined, fail: undefined,
     active: false, workspaceOpen: false, pendingApproval: false, nativePaused: false, approvedActions: 0,
     state,
     control(command) { assign({ ...state, revision: state.revision + 1, state: command === 'pause' ? 'pausing' : 'stopping', command, commandId: randomUUID() }); return state.commandId; },
@@ -51,7 +52,7 @@ function native() {
       calls.push({ method: options.method, body, signal: options.signal });
       if (api.fail) return api.fail(options);
       if (options.method === 'GET') { assert.equal(options.body.length, 0); return response(state); }
-      if (!(body.operation === 'ack' && body.taskId === state.taskId && state.taskId !== 'session-id')) assert.equal(body.taskId, 'session-id');
+      if (!(body.operation === 'ack' && body.taskId === state.taskId && !api.sessions.includes(state.taskId))) assert.ok(api.sessions.includes(body.taskId), body.taskId);
       if (body.operation === 'begin') {
         assert.deepEqual(Object.keys(body).sort(), ['instanceId', 'operation', 'revision', 'taskId']);
         if (body.instanceId !== state.instanceId || body.revision !== state.revision || api.active || api.workspaceOpen) return response({ ok: false }, 409);
@@ -688,4 +689,172 @@ for (const [name, reply] of [
   await assert.rejects(life.preStep(a, 1, a.turnAbort.signal), ERROR);
   const replacement = agent(); start(life, replacement);
   await assert.rejects(life.preStep(replacement, 1, replacement.turnAbort.signal), ERROR);
+});
+
+// One AI screen, several sessions: a turn that finds another session's turn on the screen waits in line instead of
+// failing, and the line runs by priority (owner, notification, due task or note), then by arrival.
+function queue(t, options = {}) {
+  const server = native(), board = createScreenBoard(), yields = [], asks = [];
+  server.sessions.push('notify-qq', 'reminder', 'reminder-2', 'owner-chat');
+  const life = createTaskLifecycle({ secret, board, transport: o => server.transport(o), ...options,
+    onYield: (holder, reason) => { if (reason === 'owner') yields.push(holder.session.id); asks.push([holder.session.id, reason]); } });
+  t.after(async () => { life.dispose(); await life.flush().catch(() => {}); });
+  return { server, board, yields, asks, life };
+}
+const admitted = async promise => { const value = await promise; assert.equal(value.state, 'running'); return value; };
+async function finishTurn(life, a, turn = 1) { end(life, a, 'completed', turn); await life.flush(a); }
+
+test('a turn of another session waits in line while the screen is held, then begins once it is free', async t => {
+  const { server, board, life } = queue(t);
+  const holder = agent('session-id'), next = agent('reminder');
+  start(life, holder); await admitted(life.preStep(holder, 1, holder.turnAbort.signal, PRIORITY.notification));
+  start(life, next);
+  let begun = false;
+  const waiting = life.preStep(next, 1, next.turnAbort.signal, PRIORITY.scheduled).then(value => { begun = true; return value; });
+  await delay(20);
+  assert.equal(begun, false); assert.equal(board.has('reminder'), true);
+  assert.equal(server.calls.filter(c => c.body?.operation === 'begin').length, 1, 'nothing begins while the screen is held');
+  await finishTurn(life, holder);
+  assert.equal((await admitted(waiting)).taskId, 'reminder');
+  assert.equal(board.has('reminder'), false);
+  await finishTurn(life, next);
+});
+
+test('the line runs by priority, then by arrival: owner, notification, due tasks in the order they came', async t => {
+  const { life } = queue(t, { screenWaitMs: 5000 });
+  const holder = agent('session-id'), order = [];
+  start(life, holder); await admitted(life.preStep(holder, 1, holder.turnAbort.signal, PRIORITY.scheduled));
+  const enqueue = async (id, priority) => {
+    const a = agent(id); start(life, a);
+    const turn = { a, p: life.preStep(a, 1, a.turnAbort.signal, priority).then(value => { order.push(id); return value; }) };
+    await delay(5);
+    return turn;
+  };
+  const first = await enqueue('reminder', PRIORITY.scheduled), notify = await enqueue('notify-qq', PRIORITY.notification);
+  const second = await enqueue('reminder-2', PRIORITY.scheduled), owner = await enqueue('owner-chat', PRIORITY.owner);
+  await finishTurn(life, holder);
+  for (const turn of [owner, notify, first, second]) { await admitted(turn.p); await finishTurn(life, turn.a); }
+  assert.deepEqual(order, ['owner-chat', 'notify-qq', 'reminder', 'reminder-2']);
+});
+
+test('an owner turn asks an unattended holder once to wrap up; a notification never does, an owner holder is never asked', async t => {
+  const { life, yields } = queue(t, { screenWaitMs: 5000 });
+  const holder = agent('reminder');
+  start(life, holder); await admitted(life.preStep(holder, 1, holder.turnAbort.signal, PRIORITY.scheduled));
+  const notify = agent('notify-qq'), owner = agent('owner-chat'), again = agent('session-id'), late = agent('reminder-2');
+  for (const a of [notify, owner, again, late]) start(life, a);
+  const n = life.preStep(notify, 1, notify.turnAbort.signal, PRIORITY.notification); await delay(5);
+  assert.deepEqual(yields, [], 'a notification waits without interrupting');
+  const o = life.preStep(owner, 1, owner.turnAbort.signal, PRIORITY.owner); await delay(5);
+  const o2 = life.preStep(again, 1, again.turnAbort.signal, PRIORITY.owner); await delay(5);
+  assert.deepEqual(yields, ['reminder'], 'asked once per holder');
+  await finishTurn(life, holder);
+  await admitted(o);
+  const l = life.preStep(late, 1, late.turnAbort.signal, PRIORITY.owner); await delay(5);
+  assert.deepEqual(yields, ['reminder'], 'the owner is never asked to make way');
+  await finishTurn(life, owner);
+  for (const [p, a] of [[o2, again], [l, late], [n, notify]]) { await admitted(p); await finishTurn(life, a); }
+});
+
+test('a turn that waits too long ends with a visible COWORK_SCREEN_BUSY; a cancelled one simply leaves the line', async t => {
+  const { life, board } = queue(t, { screenWaitMs: 40 });
+  const holder = agent('session-id'), late = agent('reminder'), gone = agent('notify-qq');
+  start(life, holder); await admitted(life.preStep(holder, 1, holder.turnAbort.signal));
+  start(life, late); start(life, gone);
+  const cancelled = new AbortController();
+  const goneRejected = assert.rejects(life.preStep(gone, 1, cancelled.signal, PRIORITY.notification), ERROR);
+  await delay(5); cancelled.abort(); await goneRejected;
+  assert.equal(board.has('notify-qq'), false);
+  await assert.rejects(life.preStep(late, 1, late.turnAbort.signal, PRIORITY.scheduled),
+    error => error.code === 'COWORK_SCREEN_BUSY' && /AI 副屏一直被另一个 Cowork 会话占用/.test(error.message));
+  assert.equal(board.has('reminder'), false);
+  await finishTurn(life, holder);
+});
+
+test('a sticky fault turns everyone in line away', async t => {
+  const { life, server, board } = queue(t, { screenWaitMs: 5000 });
+  const holder = agent('session-id'), next = agent('reminder');
+  start(life, holder); await admitted(life.preStep(holder, 1, holder.turnAbort.signal));
+  start(life, next);
+  const turnedAway = assert.rejects(life.preStep(next, 1, next.turnAbort.signal, PRIORITY.scheduled), ERROR);
+  await delay(5);
+  server.fail = async () => { throw Error('PRIVATE MESSAGE socket'); };
+  await assert.rejects(life.runTool(holder, tool(life, holder), () => assert.fail('native failed')), ERROR);
+  await turnedAway;
+  assert.equal(board.has('reminder'), false);
+});
+
+test('a holder the broker stops hands the screen to the next turn in line', async t => {
+  const { life, server, board } = queue(t, { screenWaitMs: 5000 });
+  const holder = agent('session-id'), next = agent('reminder');
+  start(life, holder); await admitted(life.preStep(holder, 1, holder.turnAbort.signal, PRIORITY.scheduled));
+  start(life, next);
+  const waiting = life.preStep(next, 1, next.turnAbort.signal, PRIORITY.scheduled);
+  await delay(5);
+  server.control('stop'); // e.g. the watchdog paused the screen
+  const value = await admitted(waiting);
+  assert.equal(holder.cancelled, 1); assert.equal(value.taskId, 'reminder'); assert.equal(board.has('reminder'), false);
+  assert.deepEqual(server.calls.filter(c => c.body).map(c => c.body.operation).filter(o => o !== 'poll'), ['begin', 'ack', 'begin']);
+  end(life, holder, 'aborted'); await finishTurn(life, next);
+});
+
+test('a holder left waiting for the owner turns the whole line away with the actionable busy error', async t => {
+  const { life, server, board } = queue(t, { screenWaitMs: 5000 });
+  const holder = agent('session-id'), first = agent('reminder'), second = agent('notify-qq');
+  start(life, holder); await admitted(life.preStep(holder, 1, holder.turnAbort.signal, PRIORITY.scheduled));
+  start(life, first); start(life, second);
+  const one = assert.rejects(life.preStep(first, 1, first.turnAbort.signal, PRIORITY.scheduled), { code: 'COWORK_TASK_BUSY' });
+  const two = assert.rejects(life.preStep(second, 1, second.turnAbort.signal, PRIORITY.notification), { code: 'COWORK_TASK_BUSY' });
+  await delay(5);
+  end(life, holder, 'blocked'); // the turn stopped for the user: native keeps the display until the owner stops it
+  await one; await two;
+  assert.equal(server.state.state, 'waiting_user');
+  assert.equal(server.calls.filter(c => c.body?.operation === 'begin').length, 1, 'nobody begins over a retained display');
+  assert.equal(board.has('reminder') || board.has('notify-qq'), false);
+});
+
+test('an unattended holder is asked to wrap up after a while: soon when a notification waits, later for a due task', async t => {
+  const { life, asks } = queue(t, { screenWaitMs: 5000, nudgeAfterMs: { notification: 60, scheduled: 250 } });
+  const holder = agent('reminder'), task = agent('reminder-2'), hook = agent('notify-qq');
+  start(life, holder); await admitted(life.preStep(holder, 1, holder.turnAbort.signal, PRIORITY.scheduled));
+  for (const a of [task, hook]) start(life, a);
+  const t2 = life.preStep(task, 1, task.turnAbort.signal, PRIORITY.scheduled);
+  await delay(100);
+  assert.deepEqual(asks, [], 'a due task waits longer before the holder is asked');
+  const n = life.preStep(hook, 1, hook.turnAbort.signal, PRIORITY.notification);
+  await delay(20);
+  assert.deepEqual(asks, [['reminder', 'queue']], 'the holder held the screen past the notification threshold already');
+  await delay(300);
+  assert.deepEqual(asks, [['reminder', 'queue']], 'asked once');
+  await finishTurn(life, holder);
+  // The notification goes first; the due task waits behind it, and the notification turn is asked in its turn.
+  await admitted(n);
+  await delay(300);
+  assert.deepEqual(asks, [['reminder', 'queue'], ['notify-qq', 'queue']]);
+  await finishTurn(life, hook); await admitted(t2); await finishTurn(life, task);
+});
+
+test('after a queue request the owner can still ask; a turn of the owner is never asked', async t => {
+  const { life, asks } = queue(t, { screenWaitMs: 5000, nudgeAfterMs: { notification: 20, scheduled: 20 } });
+  const holder = agent('reminder'), hook = agent('notify-qq'), mine = agent('owner-chat'), later = agent('reminder-2');
+  start(life, holder); await admitted(life.preStep(holder, 1, holder.turnAbort.signal, PRIORITY.scheduled));
+  for (const a of [hook, mine, later]) start(life, a);
+  const n = life.preStep(hook, 1, hook.turnAbort.signal, PRIORITY.notification);
+  await delay(60);
+  const o = life.preStep(mine, 1, mine.turnAbort.signal, PRIORITY.owner);
+  await delay(10);
+  assert.deepEqual(asks, [['reminder', 'queue'], ['reminder', 'owner']]);
+  await finishTurn(life, holder);
+  await admitted(o);
+  const l = life.preStep(later, 1, later.turnAbort.signal, PRIORITY.scheduled);
+  await delay(80);
+  assert.equal(asks.length, 2, 'the owner holding the screen is never asked to make way');
+  await finishTurn(life, mine); await admitted(n); await finishTurn(life, hook); await admitted(l); await finishTurn(life, later);
+});
+
+test('an unknown priority is refused before anything is sent', async t => {
+  const { life, server } = queue(t);
+  const a = agent(); start(life, a);
+  await assert.rejects(life.preStep(a, 1, a.turnAbort.signal, 7), ERROR);
+  assert.equal(server.calls.length, 0);
 });

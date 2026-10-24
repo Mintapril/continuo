@@ -72,6 +72,10 @@ class IslandOverlayService : Service() {
     private var overlayFailed = false
     private var overlayPermissionLast = false
     private var liveView: ImageView? = null
+    /** The expanded body, refreshed in place on every change (each AI action): a new preview would show only its poster,
+     *  an old still, until the next key frame reached its new surface, and that flickered on every action. */
+    private class KeptBody(val pill: IslandPillView, val workspace: Boolean, val view: LinearLayout, val list: LinearLayout, val box: FrameLayout?, val poster: ImageView?)
+    private var keptBody: KeptBody? = null
     private var liveHeld = false
     private var lastLiveKey = ""
     /** Model-requested takeover: the island opens by itself; the user accepts with a double tap on the preview. */
@@ -384,18 +388,20 @@ class IslandOverlayService : Service() {
             task?.state, connected, active, if (active) headline else "", action, headline,
             "DSH 任务岛，$headline${if (action.isNotBlank()) "，$action" else ""}，${if (expanded) "收起详情" else "展开详情"}",
         )
-        if (task == null || !expanded) { liveView = null; if (fullView == null) syncLive(false); view.setBody(null) }
+        if (task == null || !expanded) { liveView = null; keptBody = null; if (fullView == null) syncLive(false); view.setBody(null) }
         else view.setBody(buildBody(snapshot, task))
     }
 
     /** Expanded island: no buttons. Recent key actions on the left, the owned-display preview on the right. */
     private fun buildBody(snapshot: IslandSnapshot, task: IslandTaskUpdate): View {
         val context = requireNotNull(overlayContext)
-        val body = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(20), (panel?.bodyInset() ?: dp(8)), dp(20), dp(18))
-        }
-        val list = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        val status = CoworkConnection.status.value
+        val workspace = status.optInt("displayId") > 0 && status.optBoolean("workspaceActive") && CoworkConnection.connection.value == CoworkLinkState.CONNECTED
+        val pill = requireNotNull(panel)
+        val kept = keptBody?.takeIf { it.pill === pill && it.workspace == workspace }
+        val body = kept?.view ?: LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        body.setPadding(dp(20), (panel?.bodyInset() ?: dp(8)), dp(20), dp(18))
+        val list = kept?.list?.apply { removeAllViews() } ?: LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         val state = task.state
         if (snapshot.backendConnected && state != IslandTaskState.RUNNING) {
             list.addView(text(when (state) {
@@ -423,19 +429,15 @@ class IslandOverlayService : Service() {
                 maxLines = 2; ellipsize = TextUtils.TruncateAt.END; setPadding(0, dp(3), 0, dp(3))
             })
         }
-        val status = CoworkConnection.status.value
-        val workspace = status.optInt("displayId") > 0 && status.optBoolean("workspaceActive") && CoworkConnection.connection.value == CoworkLinkState.CONNECTED
         liveView = null
-        body.addView(list, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(12) })
+        if (kept == null) body.addView(list, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(12) })
         if (workspace) {
             val width = dp(112)
             val info = LiveVideo.info.value
             val height = width * (info?.height ?: 1608) / (info?.width ?: 720)
-            val poster = ImageView(context).apply {
-                scaleType = ImageView.ScaleType.FIT_XY
-                setImageBitmap(CoworkConnection.live.value)
-            }
-            val box = FrameLayout(context).apply {
+            val poster = kept?.poster ?: ImageView(context).apply { scaleType = ImageView.ScaleType.FIT_XY }
+            poster.setImageBitmap(CoworkConnection.live.value)
+            val box = kept?.box ?: FrameLayout(context).apply {
                 setBackgroundColor(Color.rgb(20, 20, 22))
                 contentDescription = "副屏预览，双击介入"
                 clipToOutline = true
@@ -459,8 +461,10 @@ class IslandOverlayService : Service() {
                 accessibilityDelegate = object : View.AccessibilityDelegate() {}
             }
             liveView = poster
-            body.addView(box, LinearLayout.LayoutParams(width, height))
-        }
+            if (kept == null) body.addView(box, LinearLayout.LayoutParams(width, height))
+            else (box.layoutParams as LinearLayout.LayoutParams).takeIf { it.height != height }?.let { it.height = height; box.layoutParams = it }
+            keptBody = KeptBody(pill, true, body, list, box, poster)
+        } else keptBody = KeptBody(pill, false, body, list, null, null)
         syncLive(workspace || fullView != null)
         return body
     }
@@ -831,7 +835,7 @@ class IslandOverlayService : Service() {
     private fun removeOverlay() {
         closeFullScreen()
         syncLive(false)
-        liveView = null
+        liveView = null; keptBody = null
         panel?.let { view -> runCatching { windowManager?.removeViewImmediate(view) } }
         panel = null
         lastRendered = null

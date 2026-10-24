@@ -233,9 +233,12 @@ headHit.setOnClickListener { tapped() }
             return
         }
         clearBodyAfterCollapse = false
-        content = view
-        scroller.removeAllViews()
-        scroller.addView(view, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        // The same body refreshed in place stays attached: detaching it would drop the live preview's surface.
+        if (content !== view) {
+            content = view
+            scroller.removeAllViews()
+            scroller.addView(view, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
         val bodyW = g.expandedW
         view.measure(MeasureSpec.makeMeasureSpec(bodyW, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED))
         val target = min(view.measuredHeight, g.maxBody)

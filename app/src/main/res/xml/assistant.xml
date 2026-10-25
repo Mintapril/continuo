@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Continuo as the digital assistant (assist/Assistant.kt). Never on the lock screen; the recognizer is a required
+     placeholder that is never the phone's speech recognizer. -->
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="dev.dsh.pocket.assist.AssistSessionService"
+    android:recognitionService="dev.dsh.pocket.assist.NoRecognition"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="false"
+    android:supportsLocalInteraction="false" />

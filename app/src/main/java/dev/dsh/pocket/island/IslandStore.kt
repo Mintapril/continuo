@@ -79,12 +79,6 @@ class IslandStore(
         )
     }
 
-    fun configure(preferences: IslandPreferences) = synchronized(lock) {
-        mutableSnapshots.value = mutableSnapshots.value.copy(
-            preferences = preferences.copy(excludedPackages = preferences.excludedPackages.toSet()),
-        )
-    }
-
     fun updateEnvironment(environment: IslandEnvironment): Boolean = synchronized(lock) {
         // Unknown invalidation is immediate; delayed old observations must not re-enable an overlay.
         if (environment.foregroundPackage != null &&

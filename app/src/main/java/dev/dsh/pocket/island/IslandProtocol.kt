@@ -38,13 +38,6 @@ data class IslandEvent(
  */
 data class IslandActivity(val seq: Long = -1, val app: String = "", val text: String = "")
 
-data class IslandPreferences(
-    val enabled: Boolean = false,
-    val overlayEnabled: Boolean = false,
-    val hideInGames: Boolean = true,
-    val excludedPackages: Set<String> = emptySet(),
-)
-
 /**
  * Publish MAIN-display observations from a native trusted source, never screenshots or agent steps.
  * null package/game classification means unknown, not safe. Times use elapsed realtime, not wall time.
@@ -70,7 +63,6 @@ data class IslandSnapshot(
     val task: IslandTaskUpdate? = null,
     val activity: IslandActivity = IslandActivity(),
     val recentEvents: List<IslandEvent> = emptyList(),
-    val preferences: IslandPreferences = IslandPreferences(),
     val environment: IslandEnvironment = IslandEnvironment(),
     val pendingAction: IslandActionRequest? = null,
     val actionError: Boolean = false,
@@ -110,45 +102,8 @@ object IslandPrivacy {
         if (event.privacySafe) safeLabel(event.text).ifBlank { event.kind.label } else event.kind.label
 }
 
-enum class IslandSurface { HIDDEN, NOTIFICATION, OVERLAY }
-
-enum class IslandSuppression {
-    DISABLED, NO_TASK, USER_NOTIFICATION_ONLY, PERMISSION_MISSING, DEVICE_LOCKED,
-    FOREGROUND_UNKNOWN, FOREGROUND_STALE, EXCLUDED_APP, GAME, NONE
-}
-
-data class IslandVisibility(val surface: IslandSurface, val reason: IslandSuppression)
-
-/** Pure policy used by both service and JVM tests. Unknown/stale foreground is fail-closed. */
+/** Which controls a task state allows; used by the status card and JVM tests. */
 object IslandPolicy {
-    const val FOREGROUND_TTL_MILLIS = 5_000L
-
-    fun visibility(
-        snapshot: IslandSnapshot,
-        nowElapsedMillis: Long,
-        overlayPermissionGranted: Boolean,
-        deviceLocked: Boolean,
-    ): IslandVisibility {
-        fun hidden(reason: IslandSuppression) = IslandVisibility(IslandSurface.HIDDEN, reason)
-        fun fallback(reason: IslandSuppression) = IslandVisibility(IslandSurface.NOTIFICATION, reason)
-        val prefs = snapshot.preferences
-        if (!prefs.enabled) return hidden(IslandSuppression.DISABLED)
-        if (snapshot.task == null) return fallback(IslandSuppression.NO_TASK)
-        if (!prefs.overlayEnabled) return fallback(IslandSuppression.USER_NOTIFICATION_ONLY)
-        if (!overlayPermissionGranted) return fallback(IslandSuppression.PERMISSION_MISSING)
-        if (deviceLocked) return fallback(IslandSuppression.DEVICE_LOCKED)
-        val env = snapshot.environment
-        if (env.foregroundPackage.isNullOrBlank()) return fallback(IslandSuppression.FOREGROUND_UNKNOWN)
-        val age = nowElapsedMillis - env.observedAtElapsedMillis
-        if (env.observedAtElapsedMillis < 0 || age < 0 || age > FOREGROUND_TTL_MILLIS) {
-            return fallback(IslandSuppression.FOREGROUND_STALE)
-        }
-        if (env.foregroundPackage in prefs.excludedPackages) return fallback(IslandSuppression.EXCLUDED_APP)
-        if (prefs.hideInGames && env.foregroundIsGame == null) return fallback(IslandSuppression.FOREGROUND_UNKNOWN)
-        if (prefs.hideInGames && env.foregroundIsGame == true) return fallback(IslandSuppression.GAME)
-        return IslandVisibility(IslandSurface.OVERLAY, IslandSuppression.NONE)
-    }
-
     fun allows(task: IslandTaskUpdate?, action: IslandAction): Boolean = when (action) {
         IslandAction.PAUSE -> task?.state == IslandTaskState.RUNNING
         IslandAction.STOP -> task != null && !task.state.terminal

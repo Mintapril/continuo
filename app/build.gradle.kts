@@ -10,8 +10,8 @@ android {
         applicationId = "dev.dsh.pocket"
         minSdk = 28
         targetSdk = 36
-        versionCode = 9
-        versionName = "0.7.0"
+        versionCode = 11
+        versionName = "0.8.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true; buildConfig = true }

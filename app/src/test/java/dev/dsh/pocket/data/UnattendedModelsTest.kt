@@ -19,6 +19,7 @@ class UnattendedModelsTest {
         assertTrue(clear.has("selection")); assertTrue(clear.isNull("selection"))
         assertTrue(clear.toString().contains("\"selection\":null"))
         assertThrows(IllegalArgumentException::class.java) { UnattendedModels.request("other", "a", "b", null) }
+        assertEquals("owner", UnattendedModels.request(UnattendedModels.OWNER, "claude", "claude-fable-5-1", null).getJSONObject("request").getString("kind"))
     }
 
     @Test fun labelsComeFromTheCatalog() {

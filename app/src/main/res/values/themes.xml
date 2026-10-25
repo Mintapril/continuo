@@ -11,4 +11,13 @@
         <item name="android:colorControlActivated">@color/continuo_accent</item>
         <item name="android:textColorHighlight">#402E6A8E</item>
     </style>
+    <!-- 叫它 / 记便条: a half sheet over whatever app is in front; the activity draws its own scrim. -->
+    <style name="Theme.Continuo.Sheet">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <!-- The sheet slides in and out by itself (ui/CallScreens.kt HalfSheet); the window opens and closes without one. -->
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
 </resources>

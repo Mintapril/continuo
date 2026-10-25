@@ -362,6 +362,30 @@ test('an input that returns the settled screen binds its element ids without ano
   await client.call('s', 'phone.type_text', { observationId: 'after', elementId: 'field', text: 'x' });
   await assert.rejects(client.call('s', 'phone.tap', { observationId: 'obs', elementId: 'btn' }), /stale/, 'the observation before the input is gone');
 });
+const changeOf = (observationId, extra) => ({ observationId, capturedAt: now, width: 100, height: 200, title: 'T', package: 'dev.fixture.app', complete: true, advice: '',
+  base: 'obs', added: [], changed: [], removed: [], unchanged: 2, ...extra });
+test('an input that changed little returns its change against the base; element ids are checked against the merged screen', async () => {
+  let reply;
+  const { client } = afterHarness(r => r.tool === 'phone.tap' || r.tool === 'phone.type_text' ? reply : undefined);
+  await client.call('s', 'phone.ui_tree', {});                                    // the base obs: [edit, btn]
+  reply = { performed: true, changed: true, observation: changeOf('d1', { added: [node('send')], changed: [{ ...node('edit', true), text: 'hi' }], unchanged: 1 }) };
+  const typed = await client.call('s', 'phone.tap', { observationId: 'obs', elementId: 'btn' });
+  assert.deepEqual(typed.observation.added.map(n => n.id), ['send'], 'the model gets the change as the broker sent it');
+  assert.equal(typed.observation.nodes, undefined);
+  // The added element is on the current screen; the next change is against the base again, not against d1.
+  reply = { performed: true, observation: changeOf('d2', { removed: ['btn'], unchanged: 1 }) };
+  await client.call('s', 'phone.tap', { observationId: 'd1', elementId: 'send' });
+  await assert.rejects(client.call('s', 'phone.tap', { observationId: 'd2', elementId: 'btn' }), /node in the current tree/, 'a removed id is refused before the broker');
+  await client.call('s', 'phone.type_text', { observationId: 'd2', elementId: 'edit', text: 'x' });
+});
+test('a change against a tree the session does not hold, or one that does not fit its base, is an unreadable screen', async () => {
+  for (const extra of [{ base: 'elsewhere' }, { unchanged: 5 }, { removed: ['ghost'] }, { added: [node('btn')] }, { changed: [node('btn')], removed: ['btn'], unchanged: 1 }, { nodes: [node('x')] }]) {
+    const { client } = afterHarness(r => r.tool === 'phone.tap' ? { performed: true, observation: changeOf('d', extra) } : undefined);
+    await client.call('s', 'phone.ui_tree', {});
+    const result = await client.call('s', 'phone.tap', { observationId: 'obs', elementId: 'btn' });
+    assert.equal(result.performed, true); assert.equal(result.observationError, 'BROKER_ERROR', JSON.stringify(extra)); assert.match(result.note, /phone_ui_tree/);
+  }
+});
 test('parallel element inputs on one observation are no unguarded batch: the second is refused as stale', async () => {
   const { client, calls } = afterHarness(r => r.tool === 'phone.tap' ? { performed: true, observation: settledScreen() } : undefined);
   await client.call('s', 'phone.ui_tree', {});

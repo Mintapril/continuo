@@ -25,7 +25,7 @@ import java.util.Locale
 // the model keeps a Jev focus per app itself (listed here, and the owner can clear one).
 
 /** An app's name when this user can see the package (the owner's own apps), else its package name. */
-private fun appLabel(context: android.content.Context, packageName: String): String = runCatching {
+internal fun appLabel(context: android.content.Context, packageName: String): String = runCatching {
     context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(packageName, 0)).toString()
 }.getOrNull()?.ifBlank { null } ?: packageName
 

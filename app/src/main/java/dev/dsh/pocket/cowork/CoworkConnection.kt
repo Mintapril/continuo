@@ -72,9 +72,7 @@ object CoworkConnection {
     private val focusedField=MutableStateFlow<RemoteField?>(null)
     /** Input field focused on the owned display during a takeover (null: none, or no live view attached). */
     val field=focusedField.asStateFlow()
-    /** True while the island shows the takeover full screen: that surface owns the keyboard, not CoworkActivity. */
-    val islandFullScreen=MutableStateFlow(false)
-    /** Reference counted: the Activity and the island share one stream (the broker allows a single viewer). */
+    /** Reference counted: the full-screen viewer and the call sheet share one stream (the broker allows a single viewer). */
     fun acquireLive(){
         liveUsers++
         if(liveJob?.isActive!=true)liveJob=scope.launch{
@@ -186,7 +184,7 @@ object CoworkConnection {
             IslandRuntime.setActionHandler { action ->
                 val target=CoworkControlTarget(action.taskId,action.revision,checkNotNull(action.execution){"任务身份不可用"})
                 checkTarget(target)
-                if(action.action==IslandAction.OPEN_TASK)app.startActivity(Intent(app,CoworkActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                if(action.action==IslandAction.OPEN_TASK)app.startActivity(Intent(app,dev.dsh.pocket.MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 else control(if(action.action==IslandAction.PAUSE)"pause" else "stop",target)
             }
             poll=scope.launch {

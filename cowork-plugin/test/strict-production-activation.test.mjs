@@ -35,7 +35,7 @@ test('production async apply mounts through actual Cordis without returning an i
     const preset=scope.createScope(owner,{});
     const fiber=preset.ctx.plugin(production,{});
     await fiber.await();
-    assert.equal(sections,1,'Production apply must actually reach policy installation');
+    assert.equal(sections,2,'Production apply must actually reach policy installation (persona prefix and identity)');
     assert.equal(calls,0);
     await fiber.dispose();
     const bad=preset.ctx.plugin(async()=>({testApi:true}));

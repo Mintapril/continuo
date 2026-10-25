@@ -11,8 +11,7 @@ class CoworkLinkStateTest {
         assertEquals("未连接执行器",CoworkLinkState.DISCONNECTED.label)
         assertEquals("已连接执行器",CoworkLinkState.CONNECTED.label)
         assertNotEquals(CoworkLinkState.DISCONNECTED.label,CoworkLinkState.CONNECTED.label)
-        assertTrue(CoworkLinkState.CONNECTED.hint.contains("暂无任务"))
-        assertTrue(CoworkLinkState.CONNECTED.hint.contains("不会出现副屏"))
+        assertFalse("the task island is gone", CoworkLinkState.CONNECTED.hint.contains("任务岛"))
     }
     @Test fun duplicateConnectDisabledDuringAttemptAndHealthyConnection() {
         for(state in CoworkLinkState.entries) {

@@ -21,6 +21,8 @@ final class ProfileStructure implements AutoCloseable {
     private UiAutomation automation;
     private final Map<String,Entry> nodes=new HashMap<>();
     private String boundObservation="";
+    /** Element ids across observations, and the diff an input's observation may be (TreeDiff). */
+    private final TreeDiff ids=new TreeDiff();
     /** The observed node and what the model saw of it (phone_batch re-checks the label before each step). */
     private record Entry(AccessibilityNodeInfo node,Rect bounds,boolean scrollable,String text,String desc,String rid,boolean checkable,boolean editable){}
     private static final class Stats{int windows,emitted,interactive,unlabeled,skippedWindows;boolean truncated,custom;String title="",pkg="";}
@@ -53,33 +55,40 @@ final class ProfileStructure implements AutoCloseable {
         AccessibilityNodeInfo node;Rect bounds;String text="",desc="",role="",rid="";
         boolean clickable,editable,scrollable,focused,checked,checkable,labeled,labeledBelow;int parent=-1;
     }
-    /** Read the structure; ids "n<index>" are valid only for the observation that is bound next. The result is the
-     *  compact form the model reads: unlabelled wrappers are dropped (a clickable container with labelled
-     *  descendants is reached through them), empty fields are omitted, bounds are [l,t,r,b] and the state flags a
-     *  single string (c clickable, e editable, s scrollable, f focused, k checked). */
-    synchronized JSONObject snapshot(int displayId,int width,int height)throws Exception{
+    /** Read the structure; element ids belong to the observation that is bound next, and an element keeps its id
+     *  across observations of a task while it stays the same element (TreeDiff). The result is the compact form the
+     *  model reads: unlabelled wrappers are dropped (a clickable container with labelled descendants is reached
+     *  through them), empty fields are omitted, bounds are [l,t,r,b] and the state flags a single string (c clickable,
+     *  e editable, s scrollable, f focused, k checked). With [full] false (an input's settled screen) a screen that
+     *  changed little since the last full one the model got comes as that change: base (its observation id), added and
+     *  changed elements, removed ids and the count of unchanged ones, instead of nodes. */
+    synchronized JSONObject snapshot(int displayId,int width,int height,boolean full)throws Exception{
         nodes.clear();boundObservation="";
         Stats stats=new Stats();
         ArrayList<Cand> kept=collect(displayId,width,height,stats);
         title=stats.title;pkg=stats.pkg;
+        ArrayList<TreeDiff.Node> seen=new ArrayList<>(kept.size());
+        for(Cand c:kept)seen.add(new TreeDiff.Node(c.text,c.desc,c.role,c.rid,c.bounds.left,c.bounds.top,c.bounds.right,c.bounds.bottom,flags(c)));
+        TreeDiff.Read read=ids.read(pkg,seen,full);
         JSONArray out=new JSONArray();
-        for(Cand c:kept){
-            String id="n"+out.length();
-            JSONObject o=new JSONObject().put("id",id);
-            if(!c.text.isEmpty())o.put("text",c.text);
-            if(!c.desc.isEmpty())o.put("desc",c.desc);
-            if(!c.role.isEmpty())o.put("role",c.role);
-            if(!c.labeled&&!c.rid.isEmpty())o.put("rid",c.rid);
-            o.put("bounds",new JSONArray().put(c.bounds.left).put(c.bounds.top).put(c.bounds.right).put(c.bounds.bottom));
-            String flags=(c.clickable?"c":"")+(c.editable?"e":"")+(c.scrollable?"s":"")+(c.focused?"f":"")+(c.checked?"k":"");
-            if(!flags.isEmpty())o.put("flags",flags);
-            out.put(o);nodes.put(id,new Entry(c.node,new Rect(c.bounds),c.scrollable,c.text,c.desc,c.rid,c.checkable,c.editable));
+        for(int i=0;i<kept.size();i++){
+            Cand c=kept.get(i);String id=read.ids().get(i);
+            if(read.full())out.put(node(id,c));
+            nodes.put(id,new Entry(c.node,new Rect(c.bounds),c.scrollable,c.text,c.desc,c.rid,c.checkable,c.editable));
             boolean interactive=c.clickable||c.editable||c.checkable;
             if(interactive){stats.interactive++;if(!c.labeled)stats.unlabeled++;}
         }
-        stats.emitted=out.length();
+        stats.emitted=kept.size();
         lastSignature=signature(kept);lastLines=lines(kept);
-        JSONObject result=new JSONObject().put("title",title).put("package",pkg).put("nodes",out);
+        JSONObject result=new JSONObject().put("title",title).put("package",pkg);
+        if(read.full())result.put("nodes",out);
+        else{
+            JSONArray added=new JSONArray(),changed=new JSONArray(),removed=new JSONArray();
+            for(int i:read.added())added.put(node(read.ids().get(i),kept.get(i)));
+            for(int i:read.changed())changed.put(node(read.ids().get(i),kept.get(i)));
+            for(String id:read.removed())removed.put(id);
+            result.put("base",read.base()).put("added",added).put("changed",changed).put("removed",removed).put("unchanged",read.unchanged());
+        }
         String advice="";boolean complete=true;
         if(stats.windows==0){complete=false;advice="No accessible window on the work-profile display; use phone_screenshot.";}
         else if(stats.truncated){complete=false;advice="Structure is truncated (too many nodes or time limit); scroll or use phone_screenshot.";}
@@ -88,6 +97,21 @@ final class ProfileStructure implements AutoCloseable {
         else if(stats.interactive>=3&&stats.unlabeled*2>stats.interactive){complete=false;advice="Many interactive nodes have no label; use phone_screenshot to identify them.";}
         return result.put("complete",complete).put("advice",advice);
     }
+    private static String flags(Cand c){return (c.clickable?"c":"")+(c.editable?"e":"")+(c.scrollable?"s":"")+(c.focused?"f":"")+(c.checked?"k":"");}
+    /** One element as the model reads it. */
+    private static JSONObject node(String id,Cand c)throws Exception{
+        JSONObject o=new JSONObject().put("id",id);
+        if(!c.text.isEmpty())o.put("text",c.text);
+        if(!c.desc.isEmpty())o.put("desc",c.desc);
+        if(!c.role.isEmpty())o.put("role",c.role);
+        if(!c.labeled&&!c.rid.isEmpty())o.put("rid",c.rid);
+        o.put("bounds",new JSONArray().put(c.bounds.left).put(c.bounds.top).put(c.bounds.right).put(c.bounds.bottom));
+        String flags=flags(c);
+        if(!flags.isEmpty())o.put("flags",flags);
+        return o;
+    }
+    /** A new task: element ids start again and the next observation is a full one. */
+    synchronized void resetIds(){ids.reset();}
     /** Identity of what is visible (texts + positions) without touching the bound node handles. */
     synchronized String contentSignature(int displayId,int width,int height)throws Exception{return signature(collect(displayId,width,height,new Stats()));}
     /** Signature of the structure the latest snapshot() saw (the "before" of a following gesture). */
@@ -195,7 +219,7 @@ final class ProfileStructure implements AutoCloseable {
     private static String text(AccessibilityNodeInfo n){return n.isPassword()?"[REDACTED]":bounded(n.getText());}
     private static String desc(AccessibilityNodeInfo n){return n.isPassword()?"":bounded(n.getContentDescription());}
     private static String shortId(String resource){if(resource==null)return "";int slash=resource.lastIndexOf('/');return slash>=0?resource.substring(slash+1):resource;}    private static String bounded(CharSequence value){if(value==null)return "";String s=value.toString().replace('\u0000',' ');return s.substring(0,Math.min(s.length(),MAX_TEXT));}
-    synchronized void bind(String observationId){boundObservation=observationId==null?"":observationId;if(observationId==null){release();lastSignature="";}}
+    synchronized void bind(String observationId){boundObservation=observationId==null?"":observationId;if(observationId==null){release();lastSignature="";ids.reset();}else ids.delivered(observationId);}
     synchronized String title(){return title;}
     private void release(){nodes.clear();}
     /** Previously bound element bounds (for a focused re-read); null when unknown. */

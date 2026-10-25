@@ -1,5 +1,7 @@
 package dev.dsh.pocket.ui
 
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -148,6 +150,8 @@ object Glyph {
     val Layers = icon("layers", "M12 4l8 4-8 4-8-4z", "M4 12l8 4 8-4", "M4 16l8 4 8-4")
     val Play = icon("play", "M8 5.5v13l10.5-6.5z")
     val Filter = icon("filter", "M4 6h16", "M7 12h10", "M10 18h4")
+    val Keyboard = icon("keyboard", "M3.5 7h17v10h-17z", "M7 10h.01", "M10 10h.01", "M13 10h.01", "M16 10h.01", "M8 13.5h8")
+    val Note = icon("note", "M5 4.5h14v10l-5 5H5z", "M14 19.5v-5h5")
     val Eye = icon("eye", "M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12z", "M12 14.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z")
 }
 
@@ -176,9 +180,11 @@ val LocalHaptics = staticCompositionLocalOf { true }
 @Composable fun Pill(text: String, modifier: Modifier = Modifier, leading: ImageVector? = null, trailing: ImageVector? = Glyph.ChevronDown, selected: Boolean = false,
                      enabled: Boolean = true, onClick: () -> Unit) {
     val haptic = rememberHaptic()
+    val fill by animateColorAsState(if (selected) MaterialTheme.colorScheme.onSurface else Color.Transparent, tween(180), label = "pill")
+    val ink by animateColorAsState(if (selected) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.onSurfaceVariant, tween(180), label = "pill ink")
     Surface(onClick = { haptic(); onClick() }, enabled = enabled, shape = CircleShape,
-        color = if (selected) MaterialTheme.colorScheme.onSurface else Color.Transparent,
-        contentColor = if (selected) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.onSurfaceVariant,
+        color = fill,
+        contentColor = ink,
         border = if (selected) null else BorderStroke(1.dp, Pocket.hairline), modifier = modifier.heightIn(min = 32.dp)) {
         Row(Modifier.padding(start = if (leading != null) 9.dp else 12.dp, end = if (trailing != null) 8.dp else 12.dp), verticalAlignment = Alignment.CenterVertically) {
             leading?.let { GlyphIcon(it, null, size = 15.dp); Spacer(Modifier.width(5.dp)) }

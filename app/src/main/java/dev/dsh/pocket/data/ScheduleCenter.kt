@@ -388,8 +388,4 @@ object ScheduleFormat {
     /** Daily at 9, 12, 15, 18 and 21 o'clock, in this phone's zone. */
     fun patrolTiming(zone: String = ZoneId.systemDefault().id) = TimingDraft("cron", cron = "0 9-21/3 * * *", zone = zone)
 
-    /** The request a new note starts from: the model keeps it with schedule_create in the session it is sent to. The
-     *  text goes in verbatim and unmarked (a note of the owner, not one of the model's own), so a patrol keeps its marker. */
-    fun request(title: String, task: String, timing: TimingDraft): String =
-        "请把下面这件事记成一张便条（schedule_create），记下后告诉我结果，现在不用做：\n名称：${title.trim()}\n时间：${timing.describe()}\n到时要做（原样写进便条内容，不加 [便条] 标记）：${task.trim()}"
 }

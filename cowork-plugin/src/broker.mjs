@@ -84,6 +84,13 @@ const node = object({ id: str, text: str, desc: str, role: str, rid: str, bounds
 export const APPEARED_MAX = 20;
 const TREE_KEYS = { ...metadata, title: str, package: str, nodes: { type: 'array', items: node }, complete: bool, advice: str };
 const TREE_RESULT = object({ ...TREE_KEYS, appeared: { type: 'array', items: str } }, Object.keys(TREE_KEYS));
+// An input's settled screen is either a full tree (nodes) or, when it changed little, the change since the last full
+// tree this session got (the broker's TreeDiff): base is that tree's observationId; added and changed are complete
+// nodes, removed are ids, unchanged is how many nodes of the base stayed as they were. Element ids stay the same
+// across observations until the next full tree.
+export const DIFF_FIELDS = Object.freeze(['base', 'added', 'changed', 'removed', 'unchanged']);
+const SCREEN_RESULT = object({ ...TREE_KEYS, base: str, added: { type: 'array', items: node }, changed: { type: 'array', items: node },
+  removed: { type: 'array', items: str }, unchanged: int, appeared: { type: 'array', items: str } }, [...Object.keys(metadata), 'title', 'package', 'complete', 'advice']);
 function checkAppeared(tree) {
   if (tree.appeared === undefined) return;
   check(tree.appeared.length >= 1 && tree.appeared.length <= APPEARED_MAX, 'Too many appeared lines', 'BROKER_PROTOCOL');
@@ -93,7 +100,7 @@ function checkAppeared(tree) {
 // the reply instead of observing again. changed: differs from the screen last read; settled:false: still changing when
 // read; observationError: the input was performed but the screen could not be read (the plugin adds a note).
 export const OBSERVED_AFTER = Object.freeze(['phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.type_text', 'phone.key', 'phone.wait', 'phone.batch', 'phone.gesture']);
-const afterInput = { changed: bool, settled: bool, observationError: str, observation: TREE_RESULT };
+const afterInput = { changed: bool, settled: bool, observationError: str, observation: SCREEN_RESULT };
 // Native result of the inputs above; RECENTS answers with a note and no observation.
 const OBSERVED_PERFORMED = object({ performed: { type: 'boolean', const: true }, note: str, ...afterInput }, ['performed']);
 // Model-visible result of the inputs above, including the not-performed hand-back notice.
@@ -245,7 +252,33 @@ export class BrokerClient {
     const task = this.#tail.then(() => this.#call(sessionId, name, args, signal));
     this.#tail = task.catch(() => {}); return task;
   }
+  // The base (the last full tree a session got) outlives forget: the broker diffs against what it delivered, which a
+  // refused or failed call does not change. A new full tree replaces it.
+  #base = new Map();
   forget(sessionId) { this.#observations.delete(sessionId); this.#tree.delete(sessionId); this.#treeRead.delete(sessionId); this.#incomplete.delete(sessionId); }
+  // An input's settled screen (SCREEN_RESULT). A diff is merged onto the session's base, so element ids are checked
+  // against the whole current screen; the model gets it as the broker sent it. A diff against a tree this session does
+  // not hold fails like any unreadable observation (the model reads the screen again).
+  #screen(sessionId, observation) {
+    const value = validate(SCREEN_RESULT, observation, 'observation');
+    checkAppeared(value);
+    const parts = DIFF_FIELDS.filter(key => Object.hasOwn(value, key));
+    if (Object.hasOwn(value, 'nodes')) {
+      check(parts.length === 0, 'Observation is both a tree and a diff', 'BROKER_PROTOCOL');
+      this.#admit(sessionId, 'phone.ui_tree', value); this.#base.set(sessionId, value);
+      return value;
+    }
+    check(parts.length === DIFF_FIELDS.length, 'Observation is neither a tree nor a diff', 'BROKER_PROTOCOL');
+    const base = this.#base.get(sessionId);
+    check(base !== undefined && base.observationId === value.base, 'Observation diff against a tree this session does not hold', 'BROKER_PROTOCOL');
+    const held = new Set(base.nodes.map(n => n.id)), gone = new Set(value.removed), changed = new Map(value.changed.map(n => [n.id, n]));
+    check(gone.size === value.removed.length && changed.size === value.changed.length && [...gone, ...changed.keys()].every(id => held.has(id))
+      && value.added.every(n => !held.has(n.id)) && ![...gone].some(id => changed.has(id)), 'Observation diff does not fit its base', 'BROKER_PROTOCOL');
+    check(base.nodes.length - gone.size === changed.size + value.unchanged, 'Observation diff miscounts its base', 'BROKER_PROTOCOL');
+    const { base: _base, added, changed: _changed, removed: _removed, unchanged: _unchanged, ...rest } = value;
+    this.#admit(sessionId, 'phone.ui_tree', { ...rest, nodes: [...base.nodes.filter(n => !gone.has(n.id)).map(n => changed.get(n.id) ?? n), ...added] });
+    return value;
+  }
   // Checks a schema-valid screenshot or tree, then makes it the session's current observation (a tree also binds element ids).
   #admit(sessionId, name, result) {
     boundedString(result.observationId, 256, 'observationId');
@@ -382,8 +415,9 @@ export class BrokerClient {
       if (name === 'phone.screenshot') checkZoom(result, wire);
       if (name === 'phone.ui_tree') checkAppeared(result);
       if (name === 'phone.screenshot' || name === 'phone.ui_tree') this.#admit(sessionId, name, result);
+      if (name === 'phone.ui_tree') this.#base.set(sessionId, result);
       if (observation !== undefined) {
-        try { checkAppeared(validate(TREE_RESULT, observation, 'observation')); this.#admit(sessionId, 'phone.ui_tree', observation); result.observation = observation; }
+        try { result.observation = this.#screen(sessionId, observation); }
         catch { result.observationError = 'BROKER_ERROR'; }
       }
       if (name === 'phone.batch') {

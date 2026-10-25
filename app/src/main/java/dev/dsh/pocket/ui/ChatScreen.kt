@@ -1,6 +1,7 @@
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 package dev.dsh.pocket.ui
 
+import androidx.compose.animation.core.tween
 import android.widget.TextView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -60,7 +61,7 @@ import io.noties.markwon.ext.tables.TablePlugin
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
-@Composable fun ChatScreen(vm: PocketViewModel, openDrawer: () -> Unit) {
+@Composable fun ChatScreen(vm: PocketViewModel, back: () -> Unit) {
     var sheet by remember { mutableStateOf<String?>(null) }
     val list = rememberLazyListState(); val scope = rememberCoroutineScope()
     var followBottom by remember(vm.selected) { mutableStateOf(true) }
@@ -71,9 +72,9 @@ import org.json.JSONObject
     LaunchedEffect(list) { snapshotFlow { list.isScrollInProgress }.collect { moving -> if (moving) followBottom = !list.canScrollForward } }
     LaunchedEffect(vm.rows, vm.running) { if (followBottom && entries.isNotEmpty()) list.scrollToItem(entries.size + 1) }
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        // Top bar: menu · title (tap for options) · background jobs
+        // Top bar: back · title (tap for options) · background jobs
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            CircleButton(Glyph.Menu, "打开菜单", onClick = openDrawer)
+            CircleButton(Glyph.ArrowLeft, "返回", onClick = back)
             Column(Modifier.weight(1f).padding(horizontal = 8.dp).clip(RoundedCornerShape(12.dp)).clickable { sheet = "menu" }.padding(vertical = 2.dp),
                 horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -106,11 +107,14 @@ import org.json.JSONObject
                     }
                 }
                 items(entries, key = { it.key }) { entry ->
-                    when (entry.kind) {
-                        "tools" -> ToolGroup(vm, entry.rows)
-                        "process" -> ProcessGroup(vm, entry.rows)
-                        "activity" -> ActivityGroup(entry.rows)
-                        else -> MessageRow(vm, entry.rows.single())
+                    // New entries fade in; placement is not animated, so a streaming reply never wobbles.
+                    Box(Modifier.animateItem(fadeInSpec = tween(220), placementSpec = null, fadeOutSpec = tween(150))) {
+                        when (entry.kind) {
+                            "tools" -> ToolGroup(vm, entry.rows)
+                            "process" -> ProcessGroup(vm, entry.rows)
+                            "activity" -> ActivityGroup(entry.rows)
+                            else -> MessageRow(vm, entry.rows.single())
+                        }
                     }
                 }
                 item(key = "generation") { if (vm.running) Working(vm) }

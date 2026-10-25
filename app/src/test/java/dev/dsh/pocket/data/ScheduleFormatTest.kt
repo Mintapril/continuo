@@ -173,20 +173,7 @@ class ScheduleFormatTest {
         val timing = ScheduleFormat.patrolTiming("Asia/Shanghai")
         assertNull(timing.problem())
         assertEquals("按 cron 表达式 0 9-21/3 * * *（时区 Asia/Shanghai）", timing.describe())
-        // The text goes in verbatim, so the model keeps the marker the plugin looks for.
-        val text = ScheduleFormat.request("巡视", ScheduleFormat.patrolTask(false) + "多去 B 站", timing)
-        assertTrue(text.contains("到时要做（原样写进便条内容，不加 [便条] 标记）：[巡视] 每次挑 2–3 个应用逛逛。"))
-        assertTrue(text.endsWith("逛逛。多去 B 站"))
         assertFalse("no business direction or persona", listOf(true, false).any { ScheduleFormat.patrolTask(it).contains("人设") || ScheduleFormat.patrolTask(it).contains("经营") })
-    }
-
-    @Test fun newNoteRequestNamesEverything() {
-        val text = ScheduleFormat.request(" 每日签到 ", "打开 App 签到 ", TimingDraft("daily", time = "08:00", zone = "Asia/Shanghai"))
-        assertTrue(text.startsWith("请把下面这件事记成一张便条（schedule_create）"))
-        assertTrue(text.contains("名称：每日签到\n"))
-        assertTrue(text.contains("时间：每天 08:00（时区 Asia/Shanghai）\n"))
-        assertTrue("a note of the owner carries no marker of the model's own", text.endsWith("到时要做（原样写进便条内容，不加 [便条] 标记）：打开 App 签到"))
-        assertFalse(text.contains("自动化任务"))
     }
 
     @Test fun hostCodesInWords() {

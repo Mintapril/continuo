@@ -318,7 +318,7 @@ public final class BrokerMain {
         if(op.equals("begin")){
             long age=SystemClock.elapsedRealtime()-controllerSeen;if(age<0||age>15000){wakeController();ActionGate.fail("CONTROLLER_OFFLINE","Controller is starting");}
             if(gate.owner()!=null&&!tasks.active()){System.err.println("begin: closing workspace left by a settled execution");closeWorkspace();}
-            activity.reset();watch.reset();tasks.begin(a,revision,SystemClock.elapsedRealtime());taskManaged=true;lastTaskId=tasks.task();executionId=tasks.execution();synchronized(responses){responses.clear();}restartRequired=false;pauseReason="";event("task.begin","running");
+            activity.reset();watch.reset();workspace.resetElementIds();tasks.begin(a,revision,SystemClock.elapsedRealtime());taskManaged=true;lastTaskId=tasks.task();executionId=tasks.execution();synchronized(responses){responses.clear();}restartRequired=false;pauseReason="";event("task.begin","running");
         }else if(op.equals("poll")){tasks.poll(a,SystemClock.elapsedRealtime());}
         else if(op.equals("end")){
             // Native pause/approval is authoritative; terminal reporting never approves a phone action.
@@ -775,7 +775,7 @@ public final class BrokerMain {
     private JSONObject observeAfter(String session,JSONObject result,String before,boolean settle)throws JSONException{
         try{
             if(settle&&!workspace.settle())result.put("settled",false);
-            ProfileWorkspace.Observation observation=workspace.observe(false);
+            ProfileWorkspace.Observation observation=workspace.observe(false,false);
             JSONObject tree=observation.result();
             String observationId=gate.observeTree(session,observation.fingerprint(),SystemClock.elapsedRealtime());
             workspace.bindTree(observationId);treeRead=true;treeIncomplete=!tree.optBoolean("complete",true);

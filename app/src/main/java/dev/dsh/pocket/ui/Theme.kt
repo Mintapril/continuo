@@ -22,6 +22,8 @@ import dev.dsh.pocket.R
     val accent: Color, val accentPressed: Color, val accentSubtle: Color, val userBubble: Color, val codeBackground: Color,
     val hairline: Color, val muted: Color, val faint: Color, val link: Color, val success: Color,
     val warning: Color, val danger: Color, val ink: Color, val onInk: Color, val chrome: Color, val dark: Boolean,
+    /** 便条 yellow, so a note never looks like 叫它. */
+    val sticky: Color = Color(0xFFFFF4B8), val onSticky: Color = Color(0xFF5A4A00),
 )
 private val LightTokens = PocketColors(
     accent = Color(0xFF2E6A8E), accentPressed = Color(0xFF265A79), accentSubtle = Color(0xFFDCE6EC), userBubble = Color(0xFFDCE6EC), codeBackground = Color(0xFFE2DED4),
@@ -32,6 +34,7 @@ private val DarkTokens = PocketColors(
     accent = Color(0xFF5B9BC0), accentPressed = Color(0xFF7BB0CE), accentSubtle = Color(0xFF22384A), userBubble = Color(0xFF22384A), codeBackground = Color(0xFF15171A),
     hairline = Color(0xFF3A3E45), muted = Color(0xFFA3A6AB), faint = Color(0xFF7C8087), link = Color(0xFF5B9BC0), success = Color(0xFF6FB08C),
     warning = Color(0xFFD9A84A), danger = Color(0xFFE07A95), ink = Color(0xFFECE9E1), onInk = Color(0xFF1B1D21), chrome = Color(0xFF15171A), dark = true,
+    sticky = Color(0xFF4A4220), onSticky = Color(0xFFF3E6A8),
 )
 val LocalPocketColors = staticCompositionLocalOf { LightTokens }
 
@@ -101,7 +104,8 @@ private fun typography(f: PocketFonts) = Typography(
     labelSmall = TextStyle(fontFamily = f.sans, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium),
 )
 
-@Composable fun PocketTheme(mode: String = "system", content: @Composable () -> Unit) {
+/** [opaque] false for the half sheets over other apps: their window stays see-through. */
+@Composable fun PocketTheme(mode: String = "system", opaque: Boolean = true, content: @Composable () -> Unit) {
     val dark = when (mode) { "dark" -> true; "light" -> false; else -> isSystemInDarkTheme() }
     val context = LocalContext.current
     val fonts = remember(context) { loadPocketFonts(context.applicationContext) }
@@ -109,7 +113,7 @@ private fun typography(f: PocketFonts) = Typography(
     val scheme = if (dark) Dark else Light
     SideEffect {
         (view.context as? Activity)?.window?.let {
-            it.decorView.setBackgroundColor(scheme.background.toArgb())
+            if (opaque) it.decorView.setBackgroundColor(scheme.background.toArgb())
             WindowCompat.getInsetsController(it, view).isAppearanceLightStatusBars = !dark
             WindowCompat.getInsetsController(it, view).isAppearanceLightNavigationBars = !dark
         }

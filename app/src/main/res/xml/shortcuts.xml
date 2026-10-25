@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Long-press the launcher icon: 叫它 and 记便条 open the half sheets without the app. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="call" android:enabled="true" android:icon="@drawable/island_notification"
+        android:shortcutShortLabel="@string/call_label" android:shortcutLongLabel="@string/call_long">
+        <intent android:action="dev.dsh.pocket.action.CALL" android:targetPackage="dev.dsh.pocket" android:targetClass="dev.dsh.pocket.CallActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="note" android:enabled="true" android:icon="@drawable/island_notification"
+        android:shortcutShortLabel="@string/note_label" android:shortcutLongLabel="@string/note_long">
+        <intent android:action="dev.dsh.pocket.action.NOTE" android:targetPackage="dev.dsh.pocket" android:targetClass="dev.dsh.pocket.CallActivity" />
+    </shortcut>
+</shortcuts>

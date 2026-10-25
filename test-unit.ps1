@@ -37,6 +37,11 @@ foreach ($entry in $classpath) { if (!(Test-Path -LiteralPath $entry)) { throw "
     dev.dsh.pocket.data.JevFocusTest `
     dev.dsh.pocket.data.DreamFormatTest `
     dev.dsh.pocket.data.QueuedInputTest `
+    dev.dsh.pocket.data.CompanionTest `
+    dev.dsh.pocket.data.ChatLogTest `
+    dev.dsh.pocket.data.ProgressTest `
+    dev.dsh.pocket.data.IdentityRulesTest `
+    dev.dsh.pocket.cowork.StatusCardTest `
     dev.dsh.pocket.cowork.RemoteTypingTest `
     dev.dsh.pocket.cowork.ActionGateTest `
     dev.dsh.pocket.cowork.ManagedProfileScopeTest `
@@ -56,6 +61,7 @@ foreach ($entry in $classpath) { if (!(Test-Path -LiteralPath $entry)) { throw "
     dev.dsh.pocket.cowork.OwnerNoticesTest `
     dev.dsh.pocket.cowork.ParkedAppsTest `
     dev.dsh.pocket.cowork.ScreenWatchTest `
+    dev.dsh.pocket.cowork.TreeDiffTest `
     dev.dsh.pocket.cowork.StrokePathTest `
     dev.dsh.pocket.cowork.ScreenZoomTest `
     dev.dsh.pocket.island.IslandExecutionTest `

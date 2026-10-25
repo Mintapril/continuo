@@ -5,6 +5,16 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- 叫它 by voice: press and hold to talk (asked the first time the mic is used). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <queries>
+        <!-- Setup opens the profile owner to create the work profile, and checks for a speech recognizer. -->
+        <package android:name="dev.dsh.pocket.isolation" />
+        <intent><action android:name="android.speech.RecognitionService" /></intent>
+        <!-- The system page where the owner picks the digital assistant. -->
+        <intent><action android:name="android.settings.VOICE_INPUT_SETTINGS" /></intent>
+        <intent><action android:name="android.settings.MANAGE_DEFAULT_APPS_SETTINGS" /></intent>
+    </queries>
     <application
         android:allowBackup="false"
         android:label="Continuo"
@@ -19,16 +29,62 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
-        <activity android:name=".cowork.CoworkActivity" android:exported="false" />
-        <service android:name=".cowork.CoworkControllerService" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="specialUse">
-            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-started local Cowork execution controller heartbeat and stop access, independent of the optional task island" />
+        <!-- 叫它 / 记便条: a half sheet over the app in front, in its own task. Shared text only fills the draft. -->
+        <activity android:name=".CallActivity" android:exported="true" android:theme="@style/Theme.Continuo.Sheet"
+            android:taskAffinity="dev.dsh.pocket.call" android:excludeFromRecents="true" android:label="@string/call_label"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="dev.dsh.pocket.action.CALL" />
+                <action android:name="dev.dsh.pocket.action.NOTE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <!-- The assist activity, for a system that only knows that kind of assistant (AssistService is the main one). -->
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+        <activity-alias android:name=".ShareCall" android:targetActivity=".CallActivity" android:exported="true" android:label="@string/share_call">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias android:name=".ShareNote" android:targetActivity=".CallActivity" android:exported="true" android:label="@string/share_note">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity-alias>
+        <service android:name=".CallTileService" android:exported="true" android:label="@string/call_label" android:icon="@drawable/island_notification"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
         </service>
-        <service android:name=".island.IslandOverlayService" android:exported="false" android:foregroundServiceType="specialUse">
-            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-enabled task status island with direct pause and stop controls" />
+        <!-- Continuo as the digital assistant: the owner picks it in system settings; it brings up 叫它 (assist/Assistant.kt). -->
+        <service android:name=".assist.AssistService" android:exported="true" android:label="@string/call_label"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <meta-data android:name="android.voice_interaction" android:resource="@xml/assistant" />
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+        </service>
+        <service android:name=".assist.AssistSessionService" android:exported="true" android:permission="android.permission.BIND_VOICE_INTERACTION" />
+        <service android:name=".assist.NoRecognition" android:exported="false" />
+        <!-- Opens the full screen or the call sheet from a notification button or the tile: an Activity launch closes the
+             shade. Own task, never in recents. -->
+        <activity android:name=".cowork.CoworkShadeActivity" android:exported="false" android:theme="@android:style/Theme.NoDisplay"
+            android:taskAffinity="" android:excludeFromRecents="true" android:noHistory="true" />
+        <service android:name=".cowork.CoworkControllerService" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-started local Cowork execution controller heartbeat, status card, stop access and the full-screen viewer" />
         </service>
         <service android:name=".island.IslandAccessibilityService" android:exported="true"
-            android:label="Continuo 任务岛层级"
+            android:label="Continuo 接管画面层级"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />

@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { TOOL_GROUPS, HIDDEN_TOOLS, ACP_NUDGE_KIND, groupOf, shownWith, groupsFor, toolsTool } from '../src/tool-groups.mjs';
-import { ALLOWED_TOOLS, CONTEXT_TOOLS, MEMORY_TOOLS, SCHEDULE_TOOLS } from '../src/restricted.mjs';
+import { TOOL_GROUPS, HIDDEN_TOOLS, groupOf, shownWith, groupsFor, toolsTool } from '../src/tool-groups.mjs';
+import { ALLOWED_TOOLS, MEMORY_TOOLS, SCHEDULE_TOOLS } from '../src/restricted.mjs';
 import { notesTool, noteView, sessionView, PATROL_SESSION } from '../src/notes-view.mjs';
 
-const known = new Set([...ALLOWED_TOOLS, ...CONTEXT_TOOLS, ...MEMORY_TOOLS, ...SCHEDULE_TOOLS]);
+const known = new Set([...ALLOWED_TOOLS, ...MEMORY_TOOLS, ...SCHEDULE_TOOLS]);
 const text = (kind, value) => ({ role: 'user', source: { kind }, content: [{ type: 'text', text: value }] });
 
 test('every grouped or hidden tool is a Cowork tool, in one group only; the everyday list is what every run needs', () => {
@@ -25,11 +25,11 @@ test('a group shows once loaded; hidden tools never show', () => {
   assert.equal(shownWith(new Set(), 'some_host_tool'), true, 'only Cowork names are filtered');
 });
 
-test('the messages of a step call for their tools: notes for a due note, the Jev focus for held notifications, context for a nudge', () => {
+test('the messages of a step call for their tools: notes for a due note, the Jev focus for held notifications, nothing for a context nudge', () => {
   assert.deepEqual(groupsFor([text('user', '你有定时任务吗')]), []);
   assert.deepEqual(groupsFor([text('schedule', '[SCHEDULE REMINDER]\n...')]), ['notes']);
   assert.deepEqual(groupsFor([text('webhook', '[NOTIFICATION TRIGGER]\njev_held_untrusted_json: []\nnotifications_untrusted_json: []')]), ['jev']);
-  assert.deepEqual(groupsFor([text(ACP_NUDGE_KIND, 'This is an efficiency nudge to compress early')]), ['context']);
+  assert.deepEqual(groupsFor([text('plugin:acp-nudge', 'This is an efficiency nudge to compress early')]), []);
   assert.deepEqual(groupsFor(undefined), []);
 });
 

@@ -3,20 +3,22 @@ package dev.dsh.pocket.data
 import org.json.JSONObject
 
 /**
- * The model unattended Cowork runs use: patrols and runs a notification trigger started each may name one selection of
- * DSH's model catalog, or none (the session keeps its own model). Stored by the Cowork plugin and read over DSH's RPC
- * (namespace `coworkUnattended`, cowork-plugin/src/unattended.mjs); the plugin applies it per request, so DSH's default
- * model and the sessions' own selections stay as they are.
+ * The models the owner picks for Cowork runs: patrols, runs a notification trigger started and the owner's own
+ * conversation (叫它, every turn of it) each may name one selection of DSH's model catalog, or none (the session keeps
+ * its own model). Stored by the Cowork plugin and read over DSH's RPC (namespace `coworkUnattended`,
+ * cowork-plugin/src/unattended.mjs); the plugin applies it per request, so DSH's default model and the sessions' own
+ * selections stay as they are (DSH's own session/selectModel would also make the choice the default for new sessions).
  */
 object UnattendedModels {
     const val PATROL = "patrol"
     const val NOTIFY = "notify"
+    const val OWNER = "owner"
     const val READ = "coworkUnattended/models"
     const val WRITE = "coworkUnattended/setModel"
 
     /** The `setModel` arguments; a blank provider or model clears the setting. */
     fun request(kind: String, provider: String?, model: String?, effort: String?): JSONObject {
-        require(kind == PATROL || kind == NOTIFY) { "unknown kind $kind" }
+        require(kind == PATROL || kind == NOTIFY || kind == OWNER) { "unknown kind $kind" }
         val selection: Any = if (provider.isNullOrBlank() || model.isNullOrBlank()) JSONObject.NULL
             else obj("provider" to provider, "model" to model, "reasoningEffort" to effort?.takeIf { it.isNotBlank() })
         return obj("request" to obj("kind" to kind, "selection" to selection))

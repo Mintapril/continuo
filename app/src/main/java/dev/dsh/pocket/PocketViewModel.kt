@@ -205,35 +205,216 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
 
     // ── 便条（DSH 的 dsh-schedule）──────────────────────────────────────
     // The host keeps the notes and delivers each due one back into its session; the app switches the bundle on/off,
-    // lists, edits and deletes. Creating stays with the model (no remote create), so "new" drafts a Cowork request.
+    // lists, edits and deletes. The owner's new notes are stored directly through the Cowork plugin (createNote below).
     val schedules = ScheduleCenter(api)
     fun schedulesRefresh() = task { schedules.refresh() }
     fun schedulesEnable(on: Boolean) = task { notice = schedules.setEnabled(on) }
-    fun scheduleUpdate(entry: JSONObject, title: String?, prompt: String?, change: JSONObject?, saved: () -> Unit) =
-        task { schedules.update(entry, title, prompt, change); notice = "已保存"; saved() }
-    fun scheduleDelete(entry: JSONObject) = task { schedules.delete(entry); notice = "便条已删除" }
-    /** A drafted request to keep a note: in a new Cowork chat, or in an existing session ([sessionId]),
-     *  such as an app's standing session for a patrol of that app. The patrol session ([ScheduleFormat.PATROL_SESSION])
-     *  is created on first use under its fixed id, and brought back if it was archived. The owner checks and sends it. */
-    fun draftAutomation(text: String, sessionId: String? = null) {
-        if (sessionId == ScheduleFormat.PATROL_SESSION) {
-            task {
-                val id = if (sessions.any { it.text("sessionId") == sessionId }) {
-                    if (sessionId in archived) api.call("workspace/unarchiveSession", obj("sessionId" to sessionId))
-                    sessionId
-                } else {
-                    val created = api.call("session/create", obj("sessionId" to sessionId, "agentPreset" to TaskMode.COWORK.preset, "cwd" to "/workspace")).getString("sessionId")
-                    // Another id means a stored session already holds the fixed one (this list had not shown it yet):
-                    // the host made a blank one instead, and the stored patrol session is the one to use.
-                    if (created == sessionId) api.call("session/rename", obj("sessionId" to created, "title" to ScheduleFormat.PATROL_TITLE))
-                    sessionId
-                }
-                refreshSessions(); openSession(id); updateDraft(text)
-            }
-            return
+    fun scheduleUpdate(entry: JSONObject, title: String?, prompt: String?, change: JSONObject?, receipt: String = "已改", saved: () -> Unit) =
+        task { schedules.update(entry, title, prompt, change); notice = receipt; saved() }
+    fun scheduleDelete(entry: JSONObject) = task { schedules.delete(entry); notice = "已撤下" }
+
+    // ── 它：名字、日记、叫它的会话、主人写的便条（Cowork 插件的 coworkUnattended）──────────
+    // The name lives in the app (IdentityStore) and is handed to the plugin, which tells the model. The diary is one
+    // entry a day, written each night by the plugin from what it did. Notes the owner writes go straight into
+    // dsh-schedule, unmarked.
+    var diary by mutableStateOf<List<Companion.DiaryEntry>>(emptyList()); private set
+    var diaryMore by mutableStateOf(false); private set
+    /** null while the first page loads, "" once read, otherwise why it could not be read. */
+    var diaryError by mutableStateOf<String?>(null); private set
+    private var diaryJob: Job? = null
+    fun diaryRefresh() {
+        if (diaryJob?.isActive == true) return
+        diaryJob = viewModelScope.launch {
+            try {
+                val page = Companion.diaryPage(api.rpc(Companion.DIARY, Companion.diaryRequest()))
+                val merged = Companion.merge(page.entries, diary)
+                if (diary.isEmpty()) diaryMore = page.more
+                diary = merged; diaryError = ""
+            } catch (e: CancellationException) { throw e } catch (e: Exception) { if (diary.isEmpty()) diaryError = e.message ?: "读取失败" }
         }
-        if (sessionId != null) { openSession(sessionId); updateDraft(text); return }
-        if (selected != null) leaveChat(); changeMode(TaskMode.COWORK); updateDraft(text)
+    }
+    fun diaryOlder() = task {
+        val last = diary.lastOrNull() ?: return@task
+        val page = Companion.diaryPage(api.rpc(Companion.DIARY, Companion.diaryRequest(before = last.at)))
+        diary = Companion.merge(diary, page.entries); diaryMore = page.more
+    }
+    // 事件: what it did on its own in the standing app sessions (patrols, notifications, due notes), newest first.
+    var events by mutableStateOf<List<Companion.Event>>(emptyList()); private set
+    var eventsMore by mutableStateOf(false); private set
+    /** null while the first page loads, "" once read, otherwise why it could not be read. */
+    var eventsError by mutableStateOf<String?>(null); private set
+    private var eventsJob: Job? = null
+    fun eventsRefresh() {
+        if (eventsJob?.isActive == true) return
+        eventsJob = viewModelScope.launch {
+            try {
+                val page = Companion.eventsPage(api.rpc(Companion.EVENTS, Companion.eventsRequest()))
+                val merged = Companion.mergeEvents(page.entries, events)
+                if (events.isEmpty()) eventsMore = page.more
+                events = merged; eventsError = ""
+            } catch (e: CancellationException) { throw e } catch (e: Exception) { if (events.isEmpty()) eventsError = e.message ?: "读取失败" }
+        }
+    }
+    fun eventsOlder() = task {
+        val last = events.lastOrNull() ?: return@task
+        val page = Companion.eventsPage(api.rpc(Companion.EVENTS, Companion.eventsRequest(before = last.at)))
+        events = Companion.mergeEvents(events, page.entries); eventsMore = page.more
+    }
+    /** Hands the owner-given name to the plugin; quietly skipped while DSH or a too-old plugin cannot take it. */
+    fun pushIdentity() = viewModelScope.launch {
+        if (!connected) return@launch
+        val name = IdentityStore.current(getApplication()).name
+        try {
+            if (Companion.storedName(api.rpc(Companion.IDENTITY)) != name.ifBlank { null }) api.rpc(Companion.SET_IDENTITY, Companion.identityRequest(name))
+        } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+    }
+    fun nameCompanion(name: String) { IdentityStore.setName(getApplication(), name); pushIdentity() }
+
+    /** A Cowork session under a fixed id: created on first use (titled [title]), brought back when it was archived. */
+    private suspend fun ensureSession(id: String, title: String): String {
+        if (sessions.none { it.text("sessionId") == id }) refreshSessions()
+        if (sessions.any { it.text("sessionId") == id }) {
+            if (id in archived) api.call("workspace/unarchiveSession", obj("sessionId" to id))
+        } else {
+            val created = api.call("session/create", obj("sessionId" to id, "agentPreset" to TaskMode.COWORK.preset, "cwd" to "/workspace")).getString("sessionId")
+            // Another id means a stored session already holds the fixed one (this list had not shown it yet): the host
+            // made a blank one instead, and the stored session is the one to use.
+            if (created == id) api.call("session/rename", obj("sessionId" to created, "title" to title))
+            refreshSessions()
+        }
+        return id
+    }
+    /** The session 叫它 talks in now (see [OwnerConversation]). */
+    val ownerSession: String get() = OwnerConversation.current(getApplication())
+    private val ownerTitle get() = Companion.ownerTitle(IdentityStore.current(getApplication()).name)
+    suspend fun ensureOwnerSession(): String = ensureSession(OwnerConversation.current(getApplication()), ownerTitle)
+    /** 叫它: open the owner's conversation once DSH is connected (kept open when it already is); [shared] text joins the draft (never sent). */
+    fun openOwner(shared: String? = null) = task {
+        for (attempt in 0 until 80) { if (connected) break; delay(250) }
+        check(connected) { "还没连上本机 DSH，稍后再叫它" }
+        val id = ensureOwnerSession()
+        if (selected != id) openSession(id)
+        if (!shared.isNullOrBlank()) updateDraft(if (draft.isBlank()) shared else "$draft\n$shared")
+    }
+
+    /**
+     * 清空对话: 叫它 continues in a fresh session and the current one is archived. Its active notes are written again in
+     * the new session first and only then removed from the old one, so a failure leaves at most a duplicate, never a lost
+     * note; a copy made before a failure is taken back. Refused while a turn runs there. [done] gets how many notes moved.
+     */
+    fun clearOwner(done: (Result<Int>) -> Unit) = viewModelScope.launch {
+        val app = getApplication<Application>()
+        val result = try {
+            check(connected) { "还没连上本机 DSH" }
+            val old = OwnerConversation.current(app)
+            refreshSessions()
+            check(sessions.firstOrNull { it.text("sessionId") == old }?.optBoolean("running") != true) { "它正在做事，等它做完再清空" }
+            if (schedules.service == true) schedules.reload() else schedules.refresh()
+            val notes = schedules.tasks.filter { it.text("sessionId") == old && it.text("status") == "active" }
+            val next = ensureSession(Companion.nextOwnerSession(java.time.LocalDateTime.now()), ownerTitle)
+            val copies = mutableListOf<JSONObject>()
+            try {
+                for (note in notes) copies += api.rpc(Companion.CREATE_NOTE, Companion.movedNote(next, note)) as? JSONObject ?: error("便条「${note.text("title")}」没搬过去")
+            } catch (e: Exception) {
+                for (copy in copies) runCatching { api.call("schedule/delete", obj("sessionId" to next, "id" to copy.text("id"))) }
+                // The fresh session stays empty and unused: archived, so the developer list does not show two "你和它".
+                runCatching { api.call("workspace/archiveSession", obj("sessionId" to next)) }
+                throw IllegalStateException("便条没搬过去，对话没有清空：${e.message}", e)
+            }
+            // Every note now lives in the new session too: from here on the conversation is cleared whatever happens.
+            var left = 0
+            for (note in notes) try { schedules.delete(note) } catch (e: CancellationException) { throw e } catch (_: Exception) { left++ }
+            OwnerConversation.set(app, next)
+            // Archiving the old conversation is only tidying, so a refusal (a turn that just started there, a note that
+            // could not be taken off) is reported and the conversation is cleared all the same. No stopActivity: it
+            // would delete whatever notes are still there.
+            try { api.call("workspace/archiveSession", obj("sessionId" to old)) }
+            catch (e: CancellationException) { throw e } catch (e: Exception) {
+                notice = if (left > 0) "清空了；旧对话里有 $left 张便条没撤下，到点会多来一次" else "清空了，但旧对话没能归档：${e.message}"
+            }
+            refreshSessions(); schedules.reload()
+            if (selected == old) openSession(next)
+            Result.success(notes.size)
+        } catch (e: CancellationException) { throw e } catch (e: Exception) { Result.failure(e) }
+        done(result)
+    }
+    /**
+     * A note the owner wrote: stored at once, in their words, in [sessionId] (an app's standing session) or by default in
+     * the owner's conversation. [done] gets the stored note, or the reason it was not stored.
+     */
+    fun createNote(text: String, timing: ScheduleFormat.TimingDraft, sessionId: String?, done: (Result<JSONObject>) -> Unit) = viewModelScope.launch {
+        val result = try {
+            check(connected) { "还没连上本机 DSH" }
+            val target = sessionId ?: ensureOwnerSession()
+            val record = api.rpc(Companion.CREATE_NOTE, Companion.noteRequest(target, text, timing)) as? JSONObject ?: error("便条没有贴上")
+            schedules.reload()
+            Result.success(record)
+        } catch (e: CancellationException) { throw e } catch (e: Exception) { Result.failure(e) }
+        done(result)
+    }
+
+    // 聊天记录 on the home page: the owner's conversation, followed on its own stream. Selecting a session ([selected])
+    // opens the full chat screen, so the home page never touches it.
+    var ownerLog by mutableStateOf<List<TranscriptRow>>(emptyList()); private set
+    var ownerLogMore by mutableStateOf(false); private set
+    /** The followed conversation has sent its first snapshot. */
+    var ownerLogReady by mutableStateOf(false); private set
+    private var ownerFollow: Job? = null
+    private var ownerFollowing: String? = null
+    private var ownerTranscript = Transcript()
+    private var ownerCut = -1L
+    private var ownerPaging = false
+    val ownerRunning: Boolean get() = sessions.firstOrNull { it.text("sessionId") == ownerSession }?.optBoolean("running") == true
+    /** Follow 叫它's current conversation (again after a reconnect or 清空对话); nothing while it does not exist yet. */
+    fun followOwner() {
+        val id = ownerSession
+        if (!connected || sessions.none { it.text("sessionId") == id }) return
+        if (ownerFollowing == id && ownerFollow?.isActive == true) return
+        ownerFollow?.cancel(); ownerFollowing = id; ownerLog = emptyList(); ownerLogMore = false; ownerLogReady = false
+        val reducer = Transcript().also { ownerTranscript = it }
+        ownerFollow = viewModelScope.launch {
+            // Without assistantStream (DSH takes only true or nothing): a reply shows once it is committed.
+            persistentStream("session/follow", obj("request" to obj("address" to address(id), "maxMessages" to 100))) {
+                if (ownerTranscript !== reducer) return@persistentStream
+                withContext(Dispatchers.Default) { reducer.accept(it) }
+                if (it.text("type") == "snapshot") ownerCut = it.optLong("cursor", -1)
+                ownerLog = withContext(Dispatchers.Default) { reducer.rows }; ownerLogMore = reducer.hasMore; ownerLogReady = true
+            }
+        }
+    }
+    fun stopOwnerLog() { ownerFollow?.cancel(); ownerFollow = null; ownerFollowing = null }
+    fun ownerLogOlder() = task {
+        val id = ownerFollowing ?: return@task
+        if (ownerPaging || !ownerLogMore) return@task
+        val reducer = ownerTranscript; val cut = ownerCut
+        ownerPaging = true
+        try {
+            val page = api.call("session/page", obj("address" to address(id), "throughSeq" to cut, "beforeSeq" to reducer.firstSeq, "maxMessages" to 100))
+            if (ownerTranscript !== reducer || ownerCut != cut) return@task
+            reducer.prepend(page); ownerLog = reducer.rows; ownerLogMore = reducer.hasMore
+        } finally { ownerPaging = false }
+    }
+
+    /** 批一句: a remark on a day of the diary, into the owner's conversation with it (steered in while it runs). */
+    fun annotate(entry: Companion.DiaryEntry, text: String) = task {
+        val content = JSONArray().put(obj("type" to "text", "text" to Companion.annotation(entry, text)))
+        val target = ensureOwnerSession()
+        val running = sessions.firstOrNull { it.text("sessionId") == target }?.optBoolean("running") == true
+        api.call("session/prompt", obj("requestId" to UUID.randomUUID().toString(), "sessionId" to target, "mode" to if (running) "steer" else "queue",
+            "content" to content, "clientTimeZone" to TimeZone.getDefault().id))
+        notice = "批好了，它会在你们的对话里回你"
+        refreshSessions()
+    }
+    /** 巡视: one recurring note in the patrol session (created on first use), a few apps each time. */
+    fun startPatrol(done: (Result<JSONObject>) -> Unit) = viewModelScope.launch {
+        val result = try {
+            check(connected) { "还没连上本机 DSH" }
+            val session = ensureSession(ScheduleFormat.PATROL_SESSION, ScheduleFormat.PATROL_TITLE)
+            val record = api.rpc(Companion.CREATE_NOTE, Companion.noteRequest(session, ScheduleFormat.patrolTask(false), ScheduleFormat.patrolTiming())) as? JSONObject ?: error("巡视没有贴上")
+            schedules.reload()
+            Result.success(record)
+        } catch (e: CancellationException) { throw e } catch (e: Exception) { Result.failure(e) }
+        done(result)
     }
 
     // ── 通知触发的 Jev 判断 ──────────────────────────────────────────────
@@ -319,6 +500,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
                             } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
                             if (generation == connectionGeneration && clientId == eventClient) {
                                 catalog = models; permissionCatalog = permissions; presets = roster; connected = true; ready.complete(Unit)
+                                pushIdentity(); diaryRefresh()
                             }
                         }
                         "waterfall" -> {

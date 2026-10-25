@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="call_label">叫它</string>
+    <string name="note_label">记便条</string>
+    <string name="share_call">交给它</string>
+    <string name="share_note">记便条</string>
+    <string name="call_long">叫它过来说话</string>
+    <string name="note_long">给它留一张便条</string>
+</resources>

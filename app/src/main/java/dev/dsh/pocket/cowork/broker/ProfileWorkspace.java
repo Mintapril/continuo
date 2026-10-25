@@ -519,7 +519,9 @@ public final class ProfileWorkspace implements AutoCloseable {
     }
     public synchronized String fingerprintIdle(){return generation+"|"+displayIdentity+"|"+profile.serial();}
     /** Bind the observation to the exact returned PNG, never two surrounding captures. */
-    public synchronized Observation observe(boolean screenshot)throws Exception{
+    public synchronized Observation observe(boolean screenshot)throws Exception{return observe(screenshot,true);}
+    /** [full] false: an input's settled screen, which may come as the change since the model's last full one. */
+    public synchronized Observation observe(boolean screenshot,boolean full)throws Exception{
         guard();
         // A screenshot is about pixels; it does not invalidate the element ids of the latest phone_ui_tree.
         if(screenshot){Frame f=capture();verifiedUid=f.uid();return new Observation(image(f),f.fingerprint());}
@@ -531,7 +533,7 @@ public final class ProfileWorkspace implements AutoCloseable {
         do{
             try{
                 check(true,false);ManagedProfileScope.App app=target();String before=structure(app.uid());
-                JSONObject result=tree.snapshot(displayId(),W,H).put("width",W).put("height",H).put("capturedAt",System.currentTimeMillis());
+                JSONObject result=tree.snapshot(displayId(),W,H,full).put("width",W).put("height",H).put("capturedAt",System.currentTimeMillis());
                 check(true,false);if(target().uid()!=app.uid()||!before.equals(structure(app.uid())))ActionGate.fail("STALE_OBSERVATION","The screen is still changing; observe again");
                 verifiedUid=app.uid();return new Observation(result,before);
             }catch(ActionGate.Denied moving){
@@ -552,6 +554,8 @@ public final class ProfileWorkspace implements AutoCloseable {
     }
     /** Called after gate.observe: element ids are valid only for this ui_tree observation. */
     public synchronized void bindTree(String observationId){tree.bind(observationId);}
+    /** A new task: element ids start again and its first observation is a full one. */
+    public synchronized void resetElementIds(){tree.resetIds();}
     public synchronized void requireTree(String observationId){tree.requireBound(observationId);}
     /** phone_batch checks against the bound tree (never a new snapshot, which would unbind the remaining steps). */
     public synchronized void verifyTarget(String id){tree.verify(id,displayId());}

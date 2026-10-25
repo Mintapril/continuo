@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { selectionOf, readUnattended, writeUnattended, unattendedFile, NO_UNATTENDED } from '../src/unattended-store.mjs';
-import { unattendedKind } from '../src/restricted.mjs';
+import { unattendedKind, isOwnerSession } from '../src/restricted.mjs';
 
 // The model of unattended runs (patrols, notification triggers), set by the owner in Continuo; null keeps the session's.
 test('a stored selection is a provider and a model, with an optional effort, or null', () => {
@@ -24,11 +24,13 @@ test('the setting lives in the plugin data folder; a missing or damaged file rea
   try {
     assert.equal(readUnattended(file), NO_UNATTENDED);
     const written = writeUnattended({ patrol: { provider: 'claude', model: 'claude-opus-5-5' }, notify: null }, file);
-    assert.deepEqual(written, { patrol: { provider: 'claude', model: 'claude-opus-5-5' }, notify: null });
+    assert.deepEqual(written, { patrol: { provider: 'claude', model: 'claude-opus-5-5' }, notify: null, owner: null });
     assert.deepEqual(readUnattended(file), written);
     assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), written, 'plain JSON on disk');
     await writeFile(file, '{"patrol":{"provider":"x"},"notify":{"provider":"codex","model":"gpt-6-luna"}}');
-    assert.deepEqual(readUnattended(file), { patrol: null, notify: { provider: 'codex', model: 'gpt-6-luna' } }, 'a bad entry is dropped, the rest kept');
+    assert.deepEqual(readUnattended(file), { patrol: null, notify: { provider: 'codex', model: 'gpt-6-luna' }, owner: null }, 'a bad entry is dropped, the rest kept');
+    writeUnattended({ patrol: null, notify: null, owner: { provider: 'claude', model: 'claude-fable-5-1' } }, file);
+    assert.deepEqual(readUnattended(file).owner, { provider: 'claude', model: 'claude-fable-5-1' }, 'the owner conversation has its own setting');
     await writeFile(file, 'not json');
     assert.equal(readUnattended(file), NO_UNATTENDED);
     assert.throws(() => writeUnattended({ patrol: { provider: 'x' }, notify: null }, file), TypeError);
@@ -48,4 +50,10 @@ test('which setting a turn uses comes from what started it', () => {
   assert.equal(unattendedKind([{ role: 'user', source: { kind: 'webhook', ruleId: 'other' }, content: [] }]), undefined);
   assert.equal(unattendedKind(undefined), undefined);
   assert.equal(unattendedKind([]), undefined);
+});
+
+test('the owner conversation is cowork-owner, or the fresh one Continuo starts when the owner clears it', () => {
+  for (const id of ['cowork-owner', 'cowork-owner-20261025-153012']) assert.equal(isOwnerSession(id), true, id);
+  for (const id of ['cowork-owner-', 'cowork-owner-x', 'cowork-owner-2026-1', 'cowork-app-patrol', 'xcowork-owner', undefined, 7])
+    assert.equal(isOwnerSession(id), false, String(id));
 });

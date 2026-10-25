@@ -154,10 +154,17 @@ internal class EdgeGlow(private val context: Context, private val density: Float
         return views.isNotEmpty()
     }
 
-    fun hide() {
+    /** Removes the strips; with [fade] they fade out first (a new [show] meanwhile is not affected: it adds its own). */
+    fun hide(fade: Boolean = false) {
         handler.removeCallbacks(tick)
         val wm = manager
-        for (v in views) { if (wm != null) runCatching { wm.removeViewImmediate(v) } }
+        val leaving = views.toList()
         views.clear()
+        for (v in leaving) {
+            if (wm == null) continue
+            if (!fade) { runCatching { wm.removeViewImmediate(v) }; continue }
+            v.animate().cancel()
+            v.animate().alpha(0f).setDuration(240).withEndAction { runCatching { wm.removeViewImmediate(v) } }.start()
+        }
     }
 }

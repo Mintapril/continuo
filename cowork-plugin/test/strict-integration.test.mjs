@@ -6,7 +6,7 @@ import ToolRuntime from '../research/installed/dsh/node_modules/@deepseek-ai/dsh
 import * as scope from '../research/installed/dsh/node_modules/@deepseek-ai/dsh-scope/lib/index.js';
 import * as llm from '../research/installed/dsh/node_modules/@deepseek-ai/dsh-llm/lib/index.js';
 import { Session } from '../research/installed/dsh/node_modules/@deepseek-ai/dsh-session/lib/index.js';
-import { installRestrictedCowork, ALLOWED_TOOLS, CONTEXT_TOOLS, MEMORY_TOOLS, SCHEDULE_TOOLS, phoneTools, reframeReminder } from '@local/dsh-cowork-phone';
+import { installRestrictedCowork, ALLOWED_TOOLS, MEMORY_TOOLS, SCHEDULE_TOOLS, phoneTools, reframeReminder } from '@local/dsh-cowork-phone';
 import { tool,object } from '../src/validation.mjs';
 import { createTaskLifecycle, PRIORITY } from '../src/task-lifecycle.mjs';
 import { agentEvents } from '../research/installed/dsh/node_modules/@deepseek-ai/dsh-agent/lib/types/dispatch.js';
@@ -73,7 +73,7 @@ test('bundle is additive and packages only tested active implementation',async()
   const pkg=JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8'));
   const patch=await fs.readFile(new URL('../cordis.patch.yml',import.meta.url),'utf8');
   assert.equal(pkg.exports['.'],'./src/restricted.mjs');
-  assert.deepEqual(pkg.files.filter(p=>p.startsWith('src/')).sort(),['src/restricted.mjs','src/validation.mjs','src/broker.mjs','src/auth.mjs','src/task-lifecycle.mjs','src/bounded-files.mjs','src/web.mjs','src/gesture-path.mjs','src/notify.mjs','src/screen-board.mjs','src/unattended-store.mjs','src/unattended.mjs','src/jev-board.mjs','src/jev-focus-store.mjs','src/jev-focus.mjs','src/tool-groups.mjs','src/notes-view.mjs'].sort());
+  assert.deepEqual(pkg.files.filter(p=>p.startsWith('src/')).sort(),['src/restricted.mjs','src/validation.mjs','src/broker.mjs','src/auth.mjs','src/task-lifecycle.mjs','src/bounded-files.mjs','src/web.mjs','src/gesture-path.mjs','src/notify.mjs','src/screen-board.mjs','src/unattended-store.mjs','src/unattended.mjs','src/jev-board.mjs','src/jev-focus-store.mjs','src/jev-focus.mjs','src/tool-groups.mjs','src/notes-view.mjs','src/companion-store.mjs','src/diary.mjs','src/diary-writer.mjs','src/diary-view.mjs','src/context-plan.mjs','src/context.mjs','src/context-pruner.mjs'].sort());
   // Every module a packaged one imports is packaged too (a missing file only shows up when DSH loads the bundle).
   for(const file of pkg.files.filter(p=>p.endsWith('.mjs'))){
     const text=await fs.readFile(new URL(`../${file}`,import.meta.url),'utf8');
@@ -81,6 +81,10 @@ test('bundle is additive and packages only tested active implementation',async()
   }
   assert.equal(pkg.exports['./notify'],'./src/notify.mjs');assert.match(patch,/name: '\.\/src\/notify\.mjs'/);
   assert.equal(pkg.exports['./unattended'],'./src/unattended.mjs');assert.match(patch,/id: cowork-unattended\n\s+name: '\.\/src\/unattended\.mjs'/);
+  // Cowork's own compaction, in the preset's realm the way DSH's standard preset mounts compaction-basic: the pruner
+  // before the engine, both services isolated to the group.
+  assert.equal(pkg.exports['./context'],'./src/context.mjs');assert.equal(pkg.exports['./context-pruner'],'./src/context-pruner.mjs');
+  assert.match(patch,/id: cowork-compaction\n\s+name: cordis:group\n\s+group: true\n\s+isolate:\n\s+compaction: true\n\s+toolResultPruner: true\n\s+config:\n\s+- id: cowork-context-pruner\n\s+name: '@local\/dsh-cowork-phone\/context-pruner'\n\s+- id: cowork-context\n\s+name: '@local\/dsh-cowork-phone\/context'/);
   // DSH 0.2.1 installs no dsh-webhook; a row naming it would not resolve.
   assert.doesNotMatch(patch,/dsh-webhook/);assert.match(patch,/name: '@deepseek-ai\/dsh-tool-schedule'/);assert.match(patch,/name: '@deepseek-ai\/dsh-time-context'/);
   assert.match(patch,/- insert:/);assert.match(patch,/id: cowork-phone/);
@@ -104,7 +108,8 @@ test('model-visible tool names match the provider pattern (no dots) while wire n
   assert.ok(!ALLOWED_TOOLS.some(n=>n.includes('.')));
 });
 
-test('host context tools (billion-context-dsh) are exposed to Cowork, only as the global definition and without file arguments',async()=>{
+test('host context tools (billion-context-dsh) stay out of Cowork; a host tool it admits is only the global definition, without file arguments',async()=>{
+  const HOST_CONTEXT=['compress','decompress','search_context','acp_status'];
   const ctx=new Context();
   ctx.provide('systemPrompt',{tools:()=>{},section:()=>{},getSectionOrder:()=>0});
   ctx.provide('attachments',{saveImage:async()=>({})});
@@ -113,7 +118,7 @@ test('host context tools (billion-context-dsh) are exposed to Cowork, only as th
   const liveAgents=new Map();ctx.provide('agents',{get:id=>liveAgents.get(id),roots:()=>[...liveAgents.values()]});
   const runtimeFiber=ctx.plugin(ToolRuntime,{mode:'native'});if(runtimeFiber.inertia)await runtimeFiber.inertia;
   let ran=0;
-  for(const n of CONTEXT_TOOLS)ctx.tools.register(tool(n,'host '+n,object(),()=>{ran++;return {};}));
+  for(const n of [...HOST_CONTEXT,'memory_search','memory_save'])ctx.tools.register(tool(n,'host '+n,object(),()=>{ran++;return {};}));
   ctx.tools.register(tool('shell','forbidden',object(),()=>{ran+=100;return {};}));
   let owner;const ownerFiber=ctx.inject(['tools','systemPrompt','attachments','web','llm','agents'],c=>{owner=c;});if(ownerFiber.inertia)await ownerFiber.inertia;
   const key={},preset=scope.createScope(owner,key),agent={id:'cowork',session:{id:'cowork',snapshotEvents:()=>[],requestHeader:()=>undefined}};
@@ -123,22 +128,24 @@ test('host context tools (billion-context-dsh) are exposed to Cowork, only as th
   liveAgents.set(agent.id,agent);
   ctx.emit('session/event',agent.session,{type:'agent-preset/selected',data:{agentPreset:'cowork-phone'}});
   const visible=ctx.tools.schemas(agent).map(t=>t.name);
-  for(const n of CONTEXT_TOOLS)assert.ok(visible.includes(n),n+' visible');
+  for(const n of HOST_CONTEXT)assert.ok(!visible.includes(n),n+' stays out');
+  assert.ok(visible.includes('memory_search'));
   assert.ok(!visible.includes('shell'));
   const signal=new AbortController().signal;let serial=0;
   const guarded=(name,args={},target=agent)=>ctx.tools.guardReason?ctx.tools.guardReason({name,agent:target,arguments:args}):undefined;
   const execute=(name,args={},target=agent)=>{const callId='c'+serial++;ctx.emit('session/event',target.session,{type:'tool/call',data:{turn:1,callId,name,arguments:args}});return ctx.tools.execute({name,arguments:args,agent:target,signal,callId});};
   ctx.emit('session/event',agent.session,{type:'turn/start',data:{turn:1}});
   // Host tools that do not touch the phone run without an admitted lifecycle turn only if the wrapper allows it; here only the guard matters.
-  for(const n of CONTEXT_TOOLS){const r=await execute(n);assert.equal(r.isError,false,n+': '+JSON.stringify(r.error));}
-  assert.equal(ran,CONTEXT_TOOLS.length,'host tool bodies actually ran');
-  const toFile=await execute('decompress',{blockId:'b1',toFile:'/tmp/x.txt'});assert.equal(toFile.isError,true);assert.match(JSON.stringify(toFile),/may not write files/);
-  const wrapped=await execute('decompress',{arguments:'{"blockId":"b1","toFile":"/tmp/x"}'});assert.equal(wrapped.isError,true);assert.match(JSON.stringify(wrapped),/may not write files/);
+  for(const n of HOST_CONTEXT){const r=await execute(n);assert.equal(r.isError,true,n+' refused');}
+  assert.equal(ran,0,'no host context tool body ran');
+  assert.equal((await execute('memory_search')).isError,false);assert.equal(ran,1,'the admitted host tool ran');
+  const toFile=await execute('memory_save',{memory:'x',toFile:'/tmp/x.txt'});assert.equal(toFile.isError,true);assert.match(JSON.stringify(toFile),/may not write files/);
+  const wrapped=await execute('memory_save',{arguments:'{"memory":"x","toFile":"/tmp/x"}'});assert.equal(wrapped.isError,true);assert.match(JSON.stringify(wrapped),/may not write files/);
   assert.equal((await execute('shell')).isError,true);assert.ok(ran<100);
   // A same-name definition from a descendant scope cannot impersonate the host tool.
   const desc={id:'desc',session:{id:'desc'}},descScope=scope.createScope(owner,desc,{parent:agent});desc.ctx=descScope.ctx;
-  desc.ctx.tools.register(tool('compress','shadow',object(),()=>{ran+=100;return {};}));
-  assert.equal((await execute('compress',{},desc)).isError,true);assert.ok(ran<100);
+  desc.ctx.tools.register(tool('memory_search','shadow',object(),()=>{ran+=100;return {};}));
+  assert.equal((await execute('memory_search',{},desc)).isError,true);assert.ok(ran<100);
   api.remove(agent);lifecycle.dispose();await descScope.dispose();await child.dispose();await preset.dispose();
 });
 
@@ -458,6 +465,39 @@ test('a patrol and a notification-triggered turn run on the owner\'s unattended 
   assert.deepEqual(await request(10),{provider:'codex',model:'gpt-6-luna',maxTokens:100});
   api.remove(agent);await child.dispose();await preset.dispose();
 });
+test('every turn of the owner conversation runs on the 叫它 model when one is set; a patrol there keeps its own setting',async()=>{
+  const ctx=new Context();
+  ctx.provide('systemPrompt',{tools:()=>{},section:()=>{},getSectionOrder:()=>0});
+  ctx.provide('attachments',{saveImage:async()=>({})});
+  ctx.provide('web',{search:async()=>({content:'fact',sources:[]})});
+  ctx.provide('llm',{stream:()=>{throw Error('No model calls during tests');},resolveCallConfig:async sel=>({provider:sel.provider,model:sel.model,reasoningEffort:sel.reasoningEffort??'adapter-default'})});
+  const liveAgents=new Map();ctx.provide('agents',{get:id=>liveAgents.get(id),roots:()=>[...liveAgents.values()]});
+  const runtimeFiber=ctx.plugin(ToolRuntime,{mode:'native'});if(runtimeFiber.inertia)await runtimeFiber.inertia;
+  let owner;const ownerFiber=ctx.inject(['tools','systemPrompt','attachments','web','llm','agents'],c=>{owner=c;});if(ownerFiber.inertia)await ownerFiber.inertia;
+  const id='cowork-owner-20261025-153012';
+  const key={},preset=scope.createScope(owner,key),agent={id,session:{id,snapshotEvents:()=>[],requestHeader:()=>undefined}};
+  const child=scope.createScope(owner,agent,{parent:key});agent.ctx=child.ctx;
+  const lifecycle={runTool:(a,exec,body)=>body(exec),preStep:async()=>{},observe(){},remove(){},dispose(){},flush:async()=>{}};
+  let store={patrol:null,notify:null,owner:{provider:'claude',model:'claude-fable-5-1'}};
+  const api=installRestrictedCowork(preset.ctx,{},{...scope,...llm,Session},{lifecycle,bridge:{call:async()=>({}),forget:()=>{}},files:{},unattended:()=>store});
+  liveAgents.set(agent.id,agent);
+  ctx.emit('session/event',agent.session,{type:'agent-preset/selected',data:{agentPreset:'cowork-phone'}});
+  child.ctx.on('agent/request',async(_payload,next)=>({...(await next()),provider:'session',model:'own',reasoningEffort:'low'}));
+  const signal=new AbortController().signal;
+  const reminder=prompt=>llm.createUserMessage({content:[{type:'text',text:['[SCHEDULE REMINDER BATCH]','This is a scheduled message from the user',`reminders_json: ${JSON.stringify([{schedule_id:'p1',occurrence_at:'2026-10-24T01:00:00.000Z',reminder_prompt:prompt}])}`].join('\n')}],source:{kind:'schedule'}});
+  const mine=llm.createUserMessage({content:[{type:'text',text:'帮我看看 QQ'}],source:{kind:'user'}});
+  const step=(turn,messages)=>agentEvents(ctx,agent).waterfall('agent/pre-step',{turn,step:1,signal,messages},async()=>({kind:'enter',messages}));
+  const request=turn=>agentEvents(ctx,agent).waterfall('agent/request',{turn,step:1,signal},()=>Promise.resolve({provider:'seed',model:'seed',reasoningEffort:'medium',maxTokens:100}));
+  const fable={provider:'claude',model:'claude-fable-5-1',maxTokens:100};
+  await step(1,[mine]);assert.deepEqual(await request(1),fable,'the owner talking');
+  await step(2,[reminder('带伞')]);assert.deepEqual(await request(2),fable,'a note due in their conversation');
+  await step(3,[reminder('[巡视] 逛逛')]);assert.deepEqual(await request(3),fable,'a patrol there with no patrol setting');
+  store={...store,patrol:{provider:'codex',model:'gpt-6-luna'}};
+  await step(4,[reminder('[巡视] 逛逛')]);assert.deepEqual(await request(4),{provider:'codex',model:'gpt-6-luna',maxTokens:100},'the patrol setting wins');
+  store={...store,owner:null};
+  await step(5,[mine]);assert.deepEqual(await request(5),{provider:'session',model:'own',reasoningEffort:'low',maxTokens:100},'no 叫它 setting: the session model');
+  api.remove(agent);await child.dispose();await preset.dispose();
+});
 test('Continuo reaches the unattended-model setting through the real Typert gateway markers; values are checked against the catalog',async()=>{
   const protocol=await import('../research/installed/dsh/node_modules/@deepseek-ai/dsh-typert-protocol/lib/index.js');
   const { unattendedService, NAMESPACE }=await import('../src/unattended.mjs');
@@ -471,7 +511,7 @@ test('Continuo reaches the unattended-model setting through the real Typert gate
   const service=ctx.get(NAMESPACE);
   assert.ok(service,'registered under its namespace');
   assert.deepEqual({...service.typertRemote,service:undefined},{service:undefined,serviceKey:NAMESPACE,namespace:NAMESPACE});
-  assert.deepEqual(protocol.remoteMethods(service).map(m=>m.method),['models','setModel','jevFocus','clearJevFocus'],'what the gateway discovers (SRC markers)');
+  assert.deepEqual(protocol.remoteMethods(service).map(m=>m.method),['models','setModel','jevFocus','clearJevFocus','identity','setIdentity','diary','events','createNote'],'what the gateway discovers (SRC markers)');
   // The Jev focus the model keeps: Continuo lists it and can clear one; the clear stays with its time.
   const { writeFocus }=await import('../src/jev-focus-store.mjs');
   assert.deepEqual(service.jevFocus(),{},'no focus yet');
@@ -479,14 +519,15 @@ test('Continuo reaches the unattended-model setting through the real Typert gate
   assert.deepEqual(service.jevFocus(),{'work:com.tencent.mobileqq':{text:'内部测试群有人 @ 我才算',at:1_791_999_000_000,by:'patrol',revision:1}});
   assert.deepEqual(service.clearJevFocus({app:'work:com.tencent.mobileqq'}),{'work:com.tencent.mobileqq':{text:'',at:1_792_000_000_000,by:'app',revision:2}});
   assert.throws(()=>service.clearJevFocus({app:'com.tencent.mobileqq'}),/app must be/);
-  assert.deepEqual(service.models(),{patrol:null,notify:null},'nothing stored yet');
-  assert.deepEqual(await service.setModel({kind:'patrol',selection:{provider:'claude',model:'claude-opus-5-5'}}),{patrol:{provider:'claude',model:'claude-opus-5-5'},notify:null},'no effort stored when none was chosen');
-  assert.deepEqual(await service.setModel({kind:'notify',selection:{provider:'codex',model:'gpt-6-luna',reasoningEffort:'high'}}),{patrol:{provider:'claude',model:'claude-opus-5-5'},notify:{provider:'codex',model:'gpt-6-luna',reasoningEffort:'high'}});
+  assert.deepEqual(service.models(),{patrol:null,notify:null,owner:null},'nothing stored yet');
+  assert.deepEqual(await service.setModel({kind:'patrol',selection:{provider:'claude',model:'claude-opus-5-5'}}),{patrol:{provider:'claude',model:'claude-opus-5-5'},notify:null,owner:null},'no effort stored when none was chosen');
+  assert.deepEqual(await service.setModel({kind:'notify',selection:{provider:'codex',model:'gpt-6-luna',reasoningEffort:'high'}}),{patrol:{provider:'claude',model:'claude-opus-5-5'},notify:{provider:'codex',model:'gpt-6-luna',reasoningEffort:'high'},owner:null});
   assert.deepEqual(readUnattended(file),service.models(),'persisted');
   await assert.rejects(service.setModel({kind:'notify',selection:{provider:'gone',model:'x'}}),/no such provider/);
   await assert.rejects(service.setModel({kind:'other',selection:null}),/kind must be one of/);
   await assert.rejects(service.setModel({kind:'notify',selection:{provider:'codex'}}),/needs a provider and a model/);
-  assert.deepEqual(await service.setModel({kind:'patrol',selection:null}),{patrol:null,notify:{provider:'codex',model:'gpt-6-luna',reasoningEffort:'high'}},'null clears one');
+  assert.deepEqual(await service.setModel({kind:'patrol',selection:null}),{patrol:null,notify:{provider:'codex',model:'gpt-6-luna',reasoningEffort:'high'},owner:null},'null clears one');
+  assert.deepEqual((await service.setModel({kind:'owner',selection:{provider:'claude',model:'claude-fable-5-1'}})).owner,{provider:'claude',model:'claude-fable-5-1'},'叫它 has its own');
   await fiber.dispose?.();await fs.rm(dir,{recursive:true,force:true});
 });
 // Jev as the model's reflex: one tool sets the focus of an app; a run nobody watches only for the app it works in, every

@@ -61,7 +61,7 @@ class StatusCardTest {
         assertFalse(card.working)
         assertEquals(Mood.CALL, card.mood)
         val owner = state("""{"state":"error","taskId":"cowork-owner-20261025-160000","displayId":5}""")
-        assertEquals("小满 · 你交代的事没做完", StatusCard.of("小满", CoworkLinkState.CONNECTED, owner, false, 15).title)
+        assertEquals("the owner's conversation runs patrols and notifications too", "小满 · 刚才那件事没做完", StatusCard.of("小满", CoworkLinkState.CONNECTED, owner, false, 15).title)
         assertEquals("中途出错，停下了", StatusCard.of("小满", CoworkLinkState.CONNECTED, owner, false, 15).text)
         val app = state("""{"state":"error","taskId":"cowork-app-work-com-tencent-mobileqq","displayId":5}""")
         assertEquals("小满 · 刚才那件事没做完", StatusCard.of("小满", CoworkLinkState.CONNECTED, app, false, 15).title)

@@ -166,12 +166,14 @@ private class Voice(private val context: android.content.Context) : RecognitionL
 private data class Exchange(val said: String, val reply: String, val notes: List<ChatLog.Note>)
 
 private fun exchange(rows: List<TranscriptRow>): Exchange {
-    val last = rows.indexOfLast { it.role == "user" && it.title.isBlank() }
-    val after = if (last >= 0) rows.drop(last + 1) else rows.takeLast(3)
+    // Its patrols and notifications run in this conversation too: only what followed your words, until something else
+    // came in, is its answer to you.
+    val part = ChatLog.lastOwnerPart(rows)
+    val after = part.drop(1)
     val reply = after.lastOrNull { it.role == "assistant" && it.text.isNotBlank() }?.text.orEmpty()
     // A note it wrote down while you talked shows as a yellow note: that is a "later" thing, not done now.
     val notes = after.mapNotNull { ChatLog.noteOf(it) }
-    return Exchange(rows.getOrNull(last)?.text.orEmpty(), reply, notes)
+    return Exchange(part.firstOrNull()?.text.orEmpty(), reply, notes)
 }
 
 /**
@@ -222,7 +224,9 @@ private fun exchange(rows: List<TranscriptRow>): Exchange {
     val reply = if (sent == null) talk.reply else ""
     val holding = island.screenHolder == owner && card.working
     val app = if (holding) status.optJSONObject("activity")?.optString("app")?.trim()?.ifEmpty { null } else null
-    val progress = rememberProgress(if (ready) vm.rows else emptyList(), vm.running, waiting, sent != null, app)
+    // What it is doing shows when it is about you; on its own (a patrol, notifications) the status card says so.
+    val mine = remember(vm.rows) { ChatLog.ownerSpeaking(vm.rows) }
+    val progress = rememberProgress(if (ready) vm.rows else emptyList(), vm.running && mine, waiting && mine, sent != null, app)
     var told by remember { mutableStateOf("") }
     var confirmClear by remember { mutableStateOf(false) }
     var clearing by remember { mutableStateOf(false) }
@@ -381,12 +385,10 @@ private fun exchange(rows: List<TranscriptRow>): Exchange {
     val quick = remember { Companion.quickTimes(now, zone) }
     var choice by remember { mutableStateOf<String?>(null) }
     var timing by remember { mutableStateOf<TimingDraft?>(null) }
-    var target by remember { mutableStateOf<String?>(null) }
     var posting by remember { mutableStateOf(false) }
     var posted by remember { mutableStateOf<JSONNotePosted?>(null) }
     var error by remember { mutableStateOf("") }
     LaunchedEffect(vm.connected) { if (vm.connected) vm.refresh() }
-    val apps = vm.sessions.filter { isAppSession(it) && it.text("sessionId") != ScheduleFormat.PATROL_SESSION && it.text("sessionId") !in vm.archived }
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { delay(150); runCatching { focus.requestFocus() } }
     val ink = Pocket.onSticky
@@ -429,11 +431,6 @@ private fun exchange(rows: List<TranscriptRow>): Exchange {
                     if (custom != null) TimingEditor(custom, kinds = emptyList(), showZone = false) { timing = it }
                 }
             }
-            Text("在哪（可选）", Modifier.padding(top = 12.dp, bottom = 6.dp), style = MaterialTheme.typography.labelMedium, color = ink.copy(alpha = 0.8f))
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                NoteChip("${identity.shown}自己定", target == null) { target = null }
-                apps.forEach { row -> NoteChip(sessionTitle(row).substringBefore(" · "), target == row.text("sessionId")) { target = row.text("sessionId") } }
-            }
             if (error.isNotBlank()) Text(error, Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
         val chosen = timing
@@ -442,7 +439,7 @@ private fun exchange(rows: List<TranscriptRow>): Exchange {
         Surface({
             val pick = chosen ?: return@Surface
             posting = true; error = ""
-            vm.createNote(text, pick, target) { result ->
+            vm.createNote(text, pick) { result ->
                 posting = false
                 result.onSuccess { record ->
                     posted = JSONNotePosted(text.trim(), "下次 ${Companion.nextText(record.text("scheduledAt")).ifBlank { Companion.whenText(pick) }} · ${noteSessionName(vm, record.text("sessionId"))}",

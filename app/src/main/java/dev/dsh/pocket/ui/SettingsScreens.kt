@@ -52,12 +52,16 @@ import dev.dsh.pocket.BuildConfig
 import dev.dsh.pocket.CallTileService
 import dev.dsh.pocket.PocketViewModel
 import dev.dsh.pocket.R
+import dev.dsh.notifykeep.ChatKeepPolicy
+import dev.dsh.pocket.cowork.ChatKeeperRuntime
+import dev.dsh.pocket.cowork.ChatKeeperStatus
 import dev.dsh.pocket.cowork.CoworkConnection
 import dev.dsh.pocket.cowork.CoworkControllerService
 import dev.dsh.pocket.cowork.CoworkLinkState
 import dev.dsh.pocket.cowork.StatusCard
 import dev.dsh.pocket.data.IdentityRules
 import dev.dsh.pocket.data.IdentityStore
+import dev.dsh.pocket.data.RuntimeController
 import dev.dsh.pocket.data.TaskMode
 import dev.dsh.pocket.data.UnattendedModels
 import dev.dsh.pocket.data.objects
@@ -65,14 +69,11 @@ import dev.dsh.pocket.island.IslandAccessibilityService
 import dev.dsh.pocket.island.IslandLayerKeeper
 import dev.dsh.pocket.island.IslandRuntime
 import dev.dsh.pocket.notify.NotifyCenter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 // Settings are a hub plus one page per topic. The hub only shows live status; changes happen on the topic pages.
-
-@Composable private fun Switch(checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) =
-    androidx.compose.material3.Switch(checked, onChange, enabled = enabled,
-        colors = SwitchDefaults.colors(checkedTrackColor = Pocket.accent, checkedThumbColor = MaterialTheme.colorScheme.onPrimary, uncheckedBorderColor = Pocket.hairline))
 
 /** Common frame of a settings sub page: back button, centred title, scrolling content. */
 @Composable internal fun SettingsPage(title: String, back: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
@@ -104,6 +105,9 @@ private fun dshStatus(vm: PocketViewModel) = if (vm.connected) "已连接" else 
     CoworkLinkState.DISCONNECTED -> Pocket.faint to "待命（有事时自动连上）"
 }
 
+private fun notificationsGranted(context: android.content.Context) =
+    Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+
 /** Re-read permission state whenever the page comes back to the front (e.g. from system settings). */
 @Composable private fun rememberResumeTick(): Int {
     var refresh by remember { mutableIntStateOf(0) }
@@ -132,7 +136,7 @@ private fun dshStatus(vm: PocketViewModel) = if (vm.connected) "已连接" else 
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
                     Text(identity.shown, style = MaterialTheme.typography.titleLarge)
-                    Text("名字和头像", style = MaterialTheme.typography.bodySmall, color = Pocket.muted)
+                    Text("名字、头像和用的模型", style = MaterialTheme.typography.bodySmall, color = Pocket.muted)
                 }
                 GlyphIcon(Glyph.ChevronRight, null, size = 18.dp, tint = Pocket.faint)
             }
@@ -143,7 +147,11 @@ private fun dshStatus(vm: PocketViewModel) = if (vm.connected) "已连接" else 
                 StatusDot(executorColor, pulse = link.connecting); Spacer(Modifier.width(6.dp))
             })
             GroupDivider()
-            GroupRow("通知叫醒", icon = Glyph.Filter, subtitle = if (notifyOn) "开着：有意义的通知会叫它去看" else "没开", onClick = { navigate(Screen.NOTIFY) })
+            GroupRow("通知叫醒", icon = Glyph.Filter, subtitle = when {
+                !notifyOn -> "没开"
+                vm.jevConfigured == false -> "开着，但还没设 Jev 密钥"
+                else -> "开着：有意义的通知会叫它去看"
+            }, onClick = { navigate(Screen.NOTIFY) })
             GroupDivider()
             GroupRow("记忆", icon = Glyph.Brain, subtitle = when {
                 vm.memory.available == false -> "插件未安装"
@@ -154,12 +162,17 @@ private fun dshStatus(vm: PocketViewModel) = if (vm.connected) "已连接" else 
         }
         SectionLabel("这台手机")
         InsetGroup {
-            GroupRow("连接", icon = Glyph.Link, subtitle = "本机 DSH 的令牌与重连", onClick = { navigate(Screen.CONNECTION) }, trailing = {
+            val refresh = rememberResumeTick()
+            val missing = remember(refresh) {
+                listOfNotNull("通知".takeIf { !notificationsGranted(context) }, "悬浮窗".takeIf { !AndroidSettings.canDrawOverlays(context) })
+            }
+            GroupRow("权限与入口", icon = Glyph.Shield, subtitle = if (missing.isEmpty()) "通知、悬浮窗、快捷开关、系统助手" else "没允许：${missing.joinToString("、")}",
+                onClick = { navigate(Screen.ENTRY) }, trailing = { if (missing.isNotEmpty()) { StatusDot(Pocket.warning); Spacer(Modifier.width(6.dp)) } })
+            GroupDivider()
+            GroupRow("本机 DSH", icon = Glyph.Server, subtitle = "连接、启动与 Linux 环境", onClick = { navigate(Screen.DSH) }, trailing = {
                 StatusDot(if (vm.connected) Pocket.success else Pocket.faint, pulse = vm.connecting); Spacer(Modifier.width(6.dp))
                 Text(dshStatus(vm), style = MaterialTheme.typography.bodyMedium, color = Pocket.muted)
             })
-            GroupDivider()
-            GroupRow("运行环境", icon = Glyph.Server, subtitle = "DSH 与 Linux 环境，需要 KernelSU 授权", onClick = { navigate(Screen.RUNTIME) })
             GroupDivider()
             GroupRow("外观与反馈", icon = Glyph.Palette, value = when (vm.theme) { "light" -> "浅色"; "dark" -> "深色"; else -> "跟随系统" }, onClick = { navigate(Screen.APPEARANCE) })
             GroupDivider()
@@ -186,7 +199,11 @@ private fun dshStatus(vm: PocketViewModel) = if (vm.connected) "已连接" else 
     val context = LocalContext.current
     val identity by IdentityStore.flow(context).collectAsState()
     var naming by remember { mutableStateOf(false) }
-    SettingsPage("名字和头像", back) {
+    val name = identity.shown
+    val unattended = vm.unattended
+    var modelFor by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(vm.connected) { if (vm.connected) { vm.unattendedRefresh(); if (vm.catalog.objects("groups").isEmpty()) vm.refresh() } }
+    SettingsPage(name, back) {
         Column(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Crossfade(identity.avatar, animationSpec = tween(260), label = "avatar") { key -> Avatar(key, StatusCard.Mood.HAPPY, identity.shown, size = 140.dp) }
             Spacer(Modifier.height(10.dp))
@@ -196,6 +213,28 @@ private fun dshStatus(vm: PocketViewModel) = if (vm.connected) "已连接" else 
         SectionLabel("头像")
         AvatarPicker(identity.avatar, identity.shown) { IdentityStore.setAvatar(context, it) }
         Footnote("名字会告诉它（写进给它的设定），通知里也用这个名字；它在各个应用里的昵称不变。头像只存在这台手机上。")
+
+        SectionLabel("${name}用的模型")
+        InsetGroup {
+            if (unattended == null) {
+                GroupRow(if (vm.unattendedError.isBlank()) "正在读取…" else "读不到设置", icon = Glyph.Warning, chevron = false,
+                    subtitle = vm.unattendedError.ifBlank { null }?.let { "$it（手机上的 Cowork 插件可能还是旧版）" }, onClick = { vm.unattendedRefresh() })
+            } else {
+                GroupRow("你叫${name}时", icon = Glyph.Chat, subtitle = UnattendedModels.label(UnattendedModels.selection(unattended, UnattendedModels.OWNER), vm.catalog),
+                    onClick = { modelFor = UnattendedModels.OWNER })
+                GroupDivider()
+                GroupRow("巡视", icon = Glyph.Clock, subtitle = UnattendedModels.label(UnattendedModels.selection(unattended, UnattendedModels.PATROL), vm.catalog),
+                    onClick = { modelFor = UnattendedModels.PATROL })
+                GroupDivider()
+                GroupRow("被通知叫醒", icon = Glyph.Filter, subtitle = UnattendedModels.label(UnattendedModels.selection(unattended, UnattendedModels.NOTIFY), vm.catalog),
+                    onClick = { modelFor = UnattendedModels.NOTIFY })
+            }
+        }
+        Footnote("“你叫${name}时”管你们俩的对话里的每一轮，包括在那里到点的便条；巡视和被通知叫醒设了自己的就用自己的。没设的用会话自己的模型（新会话是 DSH 的默认模型）。改这里不动 DSH 的默认模型。")
+    }
+    modelFor?.let { kind ->
+        ModelSheet(vm.catalog, UnattendedModels.selection(unattended, kind), { modelFor = null }, title = when (kind) { UnattendedModels.PATROL -> "巡视用的模型"; UnattendedModels.OWNER -> "你叫${name}时用的模型"; else -> "被通知叫醒时用的模型" },
+            clear = { vm.setUnattendedModel(kind, null, null, null); modelFor = null }) { p, m, e -> vm.setUnattendedModel(kind, p, m, e); modelFor = null }
     }
     if (naming) InputDialog("它叫什么？", "最多 ${IdentityRules.MAX_NAME} 个字，不能叫“通奏”", identity.name, { naming = false }) { value ->
         val problem = IdentityRules.problem(value)
@@ -224,12 +263,15 @@ private fun dshStatus(vm: PocketViewModel) = if (vm.connected) "已连接" else 
     }
 }
 
-// ───────────────────────────── Connection ─────────────────────────────
+// ───────────────────────────── Local DSH ─────────────────────────────
 
-@Composable internal fun ConnectionSettings(vm: PocketViewModel, back: () -> Unit) {
+/** 本机 DSH: whether the app is connected, and the fixed runtime actions for when it is not. */
+@Composable internal fun DshSettings(vm: PocketViewModel, back: () -> Unit) {
     var manual by remember { mutableStateOf(false) }
-    SettingsPage("连接", back) {
-        SectionLabel("本机 DSH")
+    var confirm by remember { mutableStateOf<RuntimeController.Action?>(null) }
+    LaunchedEffect(Unit) { if (!vm.runtimeBusy) vm.runtime(RuntimeController.Action.STATUS) }
+    SettingsPage("本机 DSH", back) {
+        SectionLabel("连接")
         InsetGroup {
             GroupRow("状态", icon = Glyph.Link, subtitle = "http://127.0.0.1:3080", chevron = false, trailing = {
                 StatusDot(if (vm.connected) Pocket.success else Pocket.faint, pulse = vm.connecting); Spacer(Modifier.width(6.dp))
@@ -241,6 +283,37 @@ private fun dshStatus(vm: PocketViewModel) = if (vm.connected) "已连接" else 
             GroupRow("手动输入令牌", icon = Glyph.Key, subtitle = "保存在本机加密存储", enabled = !vm.connecting, onClick = { manual = true })
         }
         Footnote("打开应用时会自动使用已保存的令牌连接；只有令牌失效或 DSH 重新生成令牌时才需要在这里重连。")
+
+        SectionLabel("运行状态")
+        InsetGroup {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (vm.runtimeBusy) Spinner(size = 14.dp, color = Pocket.accent) else StatusDot(if (vm.connected) Pocket.success else Pocket.faint)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (vm.runtimeBusy) "正在执行…" else if (vm.connected) "DSH 正在运行" else "DSH 未连接", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                    TextButton({ vm.runtime(RuntimeController.Action.STATUS) }, enabled = !vm.runtimeBusy) { Text("刷新", color = Pocket.accent, style = MaterialTheme.typography.labelLarge) }
+                }
+                Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), color = Pocket.codeBackground) {
+                    Text(vm.runtimeStatus, Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState()).padding(12.dp), fontFamily = Fonts.mono,
+                        style = MaterialTheme.typography.bodySmall, color = Pocket.muted)
+                }
+            }
+        }
+        SectionLabel("DSH 服务")
+        InsetGroup {
+            GroupRow("启动 DSH", icon = Glyph.Play, enabled = !vm.runtimeBusy, chevron = false, onClick = { vm.runtime(RuntimeController.Action.START) })
+            GroupDivider()
+            GroupRow("重启 DSH 与 Node", icon = Glyph.Restart, enabled = !vm.runtimeBusy, chevron = false, onClick = { confirm = RuntimeController.Action.RESTART })
+            GroupDivider()
+            GroupRow("停止 DSH", icon = Glyph.Power, enabled = !vm.runtimeBusy, chevron = false, tint = MaterialTheme.colorScheme.error, onClick = { confirm = RuntimeController.Action.STOP })
+        }
+        SectionLabel("Linux 环境")
+        InsetGroup {
+            GroupRow("重建 Linux 环境", icon = Glyph.Layers, subtitle = "停止 DSH，确认无残留进程后重建私有挂载并启动", enabled = !vm.runtimeBusy, chevron = false,
+                onClick = { confirm = RuntimeController.Action.RECREATE_ENVIRONMENT })
+        }
+        Footnote("这里的 Linux 是 Ubuntu chroot，不是独立虚拟机，也不是安全边界。启动、停止和重建都只调用固定的 pocket-control.sh 动作，不执行任意命令，需要 KernelSU 授权。")
+
         SectionLabel("DSH 里的模式")
         InsetGroup {
             TaskMode.entries.forEachIndexed { index, mode ->
@@ -252,33 +325,27 @@ private fun dshStatus(vm: PocketViewModel) = if (vm.connected) "已连接" else 
         }
     }
     if (manual) InputDialog("输入连接令牌", "DSH Web 的访问令牌，只保存在本机加密存储中", "", { manual = false }, secret = true) { vm.connectManual(it); manual = false }
+    confirm?.let { action ->
+        val (title, text) = when (action) {
+            RuntimeController.Action.RESTART -> "重启 DSH？" to "正在运行的任务会被中断，重启后自动重新连接。"
+            RuntimeController.Action.STOP -> "停止 DSH？" to "所有任务都会中断，应用将断开连接，直到再次启动。"
+            else -> "重建 Linux 环境？" to "将停止 DSH 并重建私有挂载后再次启动；文件与凭据保留。若仍有后台进程在 chroot 中运行，操作会被拒绝。"
+        }
+        ConfirmDialog(title, text, "继续", destructive = action != RuntimeController.Action.RESTART, dismiss = { confirm = null }) { vm.runtime(action); confirm = null }
+    }
 }
 
 // ───────────────────────────── Its phone ─────────────────────────────
 
+/** 它的手机: the link to the broker that holds its screen, and which of its apps stay online. */
 @Composable internal fun CoworkSettings(vm: PocketViewModel, back: () -> Unit) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val link by CoworkConnection.connection.collectAsState()
     val executorError by CoworkConnection.error.collectAsState()
     var auto by remember { mutableStateOf(CoworkControllerService.autoConnect(context)) }
-    var overlayDialog by remember { mutableStateOf(false) }
-    val refresh = rememberResumeTick()
-    var settle by remember { mutableIntStateOf(0) }
-    val overlayGranted = remember(refresh, settle) { AndroidSettings.canDrawOverlays(context) }
-    val aboveStatusBar = remember(refresh, settle) { IslandAccessibilityService.available }
-    var keepLayer by remember { mutableStateOf(IslandLayerKeeper.enabled(context)) }
-    val notificationsGranted = remember(refresh) {
-        Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-    }
-    val notificationRequest = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        settle++; if (!granted) vm.showError("通知权限没开：它的状态卡和“找你”都看不到")
-    }
+    var rebuildDialog by remember { mutableStateOf(false) }
     val (executorColor, executorText) = executorSummary(link)
-    val unattended = vm.unattended
-    var modelFor by remember { mutableStateOf<String?>(null) }
     val name = IdentityStore.flow(context).collectAsState().value.shown
-    LaunchedEffect(vm.connected) { if (vm.connected) { vm.unattendedRefresh(); if (vm.catalog.objects("groups").isEmpty()) vm.refresh() } }
 
     SettingsPage("它的手机", back) {
         SectionLabel("连接")
@@ -291,38 +358,69 @@ private fun dshStatus(vm: PocketViewModel) = if (vm.connected) "已连接" else 
                     onClick = { runCatching { CoworkControllerService.startUserInitiated(context) }.onFailure { vm.showError(it.message ?: "连不上它的手机") } })
             }
             GroupDivider()
-            GroupRow("自动连接", icon = Glyph.Link, subtitle = "打开应用或有事要做时自动连上", chevron = false, trailing = {
-                Switch(auto) { auto = it; CoworkControllerService.setAutoConnect(context, it) }
-            })
+            ToggleRow("自动连接", auto, icon = Glyph.Link, subtitle = "打开应用或有事要做时自动连上") { auto = it; CoworkControllerService.setAutoConnect(context, it) }
+            GroupDivider()
+            GroupRow(if (vm.rebuilding) "正在重建副屏…" else "重建副屏", icon = Glyph.Refresh, subtitle = "副屏卡住或出错时用：重启执行器、换一块新的副屏",
+                chevron = false, enabled = !vm.rebuilding, onClick = { rebuildDialog = true },
+                trailing = { if (vm.rebuilding) Spinner(size = 14.dp, color = Pocket.accent) })
         }
-        Footnote("它住在工作资料里，用一块你看不见的副屏；你的应用和数据它碰不到。连接需要 KernelSU 对 Continuo 的授权；上滑清除最近任务会被部分系统强行结束，请在最近任务里锁定 Continuo。")
+        Footnote("它住在工作资料里，用一块你看不见的副屏；你的应用和数据它碰不到。工作资料里的应用由它像普通人一样用；花钱、账号安全和清空聊天记录仍然要你。" +
+            "连接需要 KernelSU 对 Continuo 的授权；上滑清除最近任务会被部分系统强行结束，请在最近任务里锁定 Continuo。")
 
-        SectionLabel("${name}用的模型")
-        InsetGroup {
-            if (unattended == null) {
-                GroupRow(if (vm.unattendedError.isBlank()) "正在读取…" else "读不到设置", icon = Glyph.Warning, chevron = false,
-                    subtitle = vm.unattendedError.ifBlank { null }?.let { "$it（手机上的 Cowork 插件可能还是旧版）" }, onClick = { vm.unattendedRefresh() })
-            } else {
-                GroupRow("你叫${name}时", icon = Glyph.Chat, subtitle = UnattendedModels.label(UnattendedModels.selection(unattended, UnattendedModels.OWNER), vm.catalog),
-                    onClick = { modelFor = UnattendedModels.OWNER })
-                GroupDivider()
-                GroupRow("巡视", icon = Glyph.Clock, subtitle = UnattendedModels.label(UnattendedModels.selection(unattended, UnattendedModels.PATROL), vm.catalog),
-                    onClick = { modelFor = UnattendedModels.PATROL })
-                GroupDivider()
-                GroupRow("被通知叫醒", icon = Glyph.Filter, subtitle = UnattendedModels.label(UnattendedModels.selection(unattended, UnattendedModels.NOTIFY), vm.catalog),
-                    onClick = { modelFor = UnattendedModels.NOTIFY })
-            }
-        }
-        Footnote("“你叫${name}时”管你们俩的对话里的每一轮，包括在那里到点的便条；巡视和被通知叫醒设了自己的就用自己的。没设的用会话自己的模型（新会话是 DSH 的默认模型）。改这里不动 DSH 的默认模型。")
+        KeepOnline(vm, name)
+    }
 
-        SectionLabel("放进你的手机")
+    if (rebuildDialog) ConfirmDialog("重建副屏？", "执行器会重启，换一块新的副屏。${name}正在做的事会停下，副屏上开着的应用会关掉，用到时再打开；记忆、便条和对话都不受影响。", "重建",
+        dismiss = { rebuildDialog = false }) { rebuildDialog = false; vm.rebuildScreen() }
+}
+
+// ───────────────────────────── Permissions and ways in ─────────────────────────────
+
+/** 权限与入口: what Continuo needs on this phone to show itself, and the ways to call it from outside the app. */
+@Composable internal fun EntrySettings(vm: PocketViewModel, back: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var overlayDialog by remember { mutableStateOf(false) }
+    val refresh = rememberResumeTick()
+    var settle by remember { mutableIntStateOf(0) }
+    val overlayGranted = remember(refresh, settle) { AndroidSettings.canDrawOverlays(context) }
+    val aboveStatusBar = remember(refresh, settle) { IslandAccessibilityService.available }
+    var keepLayer by remember { mutableStateOf(IslandLayerKeeper.enabled(context)) }
+    val notificationsGranted = remember(refresh, settle) { notificationsGranted(context) }
+    val notificationRequest = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        settle++; if (!granted) vm.showError("通知权限没开：它的状态卡和“找你”都看不到")
+    }
+    val name = IdentityStore.flow(context).collectAsState().value.shown
+
+    SettingsPage("权限与入口", back) {
+        SectionLabel("权限")
         InsetGroup {
             GroupRow("通知", icon = Glyph.Vibrate, subtitle = "它的状态卡、“找你”和便条回执", value = if (notificationsGranted) "已允许" else "未允许",
                 chevron = !notificationsGranted, onClick = if (notificationsGranted) null else ({ if (Build.VERSION.SDK_INT >= 33) notificationRequest.launch(Manifest.permission.POST_NOTIFICATIONS) }))
             GroupDivider()
-            GroupRow("显示在其他应用上层", icon = Glyph.Shield, subtitle = "看它的手机、接手时用", value = if (overlayGranted) "已允许" else "未允许",
+            GroupRow("显示在其他应用上层", icon = Glyph.Shield, subtitle = "叫${name}的半屏、看它的手机、接手时用", value = if (overlayGranted) "已允许" else "未允许",
                 onClick = { if (overlayGranted) context.startActivity(IslandRuntime.overlaySettingsIntent(context)) else overlayDialog = true })
             GroupDivider()
+            ToggleRow("盖住状态栏（可选）", keepLayer, icon = Glyph.ArrowUp, subtitle = when {
+                aboveStatusBar && keepLayer -> "已生效；被系统关闭后会用 root 自动重新开启"
+                aboveStatusBar -> "已生效；被系统关闭后不会自动恢复"
+                keepLayer -> "正在用 root 开启无障碍服务…"
+                else -> "没开：看它的手机时，状态栏的时间和图标会盖在画面上"
+            }) { on ->
+                keepLayer = on
+                scope.launch {
+                    IslandLayerKeeper.setEnabled(context, on).onFailure {
+                        keepLayer = false; IslandLayerKeeper.setEnabled(context, false)
+                        vm.showError("无法用 root 开启无障碍服务：${it.message}。请检查 KernelSU 对 Continuo 的授权")
+                    }
+                    delay(1_500); settle++ // the system binds the service a moment after the setting changes
+                }
+            }
+        }
+        Footnote("“盖住状态栏”借无障碍服务的窗口层级，它什么都不读。应用不会自行授予任何权限，没允许的点一下去系统设置里开。")
+
+        SectionLabel("叫${name}的入口")
+        InsetGroup {
             GroupRow("快捷开关“叫$name”", icon = Glyph.Plus, subtitle = "下拉快捷设置里一点就叫它", chevron = false, tint = Pocket.accent,
                 onClick = { addTile(context, name) { vm.showError(it) } })
             GroupDivider()
@@ -331,38 +429,57 @@ private fun dshStatus(vm: PocketViewModel) = if (vm.connected) "已连接" else 
                 subtitle = if (assistant) "系统的助手手势会叫$name，不读你屏幕上的内容" + (if (overlayGranted) "" else "；要先允许显示在其他应用上层")
                     else "在系统设置的“数字助理应用”里选 Continuo",
                 onClick = { dev.dsh.pocket.assist.AssistService.settingsIntent(context)?.let { context.startActivity(it) } ?: vm.showError("这台手机找不到选择助手的设置页") })
-            GroupDivider()
-            GroupRow("盖住状态栏（可选）", icon = Glyph.ArrowUp, chevron = false, subtitle = when {
-                aboveStatusBar && keepLayer -> "已生效；被系统关闭后会用 root 自动重新开启"
-                aboveStatusBar -> "已生效；被系统关闭后不会自动恢复"
-                keepLayer -> "正在用 root 开启无障碍服务…"
-                else -> "没开：看它的手机时，状态栏的时间和图标会盖在画面上"
-            }, trailing = {
-                Switch(keepLayer) { on ->
-                    keepLayer = on
-                    scope.launch {
-                        IslandLayerKeeper.setEnabled(context, on).onFailure {
-                            keepLayer = false; IslandLayerKeeper.setEnabled(context, false)
-                            vm.showError("无法用 root 开启无障碍服务：${it.message}。请检查 KernelSU 对 Continuo 的授权")
-                        }
-                        delay(1_500); settle++ // the system binds the service a moment after the setting changes
-                    }
-                }
-            })
         }
-        Footnote("“盖住状态栏”借无障碍服务的窗口层级，它什么都不读。工作资料里的应用由它像普通人一样用；花钱、账号安全和清空聊天记录仍然要你。")
+        Footnote("也可以长按电源键、从分享菜单或桌面快捷方式叫它。")
     }
 
-    modelFor?.let { kind ->
-        ModelSheet(vm.catalog, UnattendedModels.selection(unattended, kind), { modelFor = null }, title = when (kind) { UnattendedModels.PATROL -> "巡视用的模型"; UnattendedModels.OWNER -> "你叫${name}时用的模型"; else -> "被通知叫醒时用的模型" },
-            clear = { vm.setUnattendedModel(kind, null, null, null); modelFor = null }) { p, m, e -> vm.setUnattendedModel(kind, p, m, e); modelFor = null }
-    }
     if (overlayDialog) ConfirmDialog("允许显示在其他应用上层", "将打开 Android 系统设置，请手动允许 Continuo。应用不会自行授予任何权限。", "前往设置", dismiss = { overlayDialog = false }) {
         overlayDialog = false; context.startActivity(IslandRuntime.overlaySettingsIntent(context))
     }
 }
 
-/** Asks the system to add the 叫它 tile (Android 13+ shows its own confirmation); older systems need the edit panel. */
+/** 收消息: keeps the listed work-profile apps' own processes alive (see [ChatKeeperRuntime]); the list lives on the phone. */
+@Composable private fun KeepOnline(vm: PocketViewModel, name: String) {
+    val link by CoworkConnection.connection.collectAsState()
+    val apps by CoworkConnection.apps.collectAsState()
+    val refresh = rememberResumeTick()
+    var picking by remember { mutableStateOf(false) }
+    // Connecting installs the keeper and opens the way to its phone's app list, so read both again once connected.
+    LaunchedEffect(refresh, link == CoworkLinkState.CONNECTED) {
+        vm.chatKeeperRefresh()
+        if (link == CoworkLinkState.CONNECTED) try { CoworkConnection.refreshApps() } catch (e: Exception) { if (e is CancellationException) throw e }
+    }
+    val keeper = vm.chatKeeper
+    val installError = ChatKeeperRuntime.installError
+    val label = { pkg: String -> apps.firstOrNull { it.packageName == pkg }?.label ?: ChatKeeperStatus.KNOWN[pkg] ?: pkg }
+    val usable = keeper != null && keeper.switchable && !vm.chatKeeperBusy
+    SectionLabel("收消息")
+    InsetGroup {
+        if (installError != null) {
+            GroupRow("保活没装上", icon = Glyph.Warning, subtitle = "$installError。点一下重试", chevron = false, enabled = !vm.chatKeeperBusy,
+                onClick = { vm.chatKeeperInstall() }, trailing = { if (vm.chatKeeperBusy) Spinner(size = 14.dp, color = Pocket.accent) })
+            GroupDivider()
+        }
+        ToggleRow("后台保持在线", keeper?.on ?: false, icon = Glyph.Power, enabled = keeper?.switchable ?: false, busy = vm.chatKeeperBusy || keeper == null,
+            subtitle = keeper?.summary(label) ?: "正在读取…") { vm.setChatKeeper(it) }
+        GroupDivider()
+        GroupRow("保持哪些应用", icon = Glyph.List, enabled = usable, onClick = { picking = true },
+            subtitle = keeper?.packages?.let { if (it.isEmpty()) "没选" else it.joinToString("、", transform = label) })
+    }
+    Footnote("工作资料里的应用收不到系统推送，进程被系统清掉后就收不到消息、也不会叫醒$name。打开后，选中的应用在运行时由 root 标成重要进程，" +
+        "系统清后台时一般会跳过它们，副屏重建也不影响；只保持主进程和推送进程。没在运行的不会自动打开（手机重启后要等它或你打开一次）。每个应用都会一直占着内存，只选要收消息的。")
+    if (picking && keeper != null) {
+        val listed = keeper.packages
+        val rows = apps.map { PickerApp(it.packageName, it.label) } +
+            listed.filter { p -> apps.none { it.packageName == p } }.map { PickerApp(it, label(it), if (apps.isEmpty()) it else "没装在它的手机上") }
+        AppPickerSheet("保持哪些应用", if (apps.isEmpty()) "连上它的手机后才能从它装的应用里选；现在只能去掉已选的" else null,
+            rows, listed.toSet(), dismiss = { picking = false }, max = ChatKeepPolicy.MAX_PACKAGES) { picked ->
+            picking = false
+            if (picked != listed) vm.setChatKeeperApps(picked)
+        }
+    }
+}
+
 internal fun addTile(context: android.content.Context, name: String, report: (String) -> Unit) {
     if (Build.VERSION.SDK_INT < 33) { report("下拉快捷设置，点编辑，把“叫它”拖进去"); return }
     val manager = context.getSystemService(StatusBarManager::class.java) ?: run { report("这台手机不支持直接添加，请在快捷设置的编辑里添加"); return }
@@ -399,7 +516,7 @@ internal fun addTile(context: android.content.Context, name: String, report: (St
         }
         SectionLabel("反馈")
         InsetGroup {
-            GroupRow("触感反馈", icon = Glyph.Vibrate, chevron = false, trailing = { Switch(vm.haptics) { vm.changeHaptics(it) } })
+            ToggleRow("触感反馈", vm.haptics, icon = Glyph.Vibrate) { vm.changeHaptics(it) }
         }
     }
 }

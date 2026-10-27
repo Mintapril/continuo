@@ -45,7 +45,12 @@ final class ProfileStructure implements AutoCloseable {
         return automation;
     }
     private List<AccessibilityWindowInfo> windows(int displayId)throws Exception{
-        List<AccessibilityWindowInfo> list=automation().getWindowsOnAllDisplays().get(displayId,Collections.emptyList());
+        UiAutomation ui=automation();
+        List<AccessibilityWindowInfo> list=ui.getWindowsOnAllDisplays().get(displayId);
+        // This process caches the window list until a window-change event clears it, and the system sends this connection
+        // those events only after it has read a node. A first read while the display had no window yet (a takeover right
+        // after a rebuild) was cached for good: every later read found no window, so no node was ever read. Re-read it.
+        if(list==null||list.isEmpty()){ui.clearCache();list=ui.getWindowsOnAllDisplays().get(displayId,Collections.emptyList());}
         ArrayList<AccessibilityWindowInfo> copy=new ArrayList<>(list);
         copy.sort((a,b)->Integer.compare(b.getLayer(),a.getLayer()));
         return copy;
@@ -130,6 +135,23 @@ final class ProfileStructure implements AutoCloseable {
     }
     /** Visible text lines (text, else description) of the compact structure in reading order, for page reading. */
     synchronized List<String> visibleLines(int displayId,int width,int height)throws Exception{return lines(collect(displayId,width,height,new Stats()));}
+    /** The message list of a chat for phone.read_chat: the text lines inside the largest scrollable node on the screen
+     *  now, with their visible bounds, top to bottom, and the edges of that node. The bars and floating buttons around
+     *  and over the list (title, input bar, a "new messages" chip) are left out. At the top when the list no longer offers
+     *  to scroll back (up). Null when nothing on the screen scrolls. */
+    synchronized ChatText.Screen messageList(int displayId,int width,int height)throws Exception{
+        ArrayList<Cand> all=walked(displayId,width,height,new Stats());
+        int list=-1;long area=0;
+        for(int i=0;i<all.size();i++){Cand c=all.get(i);long a=(long)c.bounds.width()*c.bounds.height();if(c.scrollable&&a>area){area=a;list=i;}}
+        if(list<0)return null;
+        ArrayList<ChatText.Line> lines=new ArrayList<>();
+        for(Cand c:kept(all))if(c.labeled)for(int p=c.parent;p>=0;p=all.get(p).parent)if(p==list){lines.add(new ChatText.Line(c.text.isEmpty()?c.desc:c.text,c.bounds.top,c.bounds.bottom));break;}
+        lines.sort(java.util.Comparator.comparingInt(ChatText.Line::top)); // stable: one row keeps its tree order
+        Cand node=all.get(list);boolean back=false;
+        for(AccessibilityNodeInfo.AccessibilityAction action:node.node.getActionList())
+            if(action.getId()==AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD||action.getId()==AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.getId())back=true;
+        return new ChatText.Screen(lines,node.bounds.top,node.bounds.bottom,!back);
+    }
     private static List<String> lines(List<Cand> list){
         ArrayList<String> lines=new ArrayList<>();
         for(Cand c:list)if(c.labeled)lines.add(c.text.isEmpty()?c.desc:c.text);
@@ -145,7 +167,9 @@ final class ProfileStructure implements AutoCloseable {
         return new Screen(stats.pkg,lines);
     }
     private List<String> lastLines=List.of();
-    private ArrayList<Cand> collect(int displayId,int width,int height,Stats stats)throws Exception{
+    private ArrayList<Cand> collect(int displayId,int width,int height,Stats stats)throws Exception{return kept(walked(displayId,width,height,stats));}
+    /** Every interesting node of the display's work-profile windows; parent indexes point into this list. */
+    private ArrayList<Cand> walked(int displayId,int width,int height,Stats stats)throws Exception{
         ArrayList<Cand> all=new ArrayList<>();
         long deadline=SystemClock.elapsedRealtime()+BUDGET_MS;
         ArrayList<Rect> covering=new ArrayList<>();
@@ -162,6 +186,10 @@ final class ProfileStructure implements AutoCloseable {
             covering.add(window);
         }
         for(int i=all.size()-1;i>=0;i--){Cand c=all.get(i);if((c.labeled||c.labeledBelow)&&c.parent>=0)all.get(c.parent).labeledBelow=true;}
+        return all;
+    }
+    /** The nodes the model sees: duplicate bars and wrappers reached through their labelled descendants are dropped. */
+    private static ArrayList<Cand> kept(ArrayList<Cand> all){
         ArrayList<Cand> kept=new ArrayList<>();
         // Two stacked windows can expose the same bar twice (for example a duplicated bottom action bar):
         // identical text inside a nearly identical box is one element for the model.

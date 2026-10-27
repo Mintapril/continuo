@@ -65,7 +65,7 @@ object Progress {
             "phone_wait" -> Step.WAITING
             "phone_gesture" -> Step.DRAWING
             "phone_batch" -> Step.BATCH
-            "phone_read_page" -> Step.READING
+            "phone_read_page", "phone_read_chat" -> Step.READING
             "phone_status", "phone_apps", "phone_start" -> Step.PHONE
             "phone_grant_permission" -> Step.PERMISSION
             "phone_request_intervention" -> Step.ASKING

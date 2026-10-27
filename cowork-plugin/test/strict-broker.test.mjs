@@ -19,7 +19,7 @@ function setup(transform = x => x) {
     if (t === 'phone.apps') result = { apps: [{ packageName: 'dev.fixture.app', label: 'fixture', approved: true }] };
     if (t === 'phone.screenshot') result = { observationId: 'obs', capturedAt: time, width: 100, height: 200, mimeType: 'image/png', base64: 'iVBORw0KGgo=' };
     if (t === 'phone.ui_tree') result = { observationId: 'obs', capturedAt: time, width: 100, height: 200, title: 'T', package: 'dev.fixture.app', nodes: [node('edit', true), node('btn')], complete: true, advice: '' };
-    if (t === 'phone.read_page') result = { performed: true, text: 'a\nb', pages: 2, reachedEnd: true, title: 'T' };
+    if (t === 'phone.read_page' || t === 'phone.read_chat') result = { performed: true, text: 'a\nb', pages: 2, reachedEnd: true, title: 'T' };
     if (t === 'phone.batch') result = { performed: true, completed: request.arguments.steps.length };
     if (t === 'phone.gesture') result = { performed: true, completed: request.arguments.strokes.length };
     if (t === 'phone.grant_permission') result = { performed: true, granted: PERMISSION_GROUPS[request.arguments.permission].slice(0, 1), held: [], kept: [] };
@@ -31,7 +31,7 @@ const shoot = async (client, s = 's') => { await client.call(s, 'phone.ui_tree',
 const args = {
   'phone.status': {}, 'phone.apps': {}, 'phone.start': { packageName: 'dev.fixture.app' }, 'phone.screenshot': {}, 'phone.ui_tree': {},
   'phone.tap': { observationId: 'obs', x: 1, y: 1 }, 'phone.long_press': { observationId: 'obs', x: 1, y: 1, durationMs: 500 },
-  'phone.swipe': { observationId: 'obs', x1: 0, y1: 0, x2: 50, y2: 50, durationMs: 100 }, 'phone.scroll': { observationId: 'obs', x: 1, y: 1, deltaY: 100 }, 'phone.read_page': { observationId: 'obs', maxPages: 3 },
+  'phone.swipe': { observationId: 'obs', x1: 0, y1: 0, x2: 50, y2: 50, durationMs: 100 }, 'phone.scroll': { observationId: 'obs', x: 1, y: 1, deltaY: 100 }, 'phone.read_page': { observationId: 'obs', maxPages: 3 }, 'phone.read_chat': { observationId: 'obs', maxPages: 2 },
   'phone.type_text': { observationId: 'obs', text: 'hello', elementId: 'edit' }, 'phone.key': { observationId: 'obs', key: 'BACK' },
   'phone.wait': { timeoutMs: 0 }, 'phone.launch_app': { observationId: 'obs', packageName: 'dev.fixture.app' }, 'phone.pause': {}, 'phone.stop': {}, 'phone.request_intervention': {},
   'phone.notify_owner': { text: '张三发来一笔 200 元转账，需要你决定是否收款' },
@@ -75,7 +75,7 @@ test('one physical device: any mutation invalidates observations across all sess
   await assert.rejects(client.call('b','phone.tap',args['phone.tap']),/stale/);
 });
 test('all duration, text and wait bounds enforced before dispatch', async () => {
-  for (const [name, overrides] of [['phone.long_press', {durationMs:499}], ['phone.long_press', {durationMs:2001}], ['phone.swipe', {durationMs:99}], ['phone.wait', {timeoutMs:10001}], ['phone.type_text', {text:'a'.repeat(4001)}], ['phone.scroll', {deltaY:0}]]) {
+  for (const [name, overrides] of [['phone.long_press', {durationMs:499}], ['phone.long_press', {durationMs:2001}], ['phone.swipe', {durationMs:99}], ['phone.wait', {timeoutMs:10001}], ['phone.type_text', {text:'a'.repeat(4001)}], ['phone.scroll', {deltaY:0}], ['phone.read_page', {maxPages:13}], ['phone.read_chat', {maxPages:13}], ['phone.read_chat', {maxPages:0}]]) {
     const { client, calls } = setup(); await client.call('s', 'phone.ui_tree', {});
     await assert.rejects(client.call('s', name, {...args[name], ...overrides})); assert.equal(calls.length, 1);
   }

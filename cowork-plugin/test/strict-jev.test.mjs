@@ -6,7 +6,11 @@ import path from 'node:path';
 import { FOCUS, readFocus, writeFocus, focusTextOf, isFocusKey, activeFocus } from '../src/jev-focus-store.mjs';
 import { createJevBoard, heldView, HELD } from '../src/jev-board.mjs';
 import { appOfSession, focusTarget, focusRefusal, heldSection, focusTool, HELD_HEADER } from '../src/jev-focus.mjs';
-import { sessionIdOf, appKey } from '../src/notify.mjs';
+import { appKey } from '../src/notify.mjs';
+
+// The standing session an app had of its own before everything moved into the owner's conversation (2026-10-26); the
+// old sessions keep these ids, and appOfSession still reads them.
+const sessionIdOf = key => `cowork-app-${key.replace(':', '-').replaceAll('.', '-')}`;
 
 // Jev as the model's reflex: the model keeps a one-line focus per app that Jev's question carries, and sees what Jev
 // held back on the app's next notification turn or on a patrol.
@@ -115,6 +119,38 @@ test('a run nobody watches may change only the app it works in, at most every fe
   for (const over of [{ stored: recent }, { args: { ...set, package: 'com.tencent.mm', profile: 'personal' } }])
     assert.equal(ask({ ...over, user: true }), undefined, 'the owner is there');
   assert.equal(ask({ sessionId: 'cowork-app-patrol', args: set }), undefined, 'no app named: the tool reports it');
+});
+
+test('in the one conversation a run nobody watches may change only the apps whose notifications woke it; a patrol or a note any work-profile app', async () => {
+  const set = { focus: '只看私信' }, owner = 'cowork-owner-20261025-232318', BILI = 'personal:tv.danmaku.bili';
+  const ask = (scope, over = {}) => focusRefusal({ args: set, sessionId: owner, user: false, scope, stored: {}, now: NOW, ...over });
+  const woke = { turn: 1, apps: new Set([QQ]), patrol: false };
+  assert.equal(focusTarget({}, owner, woke), QQ, 'the one app that woke the turn is the default');
+  assert.equal(focusTarget({}, owner, { ...woke, apps: new Set([QQ, BILI]) }), undefined, 'two apps: name one');
+  assert.equal(focusTarget({}, owner, { ...woke, patrol: true }), undefined, 'a patrol names none');
+  assert.equal(ask(woke), undefined, 'the app that woke it');
+  assert.match(ask(woke, { args: { ...set, package: 'com.tencent.mm' } }), /apps whose notifications woke it only \(work:com\.tencent\.mobileqq\)/);
+  const personal = { turn: 1, apps: new Set([BILI]), patrol: false };
+  assert.equal(ask(personal), undefined, 'a personal-profile app that woke it');
+  assert.equal(ask(personal, { args: { ...set, package: 'tv.danmaku.bili', profile: 'personal' } }), undefined);
+  const patrol = { turn: 1, apps: new Set([QQ]), patrol: true };
+  assert.equal(ask(patrol, { args: { ...set, package: 'com.tencent.mm' } }), undefined, 'a patrol: any work-profile app');
+  assert.match(ask(patrol, { args: { ...set, package: 'tv.danmaku.bili', profile: 'personal' } }), /work-profile apps only/);
+  const note = { turn: 1, apps: new Set(), patrol: false };
+  assert.equal(ask(note, { args: { ...set, package: 'com.tencent.mm' } }), undefined, 'a note: any work-profile app');
+  assert.match(ask(note, { args: { ...set, package: 'tv.danmaku.bili', profile: 'personal' } }), /work-profile apps only/);
+  assert.match(ask(undefined, { args: { ...set, package: 'tv.danmaku.bili', profile: 'personal' } }), /work-profile apps only/, 'nothing known: work-profile apps');
+  assert.equal(ask(woke, { user: true, args: { ...set, package: 'tv.danmaku.bili', profile: 'personal' } }), undefined, 'the owner is there');
+  const recent = { [QQ]: { text: '', at: NOW - FOCUS.unattendedEveryMs + 1, by: 'app', revision: 3 } };
+  assert.match(ask(woke, { stored: recent }), /may change it again 6 hours after that/);
+  const { file, done } = await tempFile();
+  try {
+    const run = focusTool({ byOf: () => 'notify', scopeOf: () => woke, now: () => NOW, file });
+    const exec = { agent: { session: { id: owner } }, signal: new AbortController().signal };
+    assert.equal((await run.execute({}, exec)).app, QQ, 'the tool defaults to the app that woke the turn');
+    const none = focusTool({ byOf: () => 'patrol', scopeOf: () => patrol, now: () => NOW, file });
+    await assert.rejects(none.execute({ focus: 'x' }, exec), /Name the app/);
+  } finally { await done(); }
 });
 
 test('the tool reads, sets and clears a focus, recording who changed it', async () => {

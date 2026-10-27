@@ -1,8 +1,9 @@
 import { appendActivity } from './companion-store.mjs';
+import { notifiedApps } from './notify.mjs';
 
 // What the diary is written from: when a Cowork turn ends, one activity line says what it did. What started the turn
 // (the owner, a due note, a patrol, a notification), what the owner said (their turns only), its last reply, the apps it
-// opened, what it typed and what it told the owner. Never the text of a notification, a screen or a tool result: what
+// opened, what it typed, what it told the owner, and the app whose notifications started it (its key, never the text). Never the text of a notification, a screen or a tool result: what
 // other people wrote stays out of the file (a notification turn records only what the AI itself did).
 // Fed by DSH's session events (unattended.mjs listens globally); nothing reaches the model.
 export const PRESET = 'cowork-phone';
@@ -59,6 +60,7 @@ export function createActivityRecorder({ append = appendActivity, now = Date.now
         const kind = kindOf(message);
         if (kind === 'owner') { turn.kind = 'owner'; const said = textOf(message); if (said && turn.asked.length < 3) turn.asked.push(said); }
         else if (kind && !turn.kind) turn.kind = kind;
+        if (kind === 'notify' && !turn.app) turn.app = notifiedApps(textOf(message))[0];
         return;
       }
       case 'assistant/message': {
@@ -78,6 +80,7 @@ export function createActivityRecorder({ append = appendActivity, now = Date.now
         if (!turn || (!turn.text && !turn.apps.length && !turn.typed.length && !turn.notified.length)) return;
         try {
           append({ at: now(), sessionId: id, kind: turn.kind ?? 'other', text: turn.text, apps: turn.apps, typed: turn.typed, notified: turn.notified,
+            ...(turn.kind === 'notify' && turn.app ? { app: turn.app } : {}),
             ...(turn.kind === 'owner' && turn.asked.length ? { asked: turn.asked.join('\n') } : {}), reason: event.data?.reason?.kind });
         } catch (error) { warn(`cowork-diary: activity not recorded (${error?.name ?? 'Error'})`); }
         return;

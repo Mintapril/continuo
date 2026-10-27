@@ -17,7 +17,7 @@ import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.TimeUnit
 
 /**
- * Keeps the inert IslandAccessibilityService enabled once the user switched this on (Cowork settings page).
+ * Keeps the inert IslandAccessibilityService enabled once the user switched this on (设置 → 权限与入口 → 盖住状态栏).
  *
  * ColorOS force-stops Continuo now and then (exit history: "stop dev.dsh.pocket due to o-stop(40)"), and Android
  * removes a force-stopped package's accessibility services from the enabled list, so the island fell back below the

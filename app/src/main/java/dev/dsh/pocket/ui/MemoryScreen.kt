@@ -107,25 +107,25 @@ import java.util.Locale
 
         SectionLabel("自动化")
         InsetGroup {
-            ToggleRow("自动注入记忆", "在当前会话上下文里带上相关记忆", mem.features.optBoolean("autoInject")) { vm.memoryFlag("autoInject", it) }
+            FlagRow("自动注入记忆", "在当前会话上下文里带上相关记忆", mem.features.optBoolean("autoInject")) { vm.memoryFlag("autoInject", it) }
             GroupDivider()
-            ToggleRow("自动总结成记忆", "回合结束后提取值得记住的内容", mem.features.optBoolean("autoSummarize")) { vm.memoryFlag("autoSummarize", it) }
+            FlagRow("自动总结成记忆", "回合结束后提取值得记住的内容", mem.features.optBoolean("autoSummarize")) { vm.memoryFlag("autoSummarize", it) }
             GroupDivider()
-            ToggleRow("自动整理", "定期合并重复、清理过时记忆", mem.features.optBoolean("autoDream")) { vm.memoryFlag("autoDream", it) }
+            FlagRow("自动整理", "定期合并重复、清理过时记忆", mem.features.optBoolean("autoDream")) { vm.memoryFlag("autoDream", it) }
             GroupDivider()
-            ToggleRow("热记忆", "最近用过的记忆优先召回", mem.features.optBoolean("hotMemoryEnabled")) { vm.memoryFlag("hotMemoryEnabled", it) }
+            FlagRow("热记忆", "最近用过的记忆优先召回", mem.features.optBoolean("hotMemoryEnabled")) { vm.memoryFlag("hotMemoryEnabled", it) }
             GroupDivider()
-            ToggleRow("实体抽取", "用模型抽取人物、项目等实体（额外调用模型）", mem.features.optBoolean("entityExtractionEnabled")) { vm.memoryFlag("entityExtractionEnabled", it) }
+            FlagRow("实体抽取", "用模型抽取人物、项目等实体（额外调用模型）", mem.features.optBoolean("entityExtractionEnabled")) { vm.memoryFlag("entityExtractionEnabled", it) }
             GroupDivider()
-            ToggleRow("文档记忆", "长文档以指针形式入记忆、按需读取全文", mem.features.optBoolean("documentMemoryEnabled")) { vm.memoryFlag("documentMemoryEnabled", it) }
+            FlagRow("文档记忆", "长文档以指针形式入记忆、按需读取全文", mem.features.optBoolean("documentMemoryEnabled")) { vm.memoryFlag("documentMemoryEnabled", it) }
             GroupDivider()
-            ToggleRow("质量过滤", "拒收过短或重复的候选记忆", mem.features.optBoolean("memoryQualityFilter.enabled", true)) {
+            FlagRow("质量过滤", "拒收过短或重复的候选记忆", mem.features.optBoolean("memoryQualityFilter.enabled", true)) {
                 vm.memoryFlag("memoryQualityFilter.enabled", it)
             }
             GroupDivider()
-            ToggleRow("关键词检索（BM25）", "不依赖向量模型的基础检索", mem.features.optBoolean("bm25SearchEnabled")) { vm.memoryFlag("bm25SearchEnabled", it) }
+            FlagRow("关键词检索（BM25）", "不依赖向量模型的基础检索", mem.features.optBoolean("bm25SearchEnabled")) { vm.memoryFlag("bm25SearchEnabled", it) }
             GroupDivider()
-            ToggleRow("结果重排", "用重排模型提高召回准确率（额外开销）", mem.features.optBoolean("rerankEnabled")) { vm.memoryFlag("rerankEnabled", it) }
+            FlagRow("结果重排", "用重排模型提高召回准确率（额外开销）", mem.features.optBoolean("rerankEnabled")) { vm.memoryFlag("rerankEnabled", it) }
         }
         Footnote("这些开关会立即写入插件设置，但运行中的 DSH 进程仍按启动时的配置工作；重启 DSH 后生效。")
 
@@ -300,11 +300,9 @@ import java.util.Locale
     }
 }
 
-@Composable private fun ToggleRow(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) =
-    GroupRow(title, subtitle = subtitle, chevron = false, trailing = {
-        androidx.compose.material3.Switch(checked, onChange, colors = androidx.compose.material3.SwitchDefaults.colors(
-            checkedTrackColor = Pocket.accent, checkedThumbColor = MaterialTheme.colorScheme.onPrimary, uncheckedBorderColor = Pocket.hairline))
-    })
+/** The shared [ToggleRow] with this page's argument order (title, subtitle, checked). */
+@Composable private fun FlagRow(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) =
+    ToggleRow(title, checked, subtitle = subtitle, onChange = onChange)
 
 @Composable private fun ImportanceDots(value: Int) {
     Row(verticalAlignment = Alignment.CenterVertically) {

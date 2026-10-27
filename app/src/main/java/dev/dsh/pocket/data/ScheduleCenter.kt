@@ -73,7 +73,7 @@ class ScheduleCenter(private val api: DshApi) {
         result.optJSONObject("error")?.let { error("插件管理拒绝：${it.text("code").ifBlank { "operation-error" }}${it.text("diagnostic").let { d -> if (d.isBlank()) "" else "（$d）" }}") }
         val message = when (result.text("application")) {
             "applied" -> if (on) "便条已启用" else "便条已关闭；已存的便条保留在本机"
-            "restart-required" -> "已保存，重启 DSH 后生效（设置 → 运行环境）"
+            "restart-required" -> "已保存，重启 DSH 后生效（设置 → 本机 DSH）"
             "overridden" -> "已保存，但被 profile 配置覆盖，当前不生效"
             "cancelled" -> "操作已取消"
             "failed" -> error("插件管理未能应用这次修改")

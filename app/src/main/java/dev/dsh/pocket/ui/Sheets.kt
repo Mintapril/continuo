@@ -138,6 +138,39 @@ import org.json.JSONObject
     }
 }
 
+/** One row of [AppPickerSheet]; [note] is the small second line (which phone it is on, or the package name). */
+internal data class PickerApp(val packageName: String, val label: String, val note: String? = null)
+
+/**
+ * Pick several apps; nothing changes until 完成. [max] greys out the rest once that many are picked. [extra] adds rows
+ * after the list (for example typing a package name that is not listed).
+ */
+@Composable internal fun AppPickerSheet(title: String, subtitle: String?, apps: List<PickerApp>, selected: Set<String>, dismiss: () -> Unit,
+                                        max: Int? = null, extra: (androidx.compose.foundation.lazy.LazyListScope.() -> Unit)? = null,
+                                        save: (List<String>) -> Unit) {
+    var query by rememberSaveable { mutableStateOf("") }
+    var picked by remember(selected) { mutableStateOf(selected) }
+    val full = max != null && picked.size >= max
+    PocketSheet(dismiss) {
+        SheetHeader(title, if (max != null) "已选 ${picked.size}/$max" else "已选 ${picked.size} 个",
+            leading = { CircleButton(Glyph.Close, "关闭", size = 36.dp, onClick = dismiss) },
+            trailing = { TextButton({ save(apps.map { it.packageName }.filter { it in picked } + picked.filter { p -> apps.none { it.packageName == p } }) }) {
+                Text("完成", style = MaterialTheme.typography.titleSmall, color = Pocket.accent)
+            } })
+        subtitle?.let { Text(it, Modifier.padding(horizontal = 20.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall, color = Pocket.muted) }
+        if (apps.size > 8) SheetSearch(query, { query = it }, "搜索应用")
+        val shown = apps.filter { (it.label + " " + it.packageName).contains(query.trim(), true) }
+        LazyColumn(Modifier.weight(1f, fill = false)) {
+            items(shown, key = { it.packageName }) { app ->
+                val on = app.packageName in picked
+                SheetRow(app.label, app.note, checked = on, enabled = on || !full) { picked = if (on) picked - app.packageName else picked + app.packageName }
+            }
+            if (shown.isEmpty()) item { Text(if (apps.isEmpty()) "没有可选的应用" else "没有匹配的应用", Modifier.padding(20.dp), style = MaterialTheme.typography.bodyMedium, color = Pocket.muted) }
+            extra?.invoke(this)
+        }
+    }
+}
+
 internal fun permissionName(catalog: JSONObject, value: String): String = permissionLabel(value)
 
 /** Centered choices, not a bottom sheet. The list scrolls inside a bounded dialog. */

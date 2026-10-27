@@ -47,11 +47,11 @@ public final class IsolationActivity extends Activity {
             android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
             v.setPadding(dp(24)+bars.left,dp(24)+bars.top,dp(24)+bars.right,dp(24)+bars.bottom); return insets;
         });
-        TextView tag = text("CONTINUO  /  EXPERIMENT", 12, Color.rgb(31,88,166));
+        TextView tag = text("CONTINUO", 12, Color.rgb(31,88,166));
         tag.setTypeface(null,Typeface.BOLD); page.addView(tag);
-        TextView title = text("Cowork 隔离实验", 28, Color.rgb(18,31,52));
+        TextView title = text("它的手机", 28, Color.rgb(18,31,52));
         title.setTypeface(null,Typeface.BOLD); page.addView(title);
-        page.addView(text("先验证独立资料，再验证主副屏并行。\n当前版本不保证任意应用互不干扰。",16,Color.rgb(70,86,107)));
+        page.addView(text("它住在这台手机的工作资料里，用一块你看不见的副屏。这个应用管着那份工作资料，也是副屏上它的桌面。",16,Color.rgb(70,86,107)));
         LinearLayout card = new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setPadding(dp(18),dp(16),dp(18),dp(16));
         GradientDrawable background = new GradientDrawable(); background.setColor(Color.WHITE); background.setCornerRadius(dp(20)); card.setBackground(background);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1,-2); params.topMargin=dp(20); page.addView(card,params);

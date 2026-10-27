@@ -160,9 +160,11 @@ object CoworkConnection {
     internal suspend fun connect(context:Context) {
         check(connectLock.tryLock()){"正在连接，请稍候"}
         try {
+            val app=context.applicationContext
+            // Independent helper ships in this APK; no Broker/display restart. A failure shows in 设置 → 它的手机, never blocks connecting.
+            withContext(Dispatchers.IO){ChatKeeperRuntime.ensureInstalled(app)}
             // Repeated clicks must not reset consent or interrupt a healthy controller.
             if(link.value==CoworkLinkState.CONNECTED)return
-            val app=context.applicationContext
             connectWithFeedback({link.value=it},{
                 token=null;frames.value=null;appRows.value=emptyList();mutable.value=JSONObject();bridge.disconnected()
             }) {
@@ -203,6 +205,25 @@ object CoworkConnection {
         } catch(e:CancellationException){throw e}
         catch(e:Exception){errors.value=e.message?:"连接未完成";throw e}
         finally {connectLock.unlock()}
+    }
+    /**
+     * 重建副屏, for a stuck or broken AI screen: the broker is stopped (SIGTERM, never a forced kill) and started again,
+     * which builds a new standing display; whatever ran on the old one stops (the turn of a task in progress ends). The
+     * controller then connects to the new broker on its own. Both commands are constants, as in [connect].
+     */
+    internal suspend fun rebuild(context:Context) {
+        check(connectLock.tryLock()){"正在连接，请稍候再重建"}
+        try {
+            withContext(Dispatchers.IO){
+                runCatching{rootCommand("/system/bin/sh /data/local/dsh-native/cowork-service.sh stop",1024)}
+                    .onFailure{error("副屏没能停下（没有强制结束）。稍等再试一次")}
+                runCatching{rootCommand("/system/bin/sh /data/local/dsh-native/cowork-service.sh start",1024)}
+                    .onFailure{error("副屏停下了，但没能重新启动。点“立即重试”再连")}
+            }
+        } finally {connectLock.unlock()}
+        // The link still points at the stopped broker: drop it, then the controller connects to the new one.
+        controllerStopped()
+        CoworkControllerService.startUserInitiated(context.applicationContext)
     }
     private fun rootCommand(command:String,maxBytes:Int):String {
         val process=ProcessBuilder("su","-c",command).redirectErrorStream(true).start()

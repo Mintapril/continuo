@@ -10,8 +10,9 @@ import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 
 /**
- * The AI as a companion: the one conversation the owner has with it (叫它), the diary of what it did, and the notes the
- * owner leaves it, written straight into DSH's scheduler by the Cowork plugin (cowork-plugin/src/unattended.mjs).
+ * The AI as a companion: the one conversation the owner has with it (叫它), where everything it does lives since
+ * 2026-10-26 (patrols, notes and every app's notifications too), the diary of what it did, and the notes the owner
+ * leaves it, written straight into DSH's scheduler by the Cowork plugin (cowork-plugin/src/unattended.mjs).
  * Pure, tested on the JVM.
  */
 object Companion {
@@ -53,8 +54,18 @@ object Companion {
     const val DIARY = "coworkUnattended/diary"
     const val EVENTS = "coworkUnattended/events"
     const val CREATE_NOTE = "coworkUnattended/createNote"
+    const val SET_OWNER_SESSION = "coworkUnattended/setOwnerSession"
 
     fun identityRequest(name: String) = obj("request" to obj("name" to name.ifBlank { null }))
+    /** Tells the plugin which conversation is the owner's now: the one session notifications go to. */
+    fun ownerSessionRequest(id: String): JSONObject {
+        require(isOwnerSession(id)) { "not an owner conversation: $id" }
+        return obj("request" to obj("sessionId" to id))
+    }
+    /** Active notes still in the sessions it lived in before everything moved into the owner's conversation: the patrol
+     *  session and each app's standing session (`cowork-app-*`). They are moved there like the notes of a cleared conversation. */
+    fun strayNotes(tasks: List<JSONObject>): List<JSONObject> =
+        tasks.filter { it.text("sessionId").startsWith("cowork-app-") && it.text("status") == "active" }
     /** The plugin's stored name, or null (none, or a plugin too old to have one). */
     fun storedName(result: Any?): String? = (result as? JSONObject)?.text("name")?.takeIf { it.isNotBlank() }
 
@@ -83,9 +94,10 @@ object Companion {
     // ── Events ──────────────────────────────────────────────────────────
 
     /**
-     * 事件: one turn it ran on its own in a standing app session (巡视 · 自动运营, or one app's notification session),
-     * started by a patrol, a notification or a due note. From the plugin's activity: its last reply, the apps it opened
-     * and what it told the owner, never what a notification said. [app] is the session's app package, if it has one.
+     * 事件: one turn it ran on its own, started by a patrol, a notification or a due note (in the owner's conversation,
+     * or before 2026-10-26 in 巡视 · 自动运营 or one app's notification session). From the plugin's activity: its last
+     * reply, the apps it opened and what it told the owner, never what a notification said. [app] is the package whose
+     * notifications started it, if one did.
      */
     data class Event(val at: Long, val sessionId: String, val kind: String, val text: String, val apps: List<String>,
                      val notified: List<String>, val app: String?, val personal: Boolean, val finished: Boolean) {

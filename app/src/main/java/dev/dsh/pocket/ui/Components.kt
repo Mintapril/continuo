@@ -213,6 +213,16 @@ val LocalHaptics = staticCompositionLocalOf { true }
         if (chevron && onClick != null) { Spacer(Modifier.width(4.dp)); GlyphIcon(Glyph.ChevronRight, null, size = 18.dp, tint = Pocket.faint) }
     }
 }
+/** A settings row with a switch: tapping anywhere on the row flips it. While [busy] a spinner stands in for the switch. */
+@Composable fun ToggleRow(title: String, checked: Boolean, modifier: Modifier = Modifier, icon: ImageVector? = null, subtitle: String? = null,
+                          enabled: Boolean = true, busy: Boolean = false, onChange: (Boolean) -> Unit) =
+    GroupRow(title, modifier, icon = icon, subtitle = subtitle, enabled = enabled, chevron = false,
+        onClick = if (busy) null else ({ onChange(!checked) }),
+        trailing = {
+            if (busy) Spinner(size = 14.dp, color = Pocket.accent)
+            else Switch(checked, null, enabled = enabled, colors = SwitchDefaults.colors(checkedTrackColor = Pocket.accent,
+                checkedThumbColor = MaterialTheme.colorScheme.onPrimary, uncheckedBorderColor = Pocket.hairline))
+        })
 @Composable fun GroupDivider(inset: Dp = 50.dp) { HorizontalDivider(Modifier.padding(start = inset), thickness = 1.dp, color = Pocket.hairline) }
 @Composable fun SectionLabel(text: String, modifier: Modifier = Modifier) {
     Text(text, modifier.padding(start = 4.dp, top = 20.dp, bottom = 8.dp), style = MaterialTheme.typography.labelMedium, color = Pocket.muted)

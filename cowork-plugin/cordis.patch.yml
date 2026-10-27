@@ -19,9 +19,10 @@
           - id: cowork-policy-tools-summary
             name: '@local/dsh-cowork-phone'
           # Cowork's own context compaction (src/context.mjs), in this preset's realm the way DSH's standard preset
-          # mounts compaction-basic: old screens are dropped without a model call once the history passes the threshold
-          # (8% of the window: 80K tokens on the 1M routes), and only then the oldest part is summarized, keeping the
-          # newest 32K tokens as they are. No context tool or nudge reaches the model.
+          # mounts compaction-basic: old screens are dropped without a model call once the history passes half of a
+          # window under 500K tokens or a quarter of a bigger one (262K on the 1M routes), at most once a turn, and only
+          # then the oldest part is summarized (in up to 32K tokens), keeping the newest 8% of the window as it is, until
+          # the history is under a quarter of the window. No context tool or nudge reaches the model.
           - id: cowork-compaction
             name: cordis:group
             group: true
@@ -34,9 +35,9 @@
               - id: cowork-context
                 name: '@local/dsh-cowork-phone/context'
                 config:
-                  thresholdRatio: 0.08
-                  retainTokens: 32000
-                  maxTokens: 16000
+                  thresholdRatio: 0.25
+                  retainRatio: 0.08
+                  maxTokens: 32000
 
     # Notification triggers: Continuo's batches reach the signed loopback ingress in src/notify.mjs (127.0.0.1:3082).
     # What Jev passes becomes an unattended turn of the app's standing Cowork session (one per app, never archived).

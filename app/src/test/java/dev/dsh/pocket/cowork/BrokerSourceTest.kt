@@ -32,6 +32,16 @@ class BrokerSourceTest {
         assertTrue(broker.contains("JSONObject field=takeover.active()?workspace.userField():null"))
     }
 
+    /** The window list is cached in the broker process until a window-change event clears it, and the system sends the
+     *  UiAutomation those events only after it has read a node. An empty first read (a takeover right after a rebuild,
+     *  before any app was on the display) must not stick, or every tree read finds no window until the next rebuild. */
+    @Test fun anEmptyWindowListIsReadAgainUncached() {
+        val structure = File(root, "ProfileStructure.java").readText()
+        val windows = structure.substringAfter("private List<AccessibilityWindowInfo> windows(int displayId)")
+            .substringBefore("ArrayList<AccessibilityWindowInfo> copy")
+        assertTrue(windows.contains("if(list==null||list.isEmpty()){ui.clearCache();"))
+    }
+
     @Test fun noDuplicateSetElements() {
         val pattern = Regex("""\b(?:Set|Map)\.of\s*\(([^;]*?)\)\s*;""", RegexOption.DOT_MATCHES_ALL)
         val problems = ArrayList<String>()

@@ -94,7 +94,7 @@ public final class ToolContract {
             case "phone.long_press":fields(a,"observationId","x,y,elementId,durationMs");obs(a);target(a);if(a.has("durationMs"))number(a,"durationMs",500,2000);break;
             case "phone.swipe":fields(a,"observationId,x1,y1,x2,y2,durationMs","");obs(a);point(a,"x1","y1");point(a,"x2","y2");number(a,"durationMs",100,2000);break;
             case "phone.scroll":fields(a,"observationId,deltaY","x,y");obs(a);if(a.has("x")||a.has("y"))point(a,"x","y");if(number(a,"deltaY",-1000,1000)==0)fail();break;
-            case "phone.read_page":fields(a,"observationId","maxPages");obs(a);if(a.has("maxPages"))number(a,"maxPages",1,12);break;
+            case "phone.read_page":case "phone.read_chat":fields(a,"observationId","maxPages");obs(a);if(a.has("maxPages"))number(a,"maxPages",1,12);break;
             case "phone.type_text":fields(a,"observationId,text","elementId");obs(a);text(a,"text",0,4000);if(a.has("elementId"))text(a,"elementId",1,30);break;
             case "phone.key":fields(a,"key","observationId");String navKey=text(a,"key",1,20);if(!Set.of("BACK","ENTER","HOME","RECENTS").contains(navKey))ActionGate.fail("KEY_DENIED","Only display-local BACK, HOME, RECENTS and ENTER are permitted");if(!navKey.equals("HOME")&&!navKey.equals("RECENTS"))obs(a);break;
             case "phone.wait":fields(a,"timeoutMs","");number(a,"timeoutMs",0,10000);break;

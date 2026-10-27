@@ -1,13 +1,14 @@
 package dev.dsh.pocket.data
 
 /**
- * The home page's 聊天记录: the owner's conversation with it (叫它) as a chat, from the session's transcript rows. Each
- * turn shows what started it (the owner's words, or a small label for a due note or patrol), the notes it wrote down
- * and its last reply. Its thinking, tool calls and intermediate replies stay out (设置 → 开发者 shows them). The turn
- * still running ends with a line for what it is doing now (see Progress). Pure, so it is tested on the JVM.
+ * The home page's 聊天记录: the owner's conversation with it (叫它) as a chat, from the session's transcript rows.
+ * Everything it does lives in that session (patrols, due notes, every app's notifications), but the chat shows only
+ * what the owner said, the notes it wrote down then and its last reply; the rest is 事件. Its thinking, tool calls and
+ * intermediate replies stay out (设置 → 开发者 shows them). When the owner is the last to have spoken, the turn still
+ * running ends with a line for what it is doing now (see Progress). Pure, so it is tested on the JVM.
  */
 object ChatLog {
-    enum class Kind { OWNER, LABEL, NOTE, REPLY, THINKING }
+    enum class Kind { OWNER, NOTE, REPLY, THINKING }
     data class Line(val key: String, val kind: Kind, val text: String, val label: String = "")
 
     /** A note it wrote down (schedule_create), in the owner's words, and when it runs; null for any other row. */
@@ -26,30 +27,36 @@ object ChatLog {
         return if (words.isBlank()) null else Note(words, timing)
     }
 
-    fun of(rows: List<TranscriptRow>, running: Boolean): List<Line> {
-        // A turn starts at a user-role row: the owner's words (no title), or a due note or patrol (titled).
-        val turns = ArrayList<MutableList<TranscriptRow>>()
-        for (row in rows) {
-            if (row.role == "user" || turns.isEmpty()) turns += mutableListOf(row) else turns.last() += row
-        }
-        val out = ArrayList<Line>()
-        turns.forEachIndexed { index, turn ->
-            val head = turn.first().takeIf { it.role == "user" }
-            if (head != null && head.text.isNotBlank()) {
-                if (head.title.isBlank()) out += Line(head.key, Kind.OWNER, head.text.trim())
-                else out += Line(head.key, Kind.LABEL, clip(head.text.trim().lineSequence().first().trim(), 60), head.title)
-            }
-            turn.forEach { row -> noteOf(row)?.let { out += Line(row.key, Kind.NOTE, it.words, it.timing) } }
-            val reply = turn.lastOrNull { it.role == "assistant" && !it.error && !it.streaming && it.text.isNotBlank() }
-            if (reply != null) out += Line(reply.key, Kind.REPLY, reply.text.trim())
-            // The turn still running says what it is doing, after anything it said so far.
-            if (running && index == turns.lastIndex && head != null) out += Line(head.key + ":thinking", Kind.THINKING, "")
-        }
-        return out
+    /** The owner's own words: a user message they sent (a due note or patrol arrives as a titled user row). */
+    fun ownerWords(row: TranscriptRow) = row.role == "user" && row.title.isBlank() && row.source in setOf("", "user")
+    /** What starts a part of the conversation: any user-role row, and a notification trigger (a notice row). */
+    fun opens(row: TranscriptRow) = row.role == "user" || row.source == "webhook"
+    /** Whether the owner was the last to come in, so what runs now is about them (not a patrol or notifications). */
+    fun ownerSpeaking(rows: List<TranscriptRow>) = rows.lastOrNull(::opens)?.let(::ownerWords) == true
+    /** The rows of the owner's last part: what they said last and what followed until something else came in. */
+    fun lastOwnerPart(rows: List<TranscriptRow>): List<TranscriptRow> {
+        val at = rows.indexOfLast(::ownerWords)
+        if (at < 0) return emptyList()
+        return listOf(rows[at]) + rows.drop(at + 1).takeWhile { !opens(it) }
     }
 
-    private fun clip(text: String, max: Int): String {
-        val points = text.codePoints().toArray()
-        return if (points.size <= max) text else String(points, 0, max - 1) + "…"
+    fun of(rows: List<TranscriptRow>, running: Boolean): List<Line> {
+        // A part starts where someone or something came in: the owner's words, a due note or patrol, notifications. A
+        // notification joining a run, or the owner speaking in the middle of one, starts a part of its own.
+        val parts = ArrayList<MutableList<TranscriptRow>>()
+        for (row in rows) {
+            if (opens(row) || parts.isEmpty()) parts += mutableListOf(row) else parts.last() += row
+        }
+        val out = ArrayList<Line>()
+        parts.forEachIndexed { index, part ->
+            val head = part.first().takeIf(::ownerWords) ?: return@forEachIndexed
+            if (head.text.isNotBlank()) out += Line(head.key, Kind.OWNER, head.text.trim())
+            part.forEach { row -> noteOf(row)?.let { out += Line(row.key, Kind.NOTE, it.words, it.timing) } }
+            val reply = part.lastOrNull { it.role == "assistant" && !it.error && !it.streaming && it.text.isNotBlank() }
+            if (reply != null) out += Line(reply.key, Kind.REPLY, reply.text.trim())
+            // The turn still running says what it is doing, after anything it said so far.
+            if (running && index == parts.lastIndex) out += Line(head.key + ":thinking", Kind.THINKING, "")
+        }
+        return out
     }
 }

@@ -24,16 +24,19 @@ import dev.dsh.pocket.data.waitsForScreen
 import dev.dsh.pocket.cowork.CoworkConnection
 import dev.dsh.pocket.island.IslandRuntime
 
+/** Fewer chat lines than this, with older history left, reads older pages on its own, at most [AUTO_PAGES] of them. */
+private const val CHAT_FILL = 12
+private const val AUTO_PAGES = 5
+
 /**
- * 聊天记录: the owner's conversation with it (叫它), as a chat, followed on its own while this tab shows (the view
- * model's selected session would open the full chat screen). Its thinking and tool calls stay in 设置 → 开发者.
+ * 聊天记录: the owner's conversation with it (叫它), as a chat. The home page keeps it followed on its own stream (the view
+ * model's selected session would open the full chat screen), so this tab shows it at once. Its thinking and tool calls
+ * stay in 设置 → 开发者; what it did on its own in this conversation (patrols, notes, notifications) is in 事件.
  */
 @Composable internal fun ChatPane(vm: PocketViewModel, identity: Identity) {
     val context = LocalContext.current
     val owner by OwnerConversation.flow(context).collectAsState()
     val exists = vm.sessions.any { it.optString("sessionId") == owner }
-    LaunchedEffect(owner, vm.connected, exists) { vm.followOwner() }
-    DisposableEffect(Unit) { onDispose { vm.stopOwnerLog() } }
     val lines = remember(vm.ownerLog, vm.ownerRunning) { ChatLog.of(vm.ownerLog, vm.ownerRunning) }
     // What the running turn is doing, for its last line; the app only when this conversation holds its screen.
     val island by IslandRuntime.store.snapshots.collectAsState()
@@ -41,9 +44,15 @@ import dev.dsh.pocket.island.IslandRuntime
     val holding = island.screenHolder == owner && status.optString("state") == "running"
     val progress = rememberProgress(vm.ownerLog, vm.ownerRunning, waitsForScreen(owner, vm.ownerRunning, TaskMode.COWORK, island.screenHolder), false,
         if (holding) status.optJSONObject("activity")?.optString("app")?.trim()?.ifEmpty { null } else null)
+    // Laid out from the bottom (item 0 is the newest), so it opens at the latest line and older pages read in at the top
+    // never move it. A new line scrolls down to it.
     val list = rememberLazyListState()
-    // New lines at the end scroll to them; older ones loaded at the top keep the view where it is.
-    LaunchedEffect(lines.lastOrNull()?.key, lines.lastOrNull()?.kind) { if (lines.isNotEmpty()) list.animateScrollToItem(lines.lastIndex + if (vm.ownerLogMore) 1 else 0) }
+    LaunchedEffect(lines.lastOrNull()?.key, lines.lastOrNull()?.kind) { if (lines.isNotEmpty()) list.animateScrollToItem(0) }
+    // Its patrols and notifications live in this conversation too and stay out of the chat: when the latest pages hold
+    // little of what you two said, a few older pages are read in on their own; the button reads further.
+    var autoPages by remember(owner) { mutableIntStateOf(0) }
+    val reading = vm.ownerLogReady && vm.ownerLogMore && lines.size < CHAT_FILL && autoPages < AUTO_PAGES
+    LaunchedEffect(vm.ownerLog.size, reading) { if (reading) { autoPages++; vm.ownerLogOlder() } }
     // The empty state stays out of the list: its animated avatar, faded out as a list item, left its layer behind.
     if (lines.isEmpty()) {
         Column(Modifier.fillMaxSize().padding(top = 48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -51,19 +60,21 @@ import dev.dsh.pocket.island.IslandRuntime
             Spacer(Modifier.height(14.dp))
             Text(when {
                 !vm.connected -> "连上本机 DSH 后显示聊天记录"
-                exists && !vm.ownerLogReady -> "正在翻聊天记录…"
+                exists && (!vm.ownerLogReady || reading) -> "正在翻聊天记录…"
+                vm.ownerLogMore -> "最近都是${identity.shown}自己在忙（巡视、看通知），记在事件里。"
                 else -> "还没和${identity.shown}说过话。\n点下面的“叫它”，跟它说点什么。"
             }, style = MaterialTheme.typography.bodyMedium, color = Pocket.muted, textAlign = TextAlign.Center)
+            if (vm.ownerLogMore && !reading) TextButton({ vm.ownerLogOlder() }) { Text("更早的聊天", color = Pocket.accent) }
         }
         return
     }
     SelectionContainer {
-        LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        LazyColumn(Modifier.fillMaxSize(), state = list, reverseLayout = true, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Bottom)) {
+            items(lines.asReversed(), key = { it.key }) { line -> ChatBubble(line, identity, progress, Modifier.animateItem()) }
             if (vm.ownerLogMore) item(key = "older") {
                 TextButton({ vm.ownerLogOlder() }, Modifier.fillMaxWidth()) { Text("更早的聊天", color = Pocket.accent) }
             }
-            items(lines, key = { it.key }) { line -> ChatBubble(line, identity, progress, Modifier.animateItem()) }
         }
     }
 }
@@ -95,7 +106,5 @@ import dev.dsh.pocket.island.IslandRuntime
                 }
             }
         }
-        ChatLog.Kind.LABEL -> Text("${line.label} · ${line.text}", modifier.fillMaxWidth().padding(vertical = 2.dp), textAlign = TextAlign.Center,
-            style = MaterialTheme.typography.labelSmall, color = Pocket.faint, maxLines = 2)
     }
 }

@@ -6,7 +6,7 @@
   "type": "module",
   "description": "Restricted native-phone Cowork preset for DSH 0.2.1-rc.2",
   "exports": { ".": "./src/restricted.mjs", "./notify": "./src/notify.mjs", "./unattended": "./src/unattended.mjs", "./context": "./src/context.mjs", "./context-pruner": "./src/context-pruner.mjs", "./package.json": "./package.json" },
-  "files": ["src/auth.mjs", "src/task-lifecycle.mjs", "src/restricted.mjs", "src/validation.mjs", "src/broker.mjs", "src/gesture-path.mjs", "src/bounded-files.mjs", "src/web.mjs", "src/notify.mjs", "src/screen-board.mjs", "src/unattended-store.mjs", "src/unattended.mjs", "src/jev-board.mjs", "src/jev-focus-store.mjs", "src/jev-focus.mjs", "src/tool-groups.mjs", "src/notes-view.mjs", "src/companion-store.mjs", "src/diary.mjs", "src/diary-writer.mjs", "src/diary-view.mjs", "src/context-plan.mjs", "src/context.mjs", "src/context-pruner.mjs", "cordis.patch.yml", "README.md", "PROTOCOL.md"],
+  "files": ["src/auth.mjs", "src/task-lifecycle.mjs", "src/restricted.mjs", "src/validation.mjs", "src/broker.mjs", "src/gesture-path.mjs", "src/bounded-files.mjs", "src/web.mjs", "src/notify.mjs", "src/standing.mjs", "src/screen-board.mjs", "src/unattended-store.mjs", "src/unattended.mjs", "src/jev-board.mjs", "src/jev-focus-store.mjs", "src/jev-focus.mjs", "src/tool-groups.mjs", "src/notes-view.mjs", "src/companion-store.mjs", "src/diary.mjs", "src/diary-writer.mjs", "src/diary-view.mjs", "src/context-plan.mjs", "src/context.mjs", "src/context-pruner.mjs", "cordis.patch.yml", "README.md", "PROTOCOL.md"],
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
   "engines": { "node": ">=22" },
   "scripts": { "test": "node --test test/strict-*.test.mjs" },

@@ -14,6 +14,11 @@
         <!-- The system page where the owner picks the digital assistant. -->
         <intent><action android:name="android.settings.VOICE_INPUT_SETTINGS" /></intent>
         <intent><action android:name="android.settings.MANAGE_DEFAULT_APPS_SETTINGS" /></intent>
+        <!-- 通知叫醒 → 不送去判断的应用: pick from the owner's apps that have a launcher icon instead of typing package names. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
     </queries>
     <application
         android:allowBackup="false"

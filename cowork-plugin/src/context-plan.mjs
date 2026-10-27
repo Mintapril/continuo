@@ -12,7 +12,12 @@
 export const PHONE_RESULT_PREFIX = 'Untrusted phone observation/result data:\n';
 /** Marks a phone result whose screen was removed; such a result is never pruned again. */
 export const PRUNED_MARK = '[older screen removed]';
-export const KEEP_SCREENS = 2;
+export const KEEP_SCREENS = 4;
+/** When the history is big enough to compact, by the size of the model's window (the owner's rule, 2026-10-26): half of
+ *  a window under 500K tokens, a quarter of a bigger one. DSH's engine (thresholdRatio 0.25 in the preset) then brings
+ *  it under a quarter of the window. */
+export const COMPACT = Object.freeze({ bigWindow: 500_000, small: 0.5, big: 0.25 });
+export const compactAt = contextWindow => Math.floor(contextWindow * (contextWindow < COMPACT.bigWindow ? COMPACT.small : COMPACT.big));
 
 /** The parsed phone result in tool-result content blocks, or undefined for any other tool's result. */
 export function phoneResult(blocks) {
@@ -88,7 +93,7 @@ export const SUMMARY_INSTRUCTION = [
   'Write it in 简体中文, as terse bullets, with exactly these sections in this order; write （无） under an empty one, never drop a section:',
   '',
   '## 这个会话',
-  '- 是什么会话、做什么用：主人的对话、巡视、某个应用的通知会话或别的；主人长期有效的要求，要紧处照原话引用',
+  '- 是什么会话：你和主人的对话（你自己巡视、被通知叫醒、看便条时做的事也都在这里），或者别的；主人长期有效的要求，要紧处照原话引用',
   '## 做过的事（不要重复）',
   '- 已经发出的消息、评论、回复、帖子，点过的赞、关注、收藏，接受的好友和入群：在哪个应用、对谁、内容原话、大约什么时候',
   '## 正在进行',

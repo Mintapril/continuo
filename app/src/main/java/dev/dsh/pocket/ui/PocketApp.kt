@@ -68,8 +68,8 @@ import java.time.LocalDate
 import java.util.Calendar
 
 /** Every screen of the app. Settings pages go back to the settings hub; the developer pages back to 开发者. */
-internal enum class Screen { TODAY, SETTINGS, IDENTITY, CONNECTION, COWORK, NOTIFY, APPEARANCE, RUNTIME, MEMORY, ABOUT, DEVELOPER, DEV_NEW, ONBOARDING }
-private val SETTINGS_PAGES = setOf(Screen.IDENTITY, Screen.CONNECTION, Screen.COWORK, Screen.NOTIFY, Screen.APPEARANCE, Screen.RUNTIME, Screen.MEMORY, Screen.ABOUT, Screen.DEVELOPER)
+internal enum class Screen { TODAY, SETTINGS, IDENTITY, COWORK, NOTIFY, MEMORY, ENTRY, DSH, APPEARANCE, ABOUT, DEVELOPER, DEV_NEW, ONBOARDING }
+private val SETTINGS_PAGES = setOf(Screen.IDENTITY, Screen.COWORK, Screen.NOTIFY, Screen.MEMORY, Screen.ENTRY, Screen.DSH, Screen.APPEARANCE, Screen.ABOUT, Screen.DEVELOPER)
 
 /** The home page's tabs, swiped or tapped: 聊天, 事件, 便条, 日记. */
 private const val TODAY_TABS = 4
@@ -121,12 +121,12 @@ private const val NOTES_TAB = 2
                     Screen.ONBOARDING -> Onboarding(vm) { screen = Screen.TODAY }
                     Screen.SETTINGS -> Settings(vm, back = { screen = Screen.TODAY }) { screen = it }
                     Screen.IDENTITY -> IdentitySettings(vm, toSettings)
-                    Screen.CONNECTION -> ConnectionSettings(vm, toSettings)
                     Screen.COWORK -> CoworkSettings(vm, toSettings)
                     Screen.NOTIFY -> NotifySettings(vm, toSettings)
                     Screen.APPEARANCE -> AppearanceSettings(vm, toSettings)
                     Screen.ABOUT -> AboutSettings(toSettings)
-                    Screen.RUNTIME -> Runtime(vm, toSettings)
+                    Screen.ENTRY -> EntrySettings(vm, toSettings)
+                    Screen.DSH -> DshSettings(vm, toSettings)
                     Screen.MEMORY -> MemorySettings(vm, toSettings)
                     Screen.DEVELOPER -> DeveloperTasks(vm, toSettings) { screen = Screen.DEV_NEW }
                     Screen.DEV_NEW -> DeveloperNewTask(vm) { screen = Screen.DEVELOPER }
@@ -179,6 +179,10 @@ private fun depth(chat: Boolean, screen: Screen): Int = when {
     val scope = rememberCoroutineScope()
     val identity by IdentityStore.flow(context).collectAsState()
     LaunchedEffect(vm.connected) { if (vm.connected) { vm.schedulesRefresh(); vm.diaryRefresh() } }
+    // 聊天 is followed from here, not from its tab: the pager drops tabs it is not showing, and coming back reloaded it.
+    val owner by OwnerConversation.flow(context).collectAsState()
+    val ownerExists = vm.sessions.any { it.optString("sessionId") == owner }
+    LaunchedEffect(owner, vm.connected, ownerExists) { vm.followOwner() }
     val today = remember(rememberMinute().get(Calendar.DAY_OF_YEAR)) { Companion.dayHeading(System.currentTimeMillis()).substringAfter(" · ") }
     val week = remember(today) { listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")[LocalDate.now().dayOfWeek.value - 1] }
     val active = vm.schedules.tasks.count { it.text("status") == "active" }
@@ -332,47 +336,3 @@ private fun depth(chat: Boolean, screen: Screen): Int = when {
     }
 }
 
-// ───────────────────────────── Runtime ─────────────────────────────
-
-@Composable internal fun Runtime(vm: PocketViewModel, back: () -> Unit) {
-    var confirm by remember { mutableStateOf<RuntimeController.Action?>(null) }
-    SettingsPage("运行环境", back) {
-        SectionLabel("状态")
-        InsetGroup {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (vm.runtimeBusy) Spinner(size = 14.dp, color = Pocket.accent) else StatusDot(if (vm.connected) Pocket.success else Pocket.faint)
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (vm.runtimeBusy) "正在执行…" else if (vm.connected) "DSH 正在运行" else "DSH 未连接", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
-                    TextButton({ vm.runtime(RuntimeController.Action.STATUS) }, enabled = !vm.runtimeBusy) { Text("刷新", color = Pocket.accent, style = MaterialTheme.typography.labelLarge) }
-                }
-                Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), color = Pocket.codeBackground) {
-                    Text(vm.runtimeStatus, Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState()).padding(12.dp), fontFamily = Fonts.mono,
-                        style = MaterialTheme.typography.bodySmall, color = Pocket.muted)
-                }
-            }
-        }
-        SectionLabel("DSH 服务")
-        InsetGroup {
-            GroupRow("启动 DSH", icon = Glyph.Play, enabled = !vm.runtimeBusy, chevron = false, onClick = { vm.runtime(RuntimeController.Action.START) })
-            GroupDivider()
-            GroupRow("重启 DSH 与 Node", icon = Glyph.Restart, enabled = !vm.runtimeBusy, chevron = false, onClick = { confirm = RuntimeController.Action.RESTART })
-            GroupDivider()
-            GroupRow("停止 DSH", icon = Glyph.Power, enabled = !vm.runtimeBusy, chevron = false, tint = MaterialTheme.colorScheme.error, onClick = { confirm = RuntimeController.Action.STOP })
-        }
-        SectionLabel("Linux 环境")
-        InsetGroup {
-            GroupRow("重建 Linux 环境", icon = Glyph.Layers, subtitle = "停止 DSH，确认无残留进程后重建私有挂载并启动", enabled = !vm.runtimeBusy, chevron = false,
-                onClick = { confirm = RuntimeController.Action.RECREATE_ENVIRONMENT })
-        }
-        Footnote("这里的 Linux 是 Ubuntu chroot，不是独立虚拟机，也不是安全边界。所有操作只调用固定的 pocket-control.sh 动作，不执行任意命令。")
-    }
-    confirm?.let { action ->
-        val (title, text) = when (action) {
-            RuntimeController.Action.RESTART -> "重启 DSH？" to "正在运行的任务会被中断，重启后自动重新连接。"
-            RuntimeController.Action.STOP -> "停止 DSH？" to "所有任务都会中断，应用将断开连接，直到再次启动。"
-            else -> "重建 Linux 环境？" to "将停止 DSH 并重建私有挂载后再次启动；文件与凭据保留。若仍有后台进程在 chroot 中运行，操作会被拒绝。"
-        }
-        ConfirmDialog(title, text, "继续", destructive = action != RuntimeController.Action.RESTART, dismiss = { confirm = null }) { vm.runtime(action); confirm = null }
-    }
-}

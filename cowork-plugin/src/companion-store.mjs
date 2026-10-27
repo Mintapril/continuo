@@ -1,17 +1,50 @@
 import { readFileSync, writeFileSync, mkdirSync, renameSync, appendFileSync, statSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { isFocusKey } from './jev-focus-store.mjs';
 
 // What Continuo shows of the AI as a companion, kept in the plugin data folder next to unattended-models.json:
 // - identity.json: the name the owner gave it (restricted.mjs puts it in the system prompt);
 // - activity.jsonl: one line per finished Cowork turn, what it did (diary.mjs records it), the material of the diary;
-// - diary.jsonl: one entry a day, written at night by a separate request from that day's activity (diary-writer.mjs).
+// - diary.jsonl: one entry a day, written at night by a separate request from that day's activity (diary-writer.mjs);
+// - owner-session.json: which session is the owner's conversation now (叫它), the one session everything goes to.
 // All stay on this phone; the app reads them over DSH's authenticated RPC (unattended.mjs), the model reads the diary
 // with cowork_diary (diary-view.mjs).
 const folder = home => join(home, '.dsh', 'plugins', 'cowork-phone');
 export const identityFile = (home = homedir()) => join(folder(home), 'identity.json');
 export const activityFile = (home = homedir()) => join(folder(home), 'activity.jsonl');
 export const diaryFile = (home = homedir()) => join(folder(home), 'diary.jsonl');
+export const ownerSessionFile = (home = homedir()) => join(folder(home), 'owner-session.json');
+
+// The owner's conversation with the AI (Continuo's 叫它): cowork-owner, then a fresh cowork-owner-<yyyyMMdd-HHmmss> each
+// time the owner clears it (the app's Companion.isOwnerSession and nextOwnerSession make the same ids). Since
+// 2026-10-26 it is the only session the AI lives in: the owner's messages, patrols, notes and every app's notifications.
+export const OWNER_SESSION = 'cowork-owner';
+const OWNER_ID = /^cowork-owner(?:-(\d{8}-\d{6}))?$/;
+export const isOwnerSession = id => typeof id === 'string' && OWNER_ID.test(id);
+/** Whether owner session `a` was made after `b` (the ids carry the local time they were made at). */
+export const newerOwnerSession = (a, b) => isOwnerSession(a) && (!isOwnerSession(b) || (OWNER_ID.exec(a)[1] ?? '') > (OWNER_ID.exec(b)[1] ?? ''));
+
+/** The owner's conversation now: what Continuo last said (setOwnerSession), or the first one when it never did. */
+export function readOwnerSession(file = ownerSessionFile()) {
+  try {
+    const id = JSON.parse(readFileSync(file, 'utf8'))?.sessionId;
+    return isOwnerSession(id) ? id : OWNER_SESSION;
+  } catch { return OWNER_SESSION; }
+}
+
+export function writeOwnerSession(id, file = ownerSessionFile()) {
+  if (!isOwnerSession(id)) throw new TypeError('sessionId is the owner\'s conversation: cowork-owner or cowork-owner-<yyyyMMdd-HHmmss>');
+  writeAtomic(file, `${JSON.stringify({ sessionId: id }, null, 2)}\n`);
+  return id;
+}
+
+/** A message of the owner seen in `id`: it becomes the owner's conversation when it is newer than the stored one, so
+ *  a plugin that has not heard from the app yet still finds the conversation the owner talks in. Returns the current id. */
+export function adoptOwnerSession(id, file = ownerSessionFile()) {
+  const current = readOwnerSession(file);
+  return newerOwnerSession(id, current) ? writeOwnerSession(id, file) : current;
+}
 
 export const NAME_MAX = 12;
 export const ACTIVITY = Object.freeze({ textMax: 600, askedMax: 300, itemMax: 200, items: 10, keep: 3000,
@@ -68,8 +101,9 @@ const clip = (text, max) => {
 };
 const list = (value, max) => (Array.isArray(value) ? value : []).map(item => clip(item, max)).filter(Boolean).slice(0, ACTIVITY.items);
 
-/** One finished turn, validated: {at, sessionId, kind, text?, asked?, apps?, typed?, notified?, reason?}. The lines of
- *  the old per-turn diary (at, sessionId, kind, text, asked, reason) are activity entries too. */
+/** One finished turn, validated: {at, sessionId, kind, text?, asked?, apps?, typed?, notified?, app?, reason?}; app is
+ *  the app whose notifications started it (`<profile>:<package>`). The lines of the old per-turn diary (at, sessionId,
+ *  kind, text, asked, reason) are activity entries too. */
 export function activityEntry(value) {
   const at = value?.at;
   if (!Number.isSafeInteger(at) || at <= 0) throw new TypeError('at is a time in milliseconds');
@@ -80,9 +114,10 @@ export function activityEntry(value) {
   const apps = list(value.apps, 255), typed = list(value.typed, ACTIVITY.itemMax), notified = list(value.notified, ACTIVITY.itemMax);
   if (!text && !apps.length && !typed.length && !notified.length) throw new TypeError('a turn that did nothing is not recorded');
   const reason = typeof value.reason === 'string' && /^[a-z_-]{1,30}$/.test(value.reason) ? value.reason : undefined;
+  const app = isFocusKey(value.app) ? value.app : undefined;
   return Object.freeze({ at, sessionId: value.sessionId, kind, ...(text ? { text } : {}), ...(asked ? { asked } : {}),
     ...(apps.length ? { apps } : {}), ...(typed.length ? { typed } : {}), ...(notified.length ? { notified } : {}),
-    ...(reason && reason !== 'completed' ? { reason } : {}) });
+    ...(app ? { app } : {}), ...(reason && reason !== 'completed' ? { reason } : {}) });
 }
 
 /** One day's diary entry: {date (YYYY-MM-DD, the owner's day), at, text, provider?, model?}. */
@@ -141,16 +176,16 @@ export function readDiary({ before, limit } = {}, file = diaryFile()) {
   return Object.freeze({ entries: all.slice(0, max), more: all.length > max });
 }
 
-/** Continuo's 事件: the turns it ran on its own in the standing app sessions (cowork-app-*: the patrol session and each
- *  app's notification session), started by a patrol, a notification or a due note. The owner's conversation already
- *  shows its turns as chat, and what the owner says in an app session (from the developer pages) is not an event. */
+/** Continuo's 事件: the turns it ran on its own, started by a patrol, a notification or a due note: in the owner's
+ *  conversation since everything lives there (2026-10-26), before that in the standing app sessions (cowork-app-*).
+ *  The turns the owner's messages started are the chat, never an event. */
 export const EVENTS = Object.freeze({ kinds: Object.freeze(['patrol', 'notify', 'note']), page: 30, pageMax: 60 });
 
 /** Newest first: up to [limit] events that ended before [before] (ms), with whether more remain. */
 export function readEvents({ before, limit } = {}, file = activityFile()) {
   const max = Number.isSafeInteger(limit) && limit > 0 ? Math.min(limit, EVENTS.pageMax) : EVENTS.page;
   const all = readLines(file, activityEntry)
-    .filter(e => e.sessionId.startsWith('cowork-app-') && EVENTS.kinds.includes(e.kind) && !(Number.isSafeInteger(before) && e.at >= before))
+    .filter(e => EVENTS.kinds.includes(e.kind) && !(Number.isSafeInteger(before) && e.at >= before))
     .sort((a, b) => b.at - a.at);
   return Object.freeze({ entries: all.slice(0, max), more: all.length > max });
 }

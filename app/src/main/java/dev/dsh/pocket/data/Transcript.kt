@@ -15,6 +15,8 @@ data class TranscriptRow(
     val streaming: Boolean = false,
     val error: Boolean = false,
     val images: List<JSONObject> = emptyList(),
+    /** For a user-role message: its source kind (user, schedule, webhook, ...), what started or joined the turn. */
+    val source: String = "",
 )
 
 /**
@@ -353,7 +355,7 @@ class Transcript {
                 TranscriptRow(key, if (contextRecord) "notice" else role, if (contextRecord) title.ifBlank { "会话上下文" } else title, delivery?.body ?: parts.text, parts.reasoning,
                     joinDetail(parts.detail, if (contextRecord) "Source: ${json(source)}" else "", if (delivery != null) parts.text else "", if (body.optBoolean("interrupted")) "Interrupted response" else "",
                         body.optJSONObject("usage")?.let { "Usage: ${json(it)}" }.orEmpty()),
-                    images = parts.images)
+                    images = parts.images, source = if (role == "user") source?.string("kind").orEmpty() else "")
             }
             "assistant/attempt" -> {
                 val assembly = Assembly().apply { compact(event.requiredObject("data").requiredArray("stream")) }

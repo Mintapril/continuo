@@ -57,11 +57,13 @@ foreach ($entry in $classpath) { if (!(Test-Path -LiteralPath $entry)) { throw "
     dev.dsh.pocket.cowork.NotificationGrantPolicyTest `
     dev.dsh.pocket.cowork.QuietNotificationPolicyTest `
     dev.dsh.pocket.cowork.QuietAudioPolicyTest `
+    dev.dsh.pocket.cowork.ChatKeepPolicyTest `
+    dev.dsh.pocket.cowork.ChatKeeperStatusTest `
     dev.dsh.pocket.cowork.ProfileAppPolicyTest `
     dev.dsh.pocket.cowork.OwnerNoticesTest `
-    dev.dsh.pocket.cowork.ParkedAppsTest `
     dev.dsh.pocket.cowork.ScreenWatchTest `
     dev.dsh.pocket.cowork.TreeDiffTest `
+    dev.dsh.pocket.cowork.ChatTextTest `
     dev.dsh.pocket.cowork.StrokePathTest `
     dev.dsh.pocket.cowork.ScreenZoomTest `
     dev.dsh.pocket.island.IslandExecutionTest `

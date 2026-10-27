@@ -1,6 +1,6 @@
 import { UNATTENDED_KINDS, readUnattended, writeUnattended, selectionOf, unattendedFile } from './unattended-store.mjs';
 import { readFocus, writeFocus, isFocusKey, focusFile } from './jev-focus-store.mjs';
-import { identityFile, readIdentity, writeIdentity, diaryFile, readDiary, activityFile, appendActivity, migrateDiary, readEvents } from './companion-store.mjs';
+import { identityFile, readIdentity, writeIdentity, diaryFile, readDiary, activityFile, appendActivity, migrateDiary, readEvents, ownerSessionFile, readOwnerSession, writeOwnerSession } from './companion-store.mjs';
 import { appOfSession } from './jev-focus.mjs';
 import { createActivityRecorder } from './diary.mjs';
 import { createDiaryWriter } from './diary-writer.mjs';
@@ -15,9 +15,11 @@ import { createDiaryWriter } from './diary-writer.mjs';
 // - `identity()` and `setIdentity({request: {name}})`: the name the owner gave the AI (restricted.mjs tells the model).
 // - `diary({request: {before?, limit?}})`: the diary, one entry a day ({date, at, text}, newest first), written each
 //   night by diary-writer.mjs from the activity diary.mjs records at the end of each Cowork turn.
-// - `events({request: {before?, limit?}})`: 事件, the turns it ran on its own in the app sessions (a patrol, a
-//   notification, a due note), newest first, from the same activity; each with its app ({profile, package}) when the
-//   session is one app's.
+// - `events({request: {before?, limit?}})`: 事件, the turns it ran on its own (a patrol, a notification, a due note),
+//   newest first, from the same activity; each with its app ({profile, package}) when notifications of one app started
+//   it (or, before 2026-10-26, when it ran in that app's standing session).
+// - `ownerSession()` and `setOwnerSession({request: {sessionId}})`: which session is the owner's conversation now (叫它),
+//   the one session notifications go to; Continuo sets it when it connects and when the owner clears the conversation.
 // - `createNote({request: {sessionId, title, prompt, change}})`: a note the owner writes in Continuo, stored directly
 //   (dsh-schedule's own create, which DSH does not expose remotely), unmarked and in the owner's words, at the exact
 //   time they picked: no model turn is spent writing it down. `change` is the shape schedule/update takes.
@@ -59,10 +61,11 @@ export function unattendedService({ Remote, TypertRemoteService }) {
       this.identityFile = config.identityFile ?? identityFile();
       this.diaryFile = config.diaryFile ?? diaryFile();
       this.activityFile = config.activityFile ?? activityFile();
+      this.ownerSessionFile = config.ownerSessionFile ?? ownerSessionFile();
       this.schedule = config.schedule ?? (() => undefined);
       this.now = config.now ?? Date.now;
       // Plain JavaScript has no decorator syntax: mark the Remote methods exactly as @Remote would.
-      for (const method of ['models', 'setModel', 'jevFocus', 'clearJevFocus', 'identity', 'setIdentity', 'diary', 'events', 'createNote'])
+      for (const method of ['models', 'setModel', 'jevFocus', 'clearJevFocus', 'identity', 'setIdentity', 'diary', 'events', 'createNote', 'ownerSession', 'setOwnerSession'])
         Remote(method)(this[method], { kind: 'method', name: method, static: false, private: false, addInitializer: init => init.call(this) });
     }
     models() { return readUnattended(this.file); }
@@ -92,9 +95,12 @@ export function unattendedService({ Remote, TypertRemoteService }) {
     diary(request) { return readDiary({ before: request?.before, limit: request?.limit }, this.diaryFile); }
     events(request) {
       const page = readEvents({ before: request?.before, limit: request?.limit }, this.activityFile);
-      const withApp = entry => { const app = appOfSession(entry.sessionId); return app ? { ...entry, app: { profile: app.profile, package: app.package } } : entry; };
+      const appOf = entry => { const own = appOfSession(entry.sessionId); if (own) return own; const at = entry.app?.indexOf(':') ?? -1; return at > 0 ? { profile: entry.app.slice(0, at), package: entry.app.slice(at + 1) } : undefined; };
+      const withApp = entry => { const app = appOf(entry); return app ? { ...entry, app: { profile: app.profile, package: app.package } } : entry; };
       return { entries: page.entries.map(withApp), more: page.more };
     }
+    ownerSession() { return { sessionId: readOwnerSession(this.ownerSessionFile) }; }
+    setOwnerSession(request) { return { sessionId: writeOwnerSession(request?.sessionId, this.ownerSessionFile) }; }
     async createNote(request) {
       const schedule = this.schedule();
       if (typeof schedule?.create !== 'function') throw new Error('DSH scheduling is not running');

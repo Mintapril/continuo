@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { registerHooks } from 'node:module';
-import { PHONE_RESULT_PREFIX, PRUNED_MARK, KEEP_SCREENS, phoneResult, kindOf, prunePlan, SUMMARY_INSTRUCTION } from '../src/context-plan.mjs';
+import { PHONE_RESULT_PREFIX, PRUNED_MARK, KEEP_SCREENS, phoneResult, kindOf, prunePlan, SUMMARY_INSTRUCTION, compactAt } from '../src/context-plan.mjs';
 import { renderPhoneResult } from '../src/restricted.mjs';
 
 const phone = value => renderPhoneResult(value);
@@ -25,7 +25,7 @@ test('phone results are recognised by the format restricted.mjs renders them in'
   assert.equal(kindOf(other('memories')).kind, 'other');
 });
 
-test('old screens give way to one line each; the last two screens and all after them stay word for word', () => {
+test('old screens give way to one line each; the last four screens and all after them stay word for word', () => {
   const entries = [
     { seq: 1, turn: 1, content: tap('首页') },
     { seq: 2, turn: 1, content: page() },
@@ -35,10 +35,12 @@ test('old screens give way to one line each; the last two screens and all after 
     { seq: 6, turn: 2, content: tap('群聊') },
     { seq: 7, turn: 2, content: page() },
     { seq: 8, turn: 2, content: tap('聊天') },
+    { seq: 9, turn: 2, content: tap('设置') },
+    { seq: 10, turn: 2, content: tap('我的') },
   ];
-  assert.equal(KEEP_SCREENS, 2);
+  assert.equal(KEEP_SCREENS, 4);
   const plan = prunePlan(entries);
-  assert.deepEqual(plan.map(p => p.seq), [1, 2, 4], 'screens before the last two, and page text of an earlier turn');
+  assert.deepEqual(plan.map(p => p.seq), [1, 2, 4], 'screens before the last four, and page text of an earlier turn');
   const first = phoneResult(plan[0].content);
   assert.deepEqual(Object.keys(first).sort(), ['changed', 'performed', 'removed'], 'what the input did stays, the screen goes');
   assert.ok(first.removed.startsWith(PRUNED_MARK));
@@ -65,7 +67,8 @@ test('the last full screen stays while changes against it follow; a newer full o
   const entries = [{ seq: 1, turn: 1, content: tap('旧') }, { seq: 2, turn: 1, content: phone(tree('基准')) },
     { seq: 3, turn: 1, content: change('基准') }, { seq: 4, turn: 1, content: change('基准') }, { seq: 5, turn: 1, content: change('基准') }];
   assert.deepEqual(prunePlan(entries).map(p => p.seq), [1], 'the base of the changes after it stays');
-  entries.push({ seq: 6, turn: 1, content: tap('新') }, { seq: 7, turn: 1, content: change('新') });
+  entries.push({ seq: 6, turn: 1, content: tap('新') }, { seq: 7, turn: 1, content: change('新') }, { seq: 8, turn: 1, content: change('新') },
+    { seq: 9, turn: 1, content: change('新') });
   const plan = prunePlan(entries);
   assert.deepEqual(plan.map(p => p.seq), [1, 2, 3, 4, 5]);
   assert.match(phoneResult(plan[2].content).removed, /change of screen 基准 \/ com\.tencent\.mobileqq: 1 added, 0 changed, 1 removed/);
@@ -120,7 +123,8 @@ test('the pruner replaces old screens the way DSH\'s pruner replaces a result, t
   const pruner = new CoworkPruner(ctx, {});
   const bigScreen = phone({ ...tree('长列表', 400) });
   assert.ok(bigScreen[0].text.length > 8192);
-  const { session, appended } = fakeSession([[1, 1, tap('首页')], [2, 1, shot()], [3, 1, other('y'.repeat(20_000))], [4, 2, tap('群聊')], [5, 2, bigScreen]]);
+  const { session, appended } = fakeSession([[1, 1, tap('首页')], [2, 1, shot()], [3, 1, other('y'.repeat(20_000))], [4, 2, tap('群聊')],
+    [5, 2, tap('设置')], [6, 2, tap('我的')], [7, 2, bigScreen]]);
   const result = pruner.pruneSession(session);
   assert.deepEqual(result.pruned.map(p => p.originalSeq), [1, 2, 3]);
   assert.deepEqual(appended.map(a => a.type), ['compaction/prune', 'tool/result', 'compaction/prune', 'tool/result', 'compaction/prune', 'tool/result']);
@@ -161,10 +165,52 @@ test('the engine asks the session\'s own model for the summary with Cowork\'s in
   assert.equal(result.model, 'deepseek-ai/DeepSeek-V4.1-Flash');
 });
 
+test('compaction starts at half of a window under 500K and a quarter of a bigger one, at most once a turn', async () => {
+  const { CoworkCompaction, Context } = await load();
+  assert.equal(compactAt(1_048_576), 262_144);
+  assert.equal(compactAt(1_000_000), 250_000);
+  assert.equal(compactAt(200_000), 100_000);
+  assert.equal(compactAt(499_999), 249_999);
+  const base = Object.getPrototypeOf(CoworkCompaction.prototype);
+  const original = base.compactIfNeeded;
+  const calls = [];
+  base.compactIfNeeded = async function (_agent, trigger) { calls.push(trigger); return { trigger }; };
+  try {
+    let tokens = 0, window = 1_048_576;
+    const ctx = new Context();
+    ctx.provide('llm', { resolveModelInfo: async (provider, model) => (provider === 'kimi' && model === 'k' ? { context: { contextWindow: window } } : {}) });
+    ctx.provide('tokenMeter', { measure: () => ({ totalTokens: tokens }) });
+    ctx.provide('sessions', {});
+    const engine = new CoworkCompaction(ctx, { thresholdRatio: 0.25, retainRatio: 0.08, maxTokens: 32000, auto: false });
+    const session = { id: 'cowork-owner', requestHeader: () => ({ config: { provider: 'kimi', model: 'k' } }) };
+    const agent = { session };
+    const turn = n => ctx.emit('session/event', session, { type: 'turn/start', data: { turn: n } });
+    turn(1);
+    tokens = 262_143;
+    assert.equal(await engine.compactIfNeeded(agent, 'pressure'), null, 'under a quarter of the 1M window');
+    tokens = 262_144;
+    assert.deepEqual(await engine.compactIfNeeded(agent, 'pressure'), { trigger: 'pressure' }, 'from a quarter on, DSH\'s engine compacts');
+    tokens = 900_000;
+    assert.equal(await engine.compactIfNeeded(agent, 'pressure'), null, 'not again in the same turn');
+    assert.deepEqual(await engine.compactIfNeeded(agent, 'context-overflow'), { trigger: 'context-overflow' }, 'a refused request still recovers');
+    turn(2);
+    assert.deepEqual(await engine.compactIfNeeded(agent, 'pressure'), { trigger: 'pressure' }, 'the next turn may compact again');
+    turn(3);
+    window = 200_000; tokens = 99_999;
+    assert.equal(await engine.compactIfNeeded(agent, 'pressure'), null, 'a small window waits for half of it');
+    tokens = 100_000;
+    assert.deepEqual(await engine.compactIfNeeded(agent, 'pressure'), { trigger: 'pressure' });
+    turn(4);
+    const unknown = { session: { id: 'other', requestHeader: () => ({ config: { provider: 'x', model: 'y' } }) } };
+    assert.deepEqual(await engine.compactIfNeeded(unknown, 'pressure'), { trigger: 'pressure' }, 'no known window: DSH\'s engine reports it as before');
+    assert.deepEqual(calls, ['pressure', 'context-overflow', 'pressure', 'pressure', 'pressure']);
+  } finally { base.compactIfNeeded = original; }
+});
+
 test('the preset\'s compaction config passes DSH\'s own validation', async () => {
   const { CoworkCompaction } = await load();
   const patch = await fs.readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8');
-  const config = Object.fromEntries([...patch.matchAll(/^\s+(thresholdRatio|retainTokens|maxTokens): ([\d.]+)$/gm)].map(([, key, value]) => [key, Number(value)]));
-  assert.deepEqual(config, { thresholdRatio: 0.08, retainTokens: 32000, maxTokens: 16000 });
+  const config = Object.fromEntries([...patch.matchAll(/^\s+(thresholdRatio|retainRatio|retainTokens|maxTokens): ([\d.]+)$/gm)].map(([, key, value]) => [key, Number(value)]));
+  assert.deepEqual(config, { thresholdRatio: 0.25, retainRatio: 0.08, maxTokens: 32000 });
   assert.doesNotThrow(() => CoworkCompaction.Config(config));
 });

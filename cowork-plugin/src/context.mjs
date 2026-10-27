@@ -4,13 +4,42 @@
 // managing the context never costs the model a step. When the history crosses the threshold the engine first lets the
 // pruner (context-pruner.mjs) drop old screens; only if that is not enough does it ask the session's own model (warm
 // prompt cache) for a summary of the oldest part, with SUMMARY_INSTRUCTION.
+// When it starts is Cowork's own (compactIfNeeded): at half of a window under 500K tokens, a quarter of a bigger one
+// (compactAt), and at most once a turn, so a long patrol or chat keeps one prompt cache and is summarized once. Only a
+// request the provider refuses as too long (the engine's overflow recovery) compacts again within the turn.
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic';
 import { BlockAssembler, LlmError, contentHasImage } from '@deepseek-ai/dsh-llm';
-import { SUMMARY_INSTRUCTION } from './context-plan.mjs';
+import { SUMMARY_INSTRUCTION, compactAt } from './context-plan.mjs';
 
 const INSTRUCTION = Object.freeze({ role: 'user', content: Object.freeze([Object.freeze({ type: 'text', text: SUMMARY_INSTRUCTION })]) });
 
 export default class CoworkCompaction extends BasicCompactionEngine {
+  constructor(ctx, config) {
+    super(ctx, config);
+    // The turn each session is in, and the turn it last compacted in (an attempt counts, done or failed).
+    this.turnOf = new Map();
+    this.compactedIn = new Map();
+    ctx.on('session/event', (session, event) => {
+      if (event?.type === 'turn/start' && Number.isSafeInteger(event.data?.turn)) this.turnOf.set(session.id, event.data.turn);
+    });
+  }
+
+  /** Step pressure: past compactAt of the window, once a turn; then DSH's engine as before. Overflow recovery as DSH's. */
+  async compactIfNeeded(agent, trigger, signal) {
+    if (trigger !== 'pressure') return super.compactIfNeeded(agent, trigger, signal);
+    const id = agent.session.id;
+    const turn = this.turnOf.get(id) ?? (agent.phase?.kind === 'running' ? agent.phase.turn : undefined);
+    if (turn !== undefined && this.compactedIn.get(id) === turn) return null;
+    const target = agent.session.requestHeader()?.config;
+    if (!target?.provider || !target?.model) return super.compactIfNeeded(agent, trigger, signal);
+    const window = (await this.ctx.llm.resolveModelInfo(target.provider, target.model, signal))?.context?.contextWindow;
+    // No window known: the engine reports it (once per route) as it always did.
+    if (!Number.isSafeInteger(window) || window <= 0) return super.compactIfNeeded(agent, trigger, signal);
+    if (this.ctx.tokenMeter.measure(agent.session).totalTokens < compactAt(window)) return null;
+    if (turn !== undefined) this.compactedIn.set(id, turn);
+    return super.compactIfNeeded(agent, trigger, signal);
+  }
+
   /** DSH's summary call (summarizeWithLlm) with Cowork's instruction: the replayed conversation, then the request. */
   async summarize(input, agent, signal) {
     const { summarizationProvider: provider, summarizationModel: model, maxTokens } = this.config;

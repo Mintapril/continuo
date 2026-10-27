@@ -71,14 +71,15 @@ Continuo 是一个原生 Android 客户端（Kotlin + Jetpack Compose），连�
 
 | 类别 | 工具 |
 |---|---|
-| 观察 | `phone_ui_tree`、`phone_screenshot`（可局部放大）、`phone_read_page`（自动下翻读长文） |
+| 观察 | `phone_ui_tree`、`phone_screenshot`（可局部放大）、`phone_read_page`（自动下翻读长文）、`phone_read_chat`（往上翻读聊天记录） |
 | 操作 | `phone_tap`、`phone_long_press`、`phone_swipe`、`phone_scroll`、`phone_type_text`、`phone_key`、`phone_batch`（同屏 2–5 步）、`phone_gesture`（任意轨迹与两指手势） |
 | 应用与控制 | `phone_status`、`phone_apps`、`phone_start`、`phone_launch_app`、`phone_wait`、`phone_pause`、`phone_stop`、`phone_request_intervention`、`phone_notify_owner`、`phone_grant_permission`、`phone_uninstall_app` |
 
-- **便条与巡视**：到点要做的事都是便条（基于 DSH 的 `dsh-schedule`）。你让它记的照做，它自己留的由它判断还做不做。巡视是一张周期便条，在单独的会话里轮流照看几个应用。
-- **通知叫醒**：Broker 读通知，判断模型 Jev 认为值得才唤起那个应用的固定会话。模型可以给每个应用写关注说明，但私聊和 @ 一定算、广告一定不算。
+- **一个会话**：你和它的聊天、它的巡视和便条、所有应用的通知都在同一个会话里，它记得自己在哪做过什么。聊天页只显示你们俩说的话，其余的在事件里。
+- **便条与巡视**：到点要做的事都是便条（基于 DSH 的 `dsh-schedule`）。你让它记的照做，它自己留的由它判断还做不做。巡视是一张周期便条，每次轮流照看几个应用。
+- **通知叫醒**：Broker 读通知，判断模型 Jev 认为值得才叫醒它；它正在自己忙时直接插进去，你们在聊时等聊完。模型可以给每个应用写关注说明，但私聊和 @ 一定算、广告一定不算。
 - **自主但有边界**：像普通人一样用副屏上的账号；社交只做低侵入的，不主动私聊、加好友，敏感内容不碰。付款、账号安全、清空聊天记录要你决定。副屏同一时间只给一个回合用，你的消息优先。
-- **省上下文**：工具按需加载，旧屏幕压成一行，用插件自己的上下文压缩。
+- **省上下文**：工具按需加载，旧屏幕压成一行，用插件自己的上下文压缩：用到窗口的四分之一（小于 50 万的窗口用到一半）才压，每轮最多一次。
 - **其他**：Code 模式（设置 → 开发者）、运行中插话、记忆管理、DSH 运行环境管理。
 
 ## 仓库结构
@@ -124,6 +125,7 @@ node --test test/strict-*.test.mjs   # 插件离线测试
 3. `adb install -r` 装 Continuo，授予悬浮窗与通知权限。
 4. DSH 停止时把 `cowork-plugin/` 装进 DSH 的插件目录（先备份、核对哈希）。
 5. 用 root 运行 `runtime/cowork-service.sh start` 启动 Broker。
+6. 正常连接 Cowork 时自动安装 APK 内置的聊天通知保活脚本（KernelSU）：名单上的工作资料应用（默认 QQ、微信，可在设置里改）已运行的主进程和推送进程由独立 root keeper 保护，跨 Broker/副屏重建继续运行；开机自动启动 keeper，聊天应用仍懒启动。源码随主 APK 编译，升级自动检测 APK 路径与哈希，不再额外部署 jar；[部署与停用说明](runtime/notification-keeper/README.md)。
 
 更新时：插件与 APK 的协议要匹配，一起更新；`adb install -r` 后在跑的 Broker 仍是旧代码，要在 DSH 空闲时重启它。`scripts/` 写死了设备序列号和本机路径，部分已过期。
 

@@ -20,9 +20,9 @@ import dev.dsh.pocket.data.Identity
 import kotlinx.coroutines.delay
 
 /**
- * 事件: what it did on its own in the standing app sessions (patrols, notifications that woke it, due notes), newest
- * first by day, from the plugin's activity (never what a notification said). A tap opens that session with its thinking
- * and tool calls, the page 设置 → 开发者 → 自动运营 opens.
+ * 事件: what it did on its own (patrols, notifications that woke it, due notes), in the owner's conversation where
+ * everything lives now, or earlier in the standing app sessions; newest first by day, from the plugin's activity (never
+ * what a notification said). A tap opens that session with its thinking and tool calls, as 设置 → 开发者 does.
  */
 @Composable internal fun EventsPane(vm: PocketViewModel, identity: Identity) {
     val status by CoworkConnection.status.collectAsState()

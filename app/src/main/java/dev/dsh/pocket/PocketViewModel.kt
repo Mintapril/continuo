@@ -22,6 +22,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 import java.util.TimeZone
+import dev.dsh.pocket.cowork.ChatKeeperRuntime
+import dev.dsh.pocket.cowork.ChatKeeperStatus
+import dev.dsh.pocket.cowork.CoworkConnection
 
 /** All remote mutations are user initiated. Reconnect never resubmits a prompt. */
 class PocketViewModel(application: Application) : AndroidViewModel(application) {
@@ -156,7 +159,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
                 kickNow = false
                 if (autoConnectOnce()) { failures = 0; told = false; downSince = 0L; continue }
                 failures++
-                if (failures >= 4 && !told) { told = true; notice = "暂时无法自动连接 DSH，将继续重试（可在 设置 → 运行环境 检查服务）。" }
+                if (failures >= 4 && !told) { told = true; notice = "暂时无法自动连接 DSH，将继续重试（可在 设置 → 本机 DSH 检查服务）。" }
                 delay((2_000L * failures).coerceAtMost(15_000L))
             }
         }
@@ -269,6 +272,35 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         } catch (e: CancellationException) { throw e } catch (_: Exception) {}
     }
     fun nameCompanion(name: String) { IdentityStore.setName(getApplication(), name); pushIdentity() }
+    /**
+     * Everything it does lives in the owner's conversation (2026-10-26): tells the plugin which one that is now, then
+     * moves the notes still left in the sessions it lived in before (the patrol session, the apps' sessions) into it.
+     * Quietly skipped while DSH or a too-old plugin cannot take it.
+     */
+    fun pushOwnerSession() = viewModelScope.launch {
+        if (!connected) return@launch
+        try {
+            api.rpc(Companion.SET_OWNER_SESSION, Companion.ownerSessionRequest(ownerSession))
+            if (schedules.service == null) schedules.refresh()
+            if (schedules.service == true) adoptStrayNotes()
+        } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+    }
+    /** Each stray note is written again in the owner's conversation, then taken off where it was; when that fails the
+     *  copy is taken back (and nothing more is tried), so a note never fires twice and is never lost. */
+    private suspend fun adoptStrayNotes() {
+        val stray = Companion.strayNotes(schedules.tasks)
+        if (stray.isEmpty()) return
+        val owner = ensureOwnerSession()
+        var moved = 0
+        for (note in stray) {
+            val copy = api.rpc(Companion.CREATE_NOTE, Companion.movedNote(owner, note)) as? JSONObject ?: break
+            try { schedules.delete(note); moved++ }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { runCatching { api.call("schedule/delete", obj("sessionId" to owner, "id" to copy.text("id"))) }; break }
+        }
+        schedules.reload()
+        if (moved > 0) notice = "把 $moved 张便条搬进了你们的对话"
+    }
 
     /** A Cowork session under a fixed id: created on first use (titled [title]), brought back when it was archived. */
     private suspend fun ensureSession(id: String, title: String): String {
@@ -325,6 +357,8 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
             var left = 0
             for (note in notes) try { schedules.delete(note) } catch (e: CancellationException) { throw e } catch (_: Exception) { left++ }
             OwnerConversation.set(app, next)
+            // Before the old one is archived: a notification delivered to it meanwhile would bring it back.
+            runCatching { api.rpc(Companion.SET_OWNER_SESSION, Companion.ownerSessionRequest(next)) }
             // Archiving the old conversation is only tidying, so a refusal (a turn that just started there, a note that
             // could not be taken off) is reported and the conversation is cleared all the same. No stopActivity: it
             // would delete whatever notes are still there.
@@ -339,13 +373,13 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         done(result)
     }
     /**
-     * A note the owner wrote: stored at once, in their words, in [sessionId] (an app's standing session) or by default in
-     * the owner's conversation. [done] gets the stored note, or the reason it was not stored.
+     * A note the owner wrote: stored at once, in their words, in the owner's conversation, where everything it does
+     * lives. [done] gets the stored note, or the reason it was not stored.
      */
-    fun createNote(text: String, timing: ScheduleFormat.TimingDraft, sessionId: String?, done: (Result<JSONObject>) -> Unit) = viewModelScope.launch {
+    fun createNote(text: String, timing: ScheduleFormat.TimingDraft, done: (Result<JSONObject>) -> Unit) = viewModelScope.launch {
         val result = try {
             check(connected) { "还没连上本机 DSH" }
-            val target = sessionId ?: ensureOwnerSession()
+            val target = ensureOwnerSession()
             val record = api.rpc(Companion.CREATE_NOTE, Companion.noteRequest(target, text, timing)) as? JSONObject ?: error("便条没有贴上")
             schedules.reload()
             Result.success(record)
@@ -361,16 +395,22 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     var ownerLogReady by mutableStateOf(false); private set
     private var ownerFollow: Job? = null
     private var ownerFollowing: String? = null
+    /** Whose conversation [ownerLog] holds: following it again (after a reconnect) keeps the rows until the new snapshot. */
+    private var ownerShown: String? = null
     private var ownerTranscript = Transcript()
     private var ownerCut = -1L
     private var ownerPaging = false
     val ownerRunning: Boolean get() = sessions.firstOrNull { it.text("sessionId") == ownerSession }?.optBoolean("running") == true
-    /** Follow 叫它's current conversation (again after a reconnect or 清空对话); nothing while it does not exist yet. */
+    /**
+     * Follow 叫它's current conversation (again after a reconnect or 清空对话); nothing while it does not exist yet. The
+     * follow lasts as long as this view model, so leaving the 聊天 tab or the home page never reloads it.
+     */
     fun followOwner() {
         val id = ownerSession
         if (!connected || sessions.none { it.text("sessionId") == id }) return
         if (ownerFollowing == id && ownerFollow?.isActive == true) return
-        ownerFollow?.cancel(); ownerFollowing = id; ownerLog = emptyList(); ownerLogMore = false; ownerLogReady = false
+        ownerFollow?.cancel(); ownerFollowing = id; ownerCut = -1
+        if (ownerShown != id) { ownerShown = id; ownerLog = emptyList(); ownerLogMore = false; ownerLogReady = false }
         val reducer = Transcript().also { ownerTranscript = it }
         ownerFollow = viewModelScope.launch {
             // Without assistantStream (DSH takes only true or nothing): a reply shows once it is committed.
@@ -382,10 +422,10 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
     }
-    fun stopOwnerLog() { ownerFollow?.cancel(); ownerFollow = null; ownerFollowing = null }
     fun ownerLogOlder() = task {
         val id = ownerFollowing ?: return@task
-        if (ownerPaging || !ownerLogMore) return@task
+        // ownerCut is -1 until a re-follow's first snapshot: older pages need the new stream's cut.
+        if (ownerPaging || !ownerLogMore || ownerCut < 0) return@task
         val reducer = ownerTranscript; val cut = ownerCut
         ownerPaging = true
         try {
@@ -405,11 +445,11 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         notice = "批好了，它会在你们的对话里回你"
         refreshSessions()
     }
-    /** 巡视: one recurring note in the patrol session (created on first use), a few apps each time. */
+    /** 巡视: one recurring note in the owner's conversation, a few apps each time. */
     fun startPatrol(done: (Result<JSONObject>) -> Unit) = viewModelScope.launch {
         val result = try {
             check(connected) { "还没连上本机 DSH" }
-            val session = ensureSession(ScheduleFormat.PATROL_SESSION, ScheduleFormat.PATROL_TITLE)
+            val session = ensureOwnerSession()
             val record = api.rpc(Companion.CREATE_NOTE, Companion.noteRequest(session, ScheduleFormat.patrolTask(false), ScheduleFormat.patrolTiming())) as? JSONObject ?: error("巡视没有贴上")
             schedules.reload()
             Result.success(record)
@@ -461,6 +501,27 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         attachments = attachments.filterNot { it.id == id }; attachmentDrafts[composerKey] = attachments
     }
     fun showError(message: String) { notice = message }
+    /** 重建副屏 (设置 → 它的手机): restarts the broker, which builds a new AI screen; see [CoworkConnection.rebuild]. */
+    var rebuilding by mutableStateOf(false); private set
+    fun rebuildScreen() = task {
+        if (rebuilding) return@task
+        rebuilding = true
+        try { CoworkConnection.rebuild(getApplication()); notice = "副屏重建好了，正在重新连上" } finally { rebuilding = false }
+    }
+    /** 后台保持在线 (设置 → 它的手机 → 收消息): the root chat keeper; its state lives on the phone, see [ChatKeeperRuntime]. */
+    internal var chatKeeper by mutableStateOf<ChatKeeperStatus?>(null); private set
+    var chatKeeperBusy by mutableStateOf(false); private set
+    fun chatKeeperRefresh() = viewModelScope.launch { chatKeeper = withContext(Dispatchers.IO) { ChatKeeperRuntime.status() } }
+    fun setChatKeeper(on: Boolean) = chatKeeperAction { ChatKeeperRuntime.setEnabled(on) }
+    fun setChatKeeperApps(packages: List<String>) = chatKeeperAction { ChatKeeperRuntime.setPackages(packages) }
+    /** Retry after a failed install (the connection itself does not wait for it). */
+    fun chatKeeperInstall() = chatKeeperAction { ChatKeeperRuntime.ensureInstalled(getApplication()) }
+    private fun chatKeeperAction(block: () -> Unit) = task {
+        if (chatKeeperBusy) return@task
+        chatKeeperBusy = true
+        try { withContext(Dispatchers.IO) { block() } }
+        finally { chatKeeper = withContext(NonCancellable + Dispatchers.IO) { ChatKeeperRuntime.status() }; chatKeeperBusy = false }
+    }
     private fun task(block: suspend () -> Unit) = viewModelScope.launch {
         try { block() } catch (e: CancellationException) { throw e } catch (e: Exception) { notice = e.message ?: "操作失败" }
     }
@@ -500,7 +561,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
                             } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
                             if (generation == connectionGeneration && clientId == eventClient) {
                                 catalog = models; permissionCatalog = permissions; presets = roster; connected = true; ready.complete(Unit)
-                                pushIdentity(); diaryRefresh()
+                                pushIdentity(); pushOwnerSession(); diaryRefresh()
                             }
                         }
                         "waterfall" -> {

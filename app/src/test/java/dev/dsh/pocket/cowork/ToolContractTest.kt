@@ -10,6 +10,12 @@ class ToolContractTest {
     @Test fun eachReadAndLifecycleTool(){for(t in listOf("status","apps","screenshot","ui_tree","pause","stop","request_intervention"))valid("phone.$t","{}");valid("phone.start","""{"packageName":"dev.dsh.pocket.fixture"}""")}
     @Test fun tapAndLongPress(){valid("phone.tap","""{"observationId":"one","x":0,"y":1279}""");valid("phone.long_press","""{"observationId":"one","x":719,"y":1,"durationMs":2000}""")}
     @Test fun swipeAndScroll(){valid("phone.swipe","""{"observationId":"one","x1":0,"y1":0,"x2":719,"y2":1279,"durationMs":100}""");valid("phone.scroll","""{"observationId":"one","x":200,"y":300,"deltaY":-500}""")}
+    @Test fun readPageAndReadChat(){
+        for(t in listOf("phone.read_page","phone.read_chat")){
+            valid(t,"""{"observationId":"one"}""");valid(t,"""{"observationId":"one","maxPages":12}""")
+            denied(t,"""{"observationId":"one","maxPages":13}""");denied(t,"""{"observationId":"one","direction":"up"}""");denied(t,"""{"maxPages":2}""")
+        }
+    }
     @Test fun textAndKey(){valid("phone.type_text","""{"observationId":"one","text":"中文测试"}""");valid("phone.key","""{"observationId":"one","key":"BACK"}""");valid("phone.key","""{"observationId":"one","key":"ENTER"}""")}
     @Test fun launchAndWait(){valid("phone.launch_app","""{"observationId":"one","packageName":"dev.dsh.pocket.fixture"}""");valid("phone.wait","""{"timeoutMs":2000}""")}
     @Test fun noCoercionOrExtras(){denied("phone.tap","""{"observationId":"one","x":"2","y":3}""");denied("phone.status","""{"shell":"id"}""");denied("phone.tap","""{"observationId":"one","x":2.5,"y":3}""")}

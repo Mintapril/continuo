@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { nameOf, readIdentity, writeIdentity, identityFile, identityPrompt, DIARY_NOTE, activityEntry, appendActivity, readActivity, activityFile,
-  diaryDay, appendDiaryDay, readDiary, diaryFile, migrateDiary, ACTIVITY, readEvents } from '../src/companion-store.mjs';
+  diaryDay, appendDiaryDay, readDiary, diaryFile, migrateDiary, ACTIVITY, readEvents, readOwnerSession, isOwnerSession, adoptOwnerSession } from '../src/companion-store.mjs';
 import { createActivityRecorder, kindOf } from '../src/diary.mjs';
 import { dayOf, cutoffOf, dueDay, windowOf, previousDay, digest, diaryRequest, writeEntry, createDiaryWriter } from '../src/diary-writer.mjs';
 import { diaryTool, DIARY_TOOL } from '../src/diary-view.mjs';
@@ -85,21 +85,24 @@ test('activity reads a window oldest first; the diary reads newest first, pages,
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('events are the turns it ran on its own in the app sessions, newest first and paged; the service names the app', async () => {
+test('events are the turns it ran on its own in any session, newest first and paged; the service names the app', async () => {
   const dir = await temp(); const activity = join(dir, 'activity.jsonl');
   try {
     assert.deepEqual(readEvents({}, activity), { entries: [], more: false });
-    const QQ = 'cowork-app-work-com-tencent-mobileqq';
+    const QQ = 'cowork-app-work-com-tencent-mobileqq', OWNER = 'cowork-owner-20261025-232318';
     const line = (at, sessionId, kind, extra = {}) => appendActivity({ at, sessionId, kind, text: `t${at}`, ...extra }, activity);
     line(1, 'cowork-app-patrol', 'patrol', { apps: ['tv.danmaku.bili'] });
-    line(2, 'cowork-owner', 'note');                    // the owner's conversation shows it as chat
+    line(2, OWNER, 'owner', { asked: '在吗' });          // the chat, never an event
     line(3, QQ, 'notify', { typed: ['好的'] });
     line(4, QQ, 'owner', { asked: '看一下' });           // the owner, from the developer pages
     line(5, QQ, 'note', { notified: ['群里有人找你'] });
-    line(6, 'cowork-dev-1', 'patrol');                  // not an app session
-    line(7, 'cowork-app-personal-com-tencent-mm', 'notify', { reason: 'aborted' });
+    line(6, OWNER, 'patrol');                           // everything lives in the owner's conversation now
+    line(7, OWNER, 'notify', { reason: 'aborted', app: 'personal:com.tencent.mm' });
+    line(8, OWNER, 'other');
+    assert.equal(readActivity({}, activity).find(e => e.at === 7).app, 'personal:com.tencent.mm', 'the app that woke it is kept');
+    assert.equal(Object.hasOwn(activityEntry({ at: 9, sessionId: OWNER, kind: 'notify', text: 'x', app: 'qq' }), 'app'), false, 'only an app key');
     const first = readEvents({ limit: 2 }, activity);
-    assert.deepEqual(first.entries.map(e => e.at), [7, 5]);
+    assert.deepEqual(first.entries.map(e => e.at), [7, 6]);
     assert.equal(first.more, true);
     assert.deepEqual(readEvents({ before: 5 }, activity), { entries: [
       { at: 3, sessionId: QQ, kind: 'notify', text: 't3', typed: ['好的'] },
@@ -110,9 +113,30 @@ test('events are the turns it ran on its own in the app sessions, newest first a
     assert.equal(page.more, false);
     assert.deepEqual(page.entries.map(e => [e.at, e.kind, e.app, e.reason]), [
       [7, 'notify', { profile: 'personal', package: 'com.tencent.mm' }, 'aborted'],
+      [6, 'patrol', undefined, undefined],
       [5, 'note', { profile: 'work', package: 'com.tencent.mobileqq' }, undefined],
       [3, 'notify', { profile: 'work', package: 'com.tencent.mobileqq' }, undefined],
       [1, 'patrol', undefined, undefined]]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('the owner\'s conversation is what Continuo last set; a newer one seen in a message of the owner takes over, an older one never', async () => {
+  const dir = await temp(); const file = join(dir, 'owner-session.json');
+  try {
+    assert.equal(readOwnerSession(file), 'cowork-owner', 'nothing set yet: the first conversation');
+    for (const id of ['cowork-owner', 'cowork-owner-20261025-232318']) assert.ok(isOwnerSession(id), id);
+    for (const id of ['cowork-owner-2026', 'cowork-app-patrol', 'cowork-owner-20261025-232318x', undefined]) assert.equal(isOwnerSession(id), false, String(id));
+    class Base { constructor(ctx) { this.ctx = ctx; } }
+    const Service = unattendedService({ Remote: () => () => {}, TypertRemoteService: Base });
+    const service = new Service({}, { ownerSessionFile: file });
+    assert.deepEqual(service.setOwnerSession({ sessionId: 'cowork-owner-20261025-232318' }), { sessionId: 'cowork-owner-20261025-232318' });
+    assert.deepEqual(service.ownerSession(), { sessionId: 'cowork-owner-20261025-232318' });
+    assert.throws(() => service.setOwnerSession({ sessionId: 'cowork-app-patrol' }), /owner's conversation/);
+    assert.equal(adoptOwnerSession('cowork-owner', file), 'cowork-owner-20261025-232318', 'an older conversation never takes over');
+    assert.equal(adoptOwnerSession('cowork-owner-20261026-080000', file), 'cowork-owner-20261026-080000', 'a newer one does');
+    assert.equal(readOwnerSession(file), 'cowork-owner-20261026-080000');
+    service.setOwnerSession({ sessionId: 'cowork-owner' });
+    assert.equal(readOwnerSession(file), 'cowork-owner', 'what Continuo sets is kept as it is');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -161,15 +185,15 @@ test('the recorder keeps what each Cowork turn did, never what a notification sa
   observe(app, { type: 'user/message', data: message('user', 'webhook', '[NOTIFICATION TRIGGER]\nnotifications_untrusted_json: [{"text":"张三：在吗"}]', { ruleId: 'cowork-notify' }) });
   observe(app, { type: 'turn/end', data: { reason: { kind: 'aborted' } } });
   observe(app, { type: 'turn/start' });
-  observe(app, { type: 'user/message', data: message('user', 'webhook', '[NOTIFICATION TRIGGER]\nnotifications_untrusted_json: [{"text":"李四：明天几点"}]', { ruleId: 'cowork-notify' }) });
+  observe(app, { type: 'user/message', data: message('user', 'webhook', '[NOTIFICATION TRIGGER]\nnotifications_untrusted_json: [{"package":"com.tencent.mobileqq","app":"QQ","profile":"work","text":"李四：明天几点"}]', { ruleId: 'cowork-notify' }) });
   observe(app, { type: 'tool/call', data: { name: 'phone_batch', arguments: { steps: [{ tool: 'type_text', elementId: 'n3', text: '八点' }, { tool: 'tap', elementId: 'n4' }] } } });
   observe(app, { type: 'tool/call', data: { name: 'phone_notify_owner', arguments: '{"text":"有人约你明早八点"}' } });
   observe(app, { type: 'tool/call', data: { name: 'phone_type_text', arguments: 'not json' } });
   observe(app, { type: 'turn/end', data: { reason: { kind: 'completed' } } });
   assert.deepEqual(stored, [
     { at: 42, sessionId: 'cowork-owner', kind: 'owner', text: '关好了。', apps: ['tv.danmaku.bili'], typed: [], notified: [], asked: '帮我把 B 站推送关了', reason: 'completed' },
-    { at: 42, sessionId: app.id, kind: 'notify', text: '', apps: [], typed: ['八点'], notified: ['有人约你明早八点'], reason: 'completed' },
-  ], 'other presets and turns that did nothing leave nothing');
+    { at: 42, sessionId: app.id, kind: 'notify', text: '', apps: [], typed: ['八点'], notified: ['有人约你明早八点'], app: 'work:com.tencent.mobileqq', reason: 'completed' },
+  ], 'other presets and turns that did nothing leave nothing; a notification turn keeps which app woke it');
   assert.doesNotMatch(JSON.stringify(stored), /张三|李四|notifications_untrusted_json/, 'no notification text is stored');
 });
 

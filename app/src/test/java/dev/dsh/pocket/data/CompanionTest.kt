@@ -32,6 +32,16 @@ class CompanionTest {
         assertEquals("cron", request.getJSONObject("change").getString("kind"))
     }
 
+    @Test fun everythingGoesToTheOwnersConversationAndNotesLeftElsewhereAreMovedThere() {
+        val request = Companion.ownerSessionRequest("cowork-owner-20261025-232318").getJSONObject("request")
+        assertEquals("cowork-owner-20261025-232318", request.getString("sessionId"))
+        assertThrows(IllegalArgumentException::class.java) { Companion.ownerSessionRequest(ScheduleFormat.PATROL_SESSION) }
+        val note = { session: String, status: String -> JSONObject().put("sessionId", session).put("status", status).put("id", "$session/$status") }
+        val tasks = listOf(note(ScheduleFormat.PATROL_SESSION, "active"), note("cowork-app-work-com-tencent-mobileqq", "active"),
+            note("cowork-app-work-com-tencent-mobileqq", "inactive"), note("cowork-owner", "active"), note("code-1", "active"))
+        assertEquals(listOf("cowork-app-patrol/active", "cowork-app-work-com-tencent-mobileqq/active"), Companion.strayNotes(tasks).map { it.getString("id") })
+    }
+
     @Test fun longTitlesAreCut() {
         assertEquals("一二三四五六七八九十一二三四五六七八九十一二三…", Companion.noteTitle("一二三四五六七八九十一二三四五六七八九十一二三四五六"))
         assertEquals("短", Companion.noteTitle("\n  短  \n长"))

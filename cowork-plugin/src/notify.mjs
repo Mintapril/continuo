@@ -5,25 +5,31 @@ import { lstat, readFile } from 'node:fs/promises';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { sharedScreenBoard } from './screen-board.mjs';
 import { sharedJevBoard, heldView } from './jev-board.mjs';
-import { readFocus, activeFocus } from './jev-focus-store.mjs';
+import { readFocus, activeFocus, isFocusKey } from './jev-focus-store.mjs';
+import { createStandingSessions, STANDING_INJECT, WORKSPACE as STANDING_WORKSPACE, PRESET as STANDING_PRESET } from './standing.mjs';
+import { readOwnerSession, readIdentity } from './companion-store.mjs';
 
 // Notification triggers. Continuo batches every app's notifications on the phone (excluded apps never leave it) and
 // sends each batch here, signed. This host-plane plugin asks the Jev judge model about each notification separately;
-// the ones it judges worth a look go to the standing Cowork session of their app: one session per profile and
-// package (id cowork-app-<profile>-<package with dots as dashes>), created on first use, resumed after a DSH restart, never archived
-// (one the owner archived is unarchived before its next turn), so
-// the model keeps what it already did in that app. Jev is the model's reflex rather than a gate it cannot touch: each
-// app's question carries the focus the model keeps for it (jev-focus-store.mjs), and what Jev held back waits in
-// memory (jev-board.mjs) until the app's next turn here, or a patrol, shows it. A batch for an app whose session has a turn open goes straight
-// into that turn; any other waits until no Cowork turn holds the AI screen and then starts a new turn there, the app
-// that waited longest first. A turn queued for the screen in task-lifecycle (a due note) holds nothing yet:
-// the batch goes ahead and its turn takes the higher place in that line. The notification text reaches the model JSON-encoded and labelled as other people's
-// words (data, never instructions); it is never logged or written to disk here. The messages carry source kind webhook (the
-// same shape dsh-webhook gives), so restricted.mjs treats the turn as unattended: no note writes but its own notes, no
-// screen takeover; what needs the owner becomes one phone_notify_owner, then the task ends.
+// the ones it judges worth a look go to the owner's conversation (叫它, companion-store.mjs's readOwnerSession), the one
+// session the AI lives in since 2026-10-26: the owner's messages, patrols, notes and every app's notifications, so it
+// remembers what it did anywhere. Earlier each app had a standing session of its own (cowork-app-<profile>-<package
+// with dots as dashes>); those keep their history and get no new turns. The session is resumed after a DSH restart and
+// unarchived before a turn when it was archived. Each app's batches are still kept and merged apart (appKey). Jev is
+// the model's reflex rather than a gate it cannot touch: each app's question carries the focus the model keeps for it
+// (jev-focus-store.mjs), and what Jev held back waits in memory (jev-board.mjs) until the app's next batch here, or a
+// patrol, shows it. A batch arriving while a run of its own goes on (a patrol, a note, notifications) goes straight into
+// that turn; while a turn the owner's message started goes on, it waits for that turn to end, so the owner's task is
+// never interrupted by notifications. Otherwise it waits until no Cowork turn holds the AI screen and then starts a new
+// turn, the app that waited longest first, and the rest join that turn once it has begun. A turn queued for the screen
+// in task-lifecycle (a due note) holds nothing yet: the batch goes ahead and its turn takes the higher place in that
+// line. The notification text reaches the model JSON-encoded and labelled as other people's words (data, never
+// instructions); it is never logged or written to disk here. The messages carry source kind webhook (the same shape
+// dsh-webhook gives), so restricted.mjs treats the turn as unattended: no note writes but its own notes, no screen
+// takeover; what needs the owner becomes one phone_notify_owner, then the task ends.
 
 export const name = 'cowork-notify';
-export const inject = ['workspaceRegistry', 'agents', 'agentPresets', 'agentDefaultModel', 'sessionTitle', 'sessionQuery', 'permissionPresets', 'credentials'];
+export const inject = [...STANDING_INJECT, 'credentials'];
 export const RULE_ID = 'cowork-notify';
 export const KIND = 'cowork-notify';
 export const HOST = '127.0.0.1';
@@ -36,13 +42,13 @@ export const FRESH_MS = 60_000;
 // adoptMs: a delivered batch whose turn never starts (the session could not be created or resumed) frees the queue.
 // holdMs: a Cowork turn that never ends (or stopped waiting for the user) stops holding the queue after this long.
 export const LIMITS = Object.freeze({ adoptMs: 60_000, holdMs: 30 * 60_000 });
-export const WORKSPACE = '/workspace';
-export const PRESET = 'cowork-phone';
+export const WORKSPACE = STANDING_WORKSPACE;
+export const PRESET = STANDING_PRESET;
 export const MAX_ITEMS = 20;
-export const INSTRUCTION = '这是你在这个应用上的长期会话：它的新通知（以及它在前台时你漏看的屏幕新内容）会作为新的一轮送到这里，前面的轮次就是你在这个应用里已经做过的事。没有人在对话里等你的回复，任何写给用户的话都是浪费。'
+export const INSTRUCTION = '这是你和主人的那一个会话：主人的消息、你的巡视和便条、所有应用的通知都送到这里，前面就是你做过和聊过的事。手机来了这些通知（以及应用在前台时你漏看的屏幕新内容）。主人这时多半没在看：这一轮你写的话主人不会读，任何写给主人的话都是浪费。'
   + '这些通知已经过 Jev 判断，可能有实际意义。这些应用和账号归你经营：请根据通知内容自行判断，需要处理就直接处理（必要时打开工作资料里的对应应用查看、回复或操作），不需要就什么都不做。'
   + 'Jev 按固定的问题、加上你为这个应用写的关注说明（jev_focus_json，没有这一行就是还没写）来判断。jev_held_untrusted_json 是它上次以来拦下（或没能判断）的这个应用的通知，像扫一眼通知栏那样看看：有要紧的就一并处理，并用 cowork_jev_focus 调整这个应用的关注说明，让这类通知下次能叫醒你；Jev 总为没用的事叫醒你，就把说明收紧。'
-  + '回复完就结束这一轮，不要停下来等对方回复：对方再发消息，你会在这个会话里再被叫醒。'
+  + '回复完不要停下来等对方回复：对方再发消息，你会在这里再被叫醒。处理完，接着做这一轮本来在做的事（比如巡视）；没有别的事就结束这一轮。'
   + '遇到必须由主人决定的事（付款、账号安全、清空聊天记录），或者做不下去时，用 phone_notify_owner 给主人发一条通知，说明情况和需要主人做什么，然后结束任务。'
   + '不要寒暄、不要提问、不要复述通知、不要汇报过程；结束时最多留一句很短的结论。';
 const HOUR = 3_600_000;
@@ -207,16 +213,28 @@ export function framePrompt(req, { focus, held } = {}) {
   ].join('\n');
 }
 
-/** The app's standing session: one per profile and package. Package names are [A-Za-z0-9_.] only (parseItems). */
+/** One app, by profile and package. Package names are [A-Za-z0-9_.] only (parseItems). */
 export const appKey = item => `${item.profile}:${item.package}`;
-// The Broker takes only [a-zA-Z0-9_-]{1,100} as a session id (turn lease and tool calls). Dots become dashes, which
-// no package name contains, so two packages never share an id.
-export const sessionIdOf = key => `cowork-app-${key.replace(':', '-').replaceAll('.', '-')}`;
 
-/** Title of an app's standing session (a batch of that one app), set when the session is created. */
-export function titleOf(req) {
-  const { app, profile } = req.items.at(-1);
-  return profile === 'work' ? `${app} · 自动运营` : `${app}（个人）· 通知`;
+export const NOTIFIED_LINE = 'notifications_untrusted_json: ';
+/** The apps ('<profile>:<package>', in order of first appearance) whose notifications a framed trigger (framePrompt)
+ *  carries; none for any other text. Every value on that line is JSON-encoded, so no notification can add a line. */
+export function notifiedApps(text) {
+  if (typeof text !== 'string' || !text.startsWith('[NOTIFICATION TRIGGER]\n')) return [];
+  const line = text.split('\n').find(l => l.startsWith(NOTIFIED_LINE));
+  let items;
+  try { items = JSON.parse(line?.slice(NOTIFIED_LINE.length) ?? ''); } catch { return []; }
+  if (!Array.isArray(items)) return [];
+  return [...new Set(items.map(x => `${x?.profile}:${x?.package}`).filter(isFocusKey))];
+}
+/** The apps whose notifications the messages carry (notification triggers of this plugin only). */
+export function notifiedAppsOf(messages) {
+  const apps = new Set();
+  for (const m of Array.isArray(messages) ? messages : []) {
+    if (m?.role !== 'user' || m.source?.kind !== 'webhook' || m.source.ruleId !== RULE_ID || !Array.isArray(m.content)) continue;
+    for (const b of m.content) if (b?.type === 'text') for (const key of notifiedApps(b.text)) apps.add(key);
+  }
+  return [...apps];
 }
 
 /** A judged batch as one batch per app ({key, batch}), in order of first appearance. A single-app batch is unchanged. */
@@ -242,13 +260,15 @@ export function mergeBatches(older, newer) {
 }
 
 /**
- * Waiting batches per app and at most one notification turn on the AI screen. `deliver(key, batch, mode)` hands a
- * batch to the app's standing session: 'steer' into its open turn, or 'followup' as a new turn. A batch for an app
- * whose session has a turn open (`isOpen`) goes in at once. Any other merges with what that app got meanwhile and
- * waits until the AI screen is free: no delivered turn of ours is pending and `busyUntil()` (any open Cowork turn)
- * has passed; then the app that waited longest goes first. `poke()` re-checks after a Cowork turn ends.
+ * Waiting batches per app and at most one notification turn on the AI screen. Every app's batches go to one session,
+ * `target()` (the owner's conversation). `deliver(key, batch, mode)` hands a batch to it: 'steer' into its open turn,
+ * or 'followup' as a new turn. While that session has a turn open that may take it (`isOpen`: a run of its own, not a
+ * turn of the owner), a batch goes in at once, and what waits joins it. Any other merges with what that app got
+ * meanwhile and waits until the AI screen is free: no delivered turn of ours is pending and `busyUntil()` (any open
+ * Cowork turn) has passed; then the app that waited longest goes first. `poke()` re-checks after a Cowork turn ends
+ * or a turn turns out to be one batches may join.
  */
-export function createCoalescer({ deliver, busyUntil = () => 0, isOpen = () => false, isWaiting = () => false, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, limits = LIMITS }) {
+export function createCoalescer({ deliver, target, busyUntil = () => 0, isOpen = () => false, isWaiting = () => false, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, limits = LIMITS }) {
   const pending = new Map();
   let inflight, timer, disposed = false;
   function wake(at) {
@@ -260,10 +280,14 @@ export function createCoalescer({ deliver, busyUntil = () => 0, isOpen = () => f
   function send(key, batch, mode) {
     try { return Promise.resolve(deliver(key, batch, mode)); } catch (error) { return Promise.reject(error); }
   }
+  // Into the open turn; when that turn ended before it landed, the batch waits like any other (checked again shortly,
+  // never at once: a steer refused while the turn still looks open must not spin).
+  function steer(key, batch) { send(key, batch, 'steer').catch(() => { if (!disposed) { hold(key, batch); wake(now() + 1000); } }); }
   function pump() {
     clearTimer(timer); timer = undefined;
     if (disposed) return;
     const t = now();
+    if (pending.size && isOpen(target())) { for (const [key, batch] of [...pending]) { pending.delete(key); steer(key, batch); } }
     if (inflight) {
       // Its turn started and waits in line for the screen: it has begun, only its message is not logged yet.
       if (!inflight.adopted && isWaiting(inflight.sessionId)) { inflight.adopted = true; inflight.startedAt = t; }
@@ -276,16 +300,15 @@ export function createCoalescer({ deliver, busyUntil = () => 0, isOpen = () => f
     if (t < busy) return wake(busy);
     const [key, batch] = [...pending].reduce((a, b) => (b[1].firstAt < a[1].firstAt ? b : a));
     pending.delete(key);
-    const current = inflight = { key, sessionId: sessionIdOf(key), deliveryId: batch.id, startedAt: t, adopted: false };
+    const current = inflight = { key, sessionId: target(), deliveryId: batch.id, startedAt: t, adopted: false };
     // A refused delivery frees the screen at once; the batch is dropped (the caller logs why).
     send(key, batch, 'followup').catch(() => { if (inflight === current) { inflight = undefined; pump(); } });
   }
   return Object.freeze({
     submit(key, batch) {
       if (disposed) return;
-      if (!isOpen(sessionIdOf(key))) { hold(key, batch); return pump(); }
-      // Its turn may end before the steer lands; then the batch waits like any other.
-      send(key, batch, 'steer').catch(() => { if (!disposed) { hold(key, batch); pump(); } });
+      if (!isOpen(target())) { hold(key, batch); return pump(); }
+      steer(key, batch);
     },
     /** The delivered batch reached its session's turn: hold the screen for that turn instead of the adoption window. */
     adopt(deliveryId, sessionId) {
@@ -366,59 +389,21 @@ export function createNotifyHandler({ accept, readSecret = loadNotifySecret, now
   };
 }
 
+/** Title of the owner's conversation when this plugin has to create it, as Continuo names it (Companion.ownerTitle). */
+export const ownerTitle = name => `你和${name || '它'}`;
+
 /**
- * The standing session of each app, found live, resumed from persistence (after a DSH restart) or created on first
- * use, the same way DSH's own session API and dsh-webhook do it: the Cowork preset mounted, attached to /workspace,
- * the default permission preset, the default model, a title. `llm` supplies createUserMessage and boundContextSummary (dsh-llm).
- * Each turn also shows the app's focus and what Jev held back of the app since the model last saw (`jevBoard`); those
- * count as seen only once the message was handed to the session.
+ * Where judged batches go: the owner's conversation (`owner()`), loaded like any standing session (standing.mjs).
+ * `llm` supplies createUserMessage and boundContextSummary (dsh-llm). Each message also shows the app's focus and what
+ * Jev held back of the app since the model last saw (`jevBoard`); those count as seen only once the message was handed
+ * to the session.
  */
-export function createAppSessions(ctx, llm, { jevBoard = sharedJevBoard(), focus = () => ({}) } = {}) {
-  const loading = new Map();
-  async function stored(id) {
-    let lease;
-    try { lease = await ctx.sessionQuery.observeSession(id); return true; }
-    catch (error) { if (error?.code === 'SESSION_QUERY_SESSION_NOT_FOUND') return false; throw error; }
-    finally { lease?.[Symbol.dispose]?.(); }
-  }
-  async function load(id, title) {
-    const preset = await ctx.agentPresets.resolve(PRESET);
-    const setup = async agentCtx => { await ctx.agentPresets.mount(agentCtx, preset.id); };
-    // An agent without provider and model fails its first step. Like DSH's own sessions, a created or resumed app
-    // session runs on the current default model of DSH.
-    const { provider, model, reasoningEffort } = ctx.agentDefaultModel.currentSelection();
-    const agentOptions = { provider, model, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) };
-    if (await stored(id)) return (await ctx.agents.resume({ resumeSessionId: id, agentOptions, setup })).agent;
-    const scope = await ctx.agentPresets.acquireScope(preset.id);
-    try {
-      const workspace = await ctx.workspaceRegistry.create(WORKSPACE);
-      const handle = await ctx.agents.create({ sessionId: id, meta: { cwd: workspace.path, agentPreset: preset.id }, agentOptions, setup });
-      let attached = false;
-      try {
-        await workspace.attachSession(id); attached = true;
-        ctx.permissionPresets.set(handle.agent.session, ctx.permissionPresets.defaultPreset);
-        ctx.sessionTitle.rename(handle.agent.session, title);
-        return handle.agent;
-      } catch (error) {
-        if (attached) try { await workspace.detachSession(id); } catch {}
-        try { await handle.dispose(); } catch {}
-        throw error;
-      }
-    } finally { await scope?.[Symbol.asyncDispose]?.(); }
-  }
-  function agentOf(key, title) {
-    const id = sessionIdOf(key), live = ctx.agents.get(id);
-    if (live) return Promise.resolve(live);
-    if (!loading.has(id)) loading.set(id, load(id, title).finally(() => loading.delete(id)));
-    return loading.get(id);
-  }
+export function createOwnerDelivery(ctx, llm, { jevBoard = sharedJevBoard(), focus = () => ({}), owner = () => readOwnerSession(),
+  name = () => readIdentity().name, standing = createStandingSessions(ctx) } = {}) {
   return Object.freeze({
-    /** 'steer' into the open turn of the app's session, or 'followup' as its next turn. */
+    /** 'steer' into the open turn of the owner's conversation, or 'followup' as its next turn. */
     async deliver(key, batch, mode) {
-      const agent = await agentOf(key, titleOf(batch));
-      // DSH refuses every step of an archived session, and the Broker then waits for the owner. Archiving only hides
-      // an app's standing session: it comes back when the app has news.
-      await ctx.workspaceRegistry.unarchiveSession(agent.session.id);
+      const agent = await standing.agentOf(owner(), ownerTitle(name()));
       const held = jevBoard.select(x => x.key === key);
       const message = llm.createUserMessage({ content: [{ type: 'text', text: framePrompt(batch, { focus: focus()[key], held }) }],
         source: { kind: 'webhook', provider: KIND, source: 'continuo', deliveryId: batch.id, ruleId: RULE_ID, form: 'notice',
@@ -429,26 +414,34 @@ export function createAppSessions(ctx, llm, { jevBoard = sharedJevBoard(), focus
   });
 }
 
-/** Wires the ingress, judge, queue and the apps' standing sessions into ctx. `listen: false` keeps tests off the fixed port. */
+/** Wires the ingress, judge, queue and the owner's conversation into ctx. `listen: false` keeps tests off the fixed port. */
 export function installNotify(ctx, { listen = true, readSecret, now = Date.now, setTimer, clearTimer, fetch, llm, board = sharedScreenBoard(),
-  jevBoard = sharedJevBoard(), focus = () => activeFocus(readFocus()) } = {}) {
+  jevBoard = sharedJevBoard(), focus = () => activeFocus(readFocus()), owner = () => readOwnerSession(), name = () => readIdentity().name } = {}) {
   // Open Cowork turns (any session on the cowork-phone preset): each holds the AI screen, unless it is still waiting
-  // in line for it (board).
-  const presets = new Map(), open = new Map();
+  // in line for it (board). `joinable`: the open turns known to be runs of its own (a due note or patrol, notifications
+  // started them) that no message of the owner has joined; only those take batches, the others hold them until they end.
+  const presets = new Map(), open = new Map(), joinable = new Set(), owned = new Set();
   const presetOf = session => presets.get(session.id) ?? session.header?.agentPreset;
   const busyUntil = () => { let until = 0; for (const [id, started] of open) if (!board.has(id)) until = Math.max(until, started + LIMITS.holdMs); return until; };
   const judge = createJudge({ resolveKey: () => ctx.credentials.resolve(JEV.credential), fetch, now });
-  const sessions = createAppSessions(ctx, llm, { jevBoard, focus });
-  const coalescer = createCoalescer({ now, setTimer, clearTimer, busyUntil, isOpen: id => open.has(id), isWaiting: id => board.has(id),
+  const sessions = createOwnerDelivery(ctx, llm, { jevBoard, focus, owner, name });
+  const coalescer = createCoalescer({ now, setTimer, clearTimer, busyUntil, target: owner, isOpen: id => joinable.has(id), isWaiting: id => board.has(id),
     deliver: (key, batch, mode) => sessions.deliver(key, batch, mode).catch(error => {
-      ctx.logger?.warn?.(`cowork-notify: ${sessionIdOf(key)} not reached (${error?.name ?? 'Error'})`); throw error; }) });
+      ctx.logger?.warn?.(`cowork-notify: the owner's conversation not reached for ${key} (${error?.name ?? 'Error'})`); throw error; }) });
   function observe(session, event) {
     if (event?.type === 'agent-preset/selected') presets.set(session.id, event.data?.agentPreset);
-    else if (event?.type === 'turn/start') { if (presetOf(session) === PRESET) open.set(session.id, now()); }
-    else if (event?.type === 'user/message') {
+    else if (event?.type === 'turn/start') {
+      joinable.delete(session.id); owned.delete(session.id);
+      if (presetOf(session) === PRESET) open.set(session.id, now());
+    } else if (event?.type === 'user/message') {
       const source = event.data?.source;
       if (source?.kind === 'webhook' && source.ruleId === RULE_ID && typeof source.deliveryId === 'string') coalescer.adopt(source.deliveryId, session.id);
+      if (!open.has(session.id)) return;
+      if (source?.kind === 'user') { owned.add(session.id); joinable.delete(session.id); }
+      // A turn of its own has begun: what waits may join it.
+      else if (!owned.has(session.id) && (source?.kind === 'schedule' || (source?.kind === 'webhook' && source.ruleId === RULE_ID))) { joinable.add(session.id); coalescer.poke(); }
     } else if (event?.type === 'turn/end') {
+      joinable.delete(session.id); owned.delete(session.id);
       const wasOpen = open.delete(session.id);
       // A turn of ours that stopped for the user keeps the queue held (until holdMs).
       if (FINAL.has(event.data?.reason?.kind)) coalescer.finish(session.id);

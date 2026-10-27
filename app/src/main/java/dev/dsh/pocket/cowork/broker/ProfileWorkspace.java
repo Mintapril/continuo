@@ -44,7 +44,9 @@ public final class ProfileWorkspace implements AutoCloseable {
     private int userUid=-1;
     private float userX,userY;
     /** The main screen's size and density (set once from the real default display); these values only if that read fails. */
-    static volatile int W=720,H=1600,DPI=290;static final int FPS=120;
+    // 60 Hz while something moves on it (a turn, the owner watching); an idle AI desktop draws no frame at all. Android 16
+    // fixes a virtual display's rate when it is made, so it cannot follow the activity (2026-10-26, was 120).
+    static volatile int W=720,H=1600,DPI=290;static final int FPS=60;
     private static final int FLAG_OWN_DISPLAY_GROUP=1<<11,FLAG_ALWAYS_UNLOCKED=1<<12;
     /** True once the owned display really retained ALWAYS_UNLOCKED + OWN_DISPLAY_GROUP: the main-screen lock no longer gates it. */
     private volatile boolean unlockedDisplay;
@@ -53,7 +55,7 @@ public final class ProfileWorkspace implements AutoCloseable {
     public ProfileWorkspace()throws Exception{
         Class<?> at=Class.forName("android.app.ActivityThread");Object thread=at.getMethod("systemMain").invoke(null);
         context=(Context)at.getMethod("getSystemContext").invoke(thread);
-        sizeFromMainScreen();profile=new ProfileContext(context);parkedApps=new ParkedApps(readParked());launchers=new LauncherHider(profile);tree=new ProfileStructure(profile);windows=new WindowOwnershipProbe();try{windows.awaitInitial();}catch(IllegalStateException e){System.err.println("window snapshot not yet available at start; every operation re-checks it");}drain.start();drainHandler=new Handler(drain.getLooper());watchInstalls();
+        sizeFromMainScreen();profile=new ProfileContext(context);launchers=new LauncherHider(profile);tree=new ProfileStructure(profile);windows=new WindowOwnershipProbe();try{windows.awaitInitial();}catch(IllegalStateException e){System.err.println("window snapshot not yet available at start; every operation re-checks it");}drain.start();drainHandler=new Handler(drain.getLooper());watchInstalls();
         try{notifications=new NotificationGrant(profile);}catch(Exception e){System.err.println("notification grant unavailable: "+e.getClass().getSimpleName()+": "+e.getMessage());}
         changedPackages(); // baseline of the 1 Hz change read, taken before the start-up sweep below
         // Drift repair of the launcher entries (e.g. an app installed back before this start): housekeeping repairs it only
@@ -177,30 +179,13 @@ public final class ProfileWorkspace implements AutoCloseable {
                 if(t.topActivity!=null)live.add(t.topActivity.getPackageName());
             }
         launchers.hideRevealedExcept(live);
-        Set<String> apps=new LinkedHashSet<>(live);apps.remove(DESKTOP);
-        if(parkedApps.seen(apps))saveParked();
     }
-    private static final java.nio.file.Path PARKED=java.nio.file.Path.of("/data/local/dsh-native/cowork/parked-apps");
-    private final ParkedApps parkedApps;
-    private static List<String> readParked(){try{return java.nio.file.Files.exists(PARKED)?java.nio.file.Files.readAllLines(PARKED):List.of();}catch(Exception e){return List.of();}}
-    private void saveParked(){try{java.nio.file.Files.write(PARKED,parkedApps.list());}catch(Exception e){System.err.println("parked-apps save failed: "+e.getClass().getSimpleName());}}
-    /** After a display rebuild: starts the next app that was parked on the old display and parks it behind the AI desktop
-     *  again ({@link ParkedApps}). The caller holds the tool lock and has checked that nobody owns the display. Not an
-     *  action of the model, so the island does not show it. */
-    public void restoreParked(){
-        String pkg=parkedApps.next();
-        if(pkg==null||!ready())return;
-        try{launch(pkg);parkedApps.restored(pkg);System.err.println("restored parked app "+pkg);}
-        catch(ActionGate.Denied e){
-            if(e.code.equals("APP_UNKNOWN")){if(parkedApps.drop(pkg))saveParked();}
-            else if(e.code.equals("LAUNCH_TIMEOUT"))parkedApps.restored(pkg); // still starting, behind the desktop from now on
-            else{parkedApps.failed(pkg);System.err.println("restore of parked app "+pkg+" failed: "+e.code);}
-        }catch(Exception e){parkedApps.failed(pkg);System.err.println("restore of parked app "+pkg+" failed: "+e.getClass().getSimpleName());}
-        finally{resetContent("");}
-    }
+    // A rebuilt display starts empty: apps are started when a turn launches them, never brought back on their own. Bringing
+    // every app parked on the old display back (2026-10-23 to 10-26) kept a dozen work-profile apps resident, gigabytes of
+    // memory and swap, and made the whole phone slow.
     private final Set<String> cameForward=new HashSet<>();
-    /** While parked and nobody owns the display: an app that came to the front on its own (a restored app moving on from
-     *  its splash screen, a dialog of a parked app) is covered by the AI desktop again. An app in front on the owned
+    /** While parked and nobody owns the display: an app that came to the front on its own (an app moving on from its
+     *  splash screen, a dialog of a parked app) is covered by the AI desktop again. An app in front on the owned
      *  display counts as in use and stops posting notifications. Not while the person holds the screen (the caller skips a
      *  takeover), so nothing of theirs is covered. The caller holds the tool lock and has checked that nobody owns the display. */
     public synchronized void keepDesktopInFront(){
@@ -282,9 +267,8 @@ public final class ProfileWorkspace implements AutoCloseable {
             long until=SystemClock.elapsedRealtime()+3000;
             while(true){binding();try{protection.requireSafe(displayId(),false);break;}catch(ActionGate.Denied e){if(!e.code.equals("SECURITY_UNAVAILABLE")||SystemClock.elapsedRealtime()>=until)throw e;SystemClock.sleep(50);}}
         }catch(Exception e){closeDisplay();throw e;}
-        parkedApps.displayCreated();
     }
-    /** Builds the display through VirtualDisplayConfig so the requested refresh rate (120 Hz) is honoured; the
+    /** Builds the display through VirtualDisplayConfig so the requested refresh rate ([FPS]) is honoured; the
      *  legacy overload (no refresh rate) is the fallback when the config API is unavailable. */
     private VirtualDisplay createDisplay(int flags,android.view.Surface surface)throws Exception{
         DisplayManager manager=context.getSystemService(DisplayManager.class);
@@ -579,7 +563,9 @@ public final class ProfileWorkspace implements AutoCloseable {
      *  tree observation instead, so several taps may follow one phone_ui_tree). The guard runs exactly as before. */
     private int admit()throws Exception{guard();return targetWait().uid();}
     /** One guarded gesture bound to an already admitted UID (the observation binding is consumed by the caller). */
-    private void gesture(int uid,float x1,float y1,float x2,float y2,int duration)throws Exception{
+    private void gesture(int uid,float x1,float y1,float x2,float y2,int duration)throws Exception{gesture(uid,x1,y1,x2,y2,duration,0);}
+    /** holdMs: the finger rests on the last point before it lifts, so a list stops with the finger instead of flinging on. */
+    private void gesture(int uid,float x1,float y1,float x2,float y2,int duration,int holdMs)throws Exception{
         int id=displayId();
         guard();if(targetWait().uid()!=uid)ActionGate.fail("APP_DENIED","Foreground app changed after observation");
         if(!Float.isFinite(x1)||!Float.isFinite(x2)||!Float.isFinite(y1)||!Float.isFinite(y2)||x1<0||x2<0||y1<0||y2<0||x1>=W||x2>=W||y1>=H||y2>=H||duration<40||duration>2000)ActionGate.fail("INVALID_GESTURE","Gesture bounds invalid");
@@ -588,6 +574,10 @@ public final class ProfileWorkspace implements AutoCloseable {
             // An injection timeout can occur after delivery. Every attempted DOWN is covered by CANCEL.
             ProfileInput.motion(id,profile.userId(),uid,down,down,MotionEvent.ACTION_DOWN,x1,y1);
             while(SystemClock.uptimeMillis()-down<duration){SystemClock.sleep(16);guard();if(targetWait().uid()!=uid)ActionGate.fail("APP_DENIED","Input target changed");float f=Math.min(1f,(SystemClock.uptimeMillis()-down)/(float)duration);ProfileInput.motion(id,profile.userId(),uid,down,SystemClock.uptimeMillis(),MotionEvent.ACTION_MOVE,x1+(x2-x1)*f,y1+(y2-y1)*f);}
+            if(holdMs>0)ProfileInput.motion(id,profile.userId(),uid,down,SystemClock.uptimeMillis(),MotionEvent.ACTION_MOVE,x2,y2); // the finger reaches its last point before it rests
+            // Resting without events, as phone_gesture's holdEndMs does: the velocity at the lift is then zero (measured on
+            // the phone: a 700 px drag with a 150 ms rest moved a list 669 px, the touch slop short, and no further).
+            while(SystemClock.uptimeMillis()-down<duration+holdMs){SystemClock.sleep(16);guard();if(targetWait().uid()!=uid)ActionGate.fail("APP_DENIED","Input target changed");}
             guard();if(targetWait().uid()!=uid)ActionGate.fail("APP_DENIED","Input target changed");
             ProfileInput.motion(id,profile.userId(),uid,down,SystemClock.uptimeMillis(),MotionEvent.ACTION_UP,x2,y2);complete=true;
         }finally{if(!complete)ProfileInput.motion(id,profile.userId(),uid,down,SystemClock.uptimeMillis(),MotionEvent.ACTION_CANCEL,x2,y2);}
@@ -761,6 +751,32 @@ public final class ProfileWorkspace implements AutoCloseable {
         }
         guard();
         return new JSONObject().put("text",text.toString()).put("pages",pages).put("reachedEnd",end).put("title",tree.title());
+    }
+    /** phone.read_chat: reads back through a chat's earlier messages. Scrolls the message list (the largest scrollable
+     *  region) upward up to maxPages times and joins the screens by position ({@link ChatText}): the oldest message first,
+     *  the screen reading began on last. The finger rests before it lifts, so the list moves as far as the finger did
+     *  instead of flinging past a screen, and each screen overlaps the one before by a quarter. */
+    public synchronized JSONObject readChat(JSONObject a)throws Exception{
+        int maxPages=a.optInt("maxPages",4);
+        int uid=verifiedUid;verifiedUid=-1;
+        if(uid<0)uid=admit();
+        android.graphics.Rect area=tree.largestScrollable();
+        if(area==null)ActionGate.fail("SCROLL_UNSUPPORTED","No scrollable message list in the latest phone_ui_tree; observe the chat instead");
+        int x=area.centerX(),travel=Math.max(200,area.height()*3/4);
+        int top=Math.max(16,area.centerY()-travel/2),bottom=Math.min(H-17,top+travel);
+        ChatText text=new ChatText();boolean end=false;
+        String signature=tree.contentSignature(displayId(),W,H);
+        for(int page=0;page<maxPages;page++){
+            ChatText.Screen screen=tree.messageList(displayId(),W,H);
+            if(screen==null||!text.add(screen,bottom-top))break;
+            if(page==maxPages-1)break;
+            gesture(uid,x,top,x,bottom,400,150); // finger down: the list moves down and shows what is above
+            String next=settledSignature(signature);
+            if(next==null){end=true;break;}
+            signature=next;
+        }
+        guard();
+        return new JSONObject().put("text",text.text()).put("pages",text.pages()).put("reachedEnd",end).put("title",tree.title());
     }
     /** Consumes the observation-bound UID exactly like a gesture; input never re-chooses its target. */
     private int boundUid()throws Exception{

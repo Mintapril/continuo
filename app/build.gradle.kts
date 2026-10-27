@@ -14,6 +14,8 @@ android {
         versionName = "0.8.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
+    // Fixed root-helper lifecycle ships in the APK; keeper Java entry is compiled with the app.
+    sourceSets.getByName("main").assets.srcDir("../runtime/notification-keeper/assets")
     buildFeatures { compose = true; buildConfig = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

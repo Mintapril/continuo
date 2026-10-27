@@ -6,13 +6,13 @@
 
 - 用户已完成系统创建。固定设备 `5b9a17cd` 最新只读核验：个人用户 0；工作资料 userId=10、serialNumber=10、parentId=0，状态 `RUNNING_UNLOCKED`，拥有者为 `dev.dsh.pocket.isolation/.ProfileAdminReceiver`。不要再次执行创建步骤。
 - 系统创建入口解析为 `com.android.managedprovisioning/.preprovisioning.PreProvisioningActivity`，检查时只有一个匹配项；这不是已完成系统授权的证据。
-- 新应用包名 `dev.dsh.pocket.isolation`，名称 **Cowork 隔离实验**。独立于现有 Pocket；不会修改 Code、Cowork 生产守卫、会话或凭据。最低 Android 13，确保离线创建参数有平台支持；测试签名但关闭调试标志。
+- 新应用包名 `dev.dsh.pocket.isolation`，名称 **它的手机**（2026-10-26 前叫“Cowork 隔离实验”）。独立于现有 Pocket；不会修改 Code、Cowork 生产守卫、会话或凭据。最低 Android 13，确保离线创建参数有平台支持；测试签名但关闭调试标志。
 - 已构建并安装到个人用户 0；6 项一次性创建保护测试通过，签名与最终 APK 权限检查通过。安装后仍只有用户 0、无拥有者、仅物理显示；未启动系统创建。见[构建与安装证据](<../test-evidence/cowork/isolation-provisioning-build.json>)。
 - 资料创建已由用户确认并经系统元数据复核；并行焦点、同包独立数据和副屏输入仍未验收。DSH 的共享目录已另行切到该资料，见[存储迁移证据](<../test-evidence/cowork/work-profile-storage.json>)；这不等于现有手机工具已切入工作资料。
 
 ## 在手机上操作
 
-1. 打开个人空间里的 **Cowork 隔离实验**。
+1. 打开个人空间里的 **它的手机**。
 2. 确认页面显示「可以发起系统确认；尚未创建资料」。如果显示已有资料或系统不允许，停止并反馈原文，不卸载或删除其他资料。
 3. 点击 **创建测试工作资料（系统确认）**，阅读应用确认内容，再进入 Android/ColorOS 的系统确认页。
 4. 系统可能显示「工作资料」「组织管理」等标准文案。此应用不连接企业服务器，但会成为新资料的**资料拥有者**，因此系统授予的资料管理能力是真实存在的，不应视为普通应用权限。

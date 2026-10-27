@@ -49,6 +49,8 @@ export const PHONE_ARGUMENTS = Object.freeze({
   // x/y optional: without them the largest scrollable region of the latest ui_tree is used.
   'phone.scroll': object({ ...observed, deltaY: int, x: int, y: int }, ['observationId', 'deltaY']),
   'phone.read_page': object({ ...observed, maxPages: int }, ['observationId']),
+  // read_page upward, back through a chat's earlier messages (only its message list; screens joined line for line).
+  'phone.read_chat': object({ ...observed, maxPages: int }, ['observationId']),
   'phone.type_text': object({ ...observed, text: str, elementId: str }, ['observationId', 'text']),
   'phone.key': object({ ...observed, key: { type: 'string', enum: ['BACK', 'ENTER', 'HOME', 'RECENTS'] } }, ['key']),
   'phone.wait': object({ timeoutMs: int }),
@@ -68,7 +70,7 @@ export const PHONE_ARGUMENTS = Object.freeze({
 // Native-only tools: accepted by BrokerClient but never registered with, or visible to, the model.
 export const INTERNAL_ARGUMENTS = Object.freeze({ 'phone.intervention_status': object() });
 // Tools natively rejected with USER_CONTROL while the user controls the screen; their wrappers wait for hand-back.
-export const USER_CONTROL_TOOLS = Object.freeze(['phone.screenshot', 'phone.ui_tree', 'phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.read_page', 'phone.type_text', 'phone.key', 'phone.launch_app', 'phone.wait', 'phone.batch', 'phone.gesture', 'phone.uninstall_app']);
+export const USER_CONTROL_TOOLS = Object.freeze(['phone.screenshot', 'phone.ui_tree', 'phone.tap', 'phone.long_press', 'phone.swipe', 'phone.scroll', 'phone.read_page', 'phone.read_chat', 'phone.type_text', 'phone.key', 'phone.launch_app', 'phone.wait', 'phone.batch', 'phone.gesture', 'phone.uninstall_app']);
 // Read-only observations are re-issued once after hand-back; everything else must be re-planned by the model.
 export const REISSUE_AFTER_HANDBACK = Object.freeze(['phone.status', 'phone.apps', 'phone.screenshot', 'phone.ui_tree', 'phone.wait']);
 export const HANDBACK_MAX_MS = 15 * 60_000, HANDBACK_POLL_MS = 1000;
@@ -113,6 +115,7 @@ export const PHONE_RESULTS = Object.freeze({
   'phone.ui_tree': TREE_RESULT,
   'phone.scroll': object({ performed: { type: 'boolean', const: true }, moved: bool, note: str, ...afterInput }, ['performed']),
   'phone.read_page': object({ performed: { type: 'boolean', const: true }, text: str, pages: int, reachedEnd: bool, title: str }, ['performed', 'text', 'pages', 'reachedEnd']),
+  'phone.read_chat': object({ performed: { type: 'boolean', const: true }, text: str, pages: int, reachedEnd: bool, title: str }, ['performed', 'text', 'pages', 'reachedEnd']),
   // completed: steps performed; a stopped batch adds stoppedAt (= completed) and stopReason, uncertain when that step's input may have partly happened.
   'phone.batch': object({ performed: { type: 'boolean', const: true }, completed: int, stoppedAt: int, stopReason: str, uncertain: bool, note: str, ...afterInput }, ['performed', 'completed']),
   // Same shape for strokes: completed strokes performed; uncertain when the stopped stroke was cut off midway.
@@ -328,7 +331,7 @@ export class BrokerClient {
     }
     if (name === 'phone.long_press' && args.durationMs !== undefined) integer(args.durationMs, 500, 2000, 'durationMs');
     if (name === 'phone.swipe') integer(args.durationMs, 100, 2000, 'durationMs');
-    if (name === 'phone.read_page' && args.maxPages !== undefined) integer(args.maxPages, 1, 12, 'maxPages');
+    if ((name === 'phone.read_page' || name === 'phone.read_chat') && args.maxPages !== undefined) integer(args.maxPages, 1, 12, 'maxPages');
     if (name === 'phone.scroll') check((args.x === undefined) === (args.y === undefined), 'Provide both x and y, or neither');
     if (name === 'phone.wait') integer(args.timeoutMs, 0, 10000, 'timeoutMs');
     if (name === 'phone.scroll') { integer(args.deltaY, -1000, 1000, 'deltaY'); check(args.deltaY !== 0, 'deltaY must be nonzero'); }

@@ -1,7 +1,6 @@
 package dev.dsh.pocket.cowork
 
 import android.content.Context
-import dev.dsh.pocket.data.Companion
 import dev.dsh.pocket.data.ScheduleFormat
 import org.json.JSONObject
 
@@ -37,10 +36,10 @@ object StatusCard {
         return "${status.optString("instanceId")}|${status.optString("taskId")}|${status.optString("executionId")}"
     }
 
-    /** What the task was, from its session: the patrol, something in the owner's conversation (叫它), or anything else. */
+    /** What the task was, from its session: the old patrol session, or anything else. The owner's conversation holds
+     *  patrols, notes and notifications too since everything lives there, so its session says nothing more. */
     private fun unfinished(taskId: String) = when {
         taskId == ScheduleFormat.PATROL_SESSION -> "巡视"
-        Companion.isOwnerSession(taskId) -> "你交代的事"
         else -> "刚才那件事"
     }
 

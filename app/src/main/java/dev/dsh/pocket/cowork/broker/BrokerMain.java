@@ -49,7 +49,7 @@ public final class BrokerMain {
     /** Turn a transition refusal into an actionable one; a refusal that paused the session keeps its own code. */
     private static ActionGate.Denied settling(ActionGate.Denied e){return RefusalPolicy.reported(e);}
     /** Observation and input tools the model may not use while the user controls the screen. */
-    private static final Set<String> USER_CONTROL_BLOCKED=Set.of("phone.screenshot","phone.ui_tree","phone.tap","phone.long_press","phone.swipe","phone.scroll","phone.read_page","phone.type_text","phone.key","phone.launch_app","phone.wait","phone.batch","phone.gesture","phone.uninstall_app");
+    private static final Set<String> USER_CONTROL_BLOCKED=Set.of("phone.screenshot","phone.ui_tree","phone.tap","phone.long_press","phone.swipe","phone.scroll","phone.read_page","phone.read_chat","phone.type_text","phone.key","phone.launch_app","phone.wait","phone.batch","phone.gesture","phone.uninstall_app");
     private final Takeover takeover=new Takeover();
     /** How often the live view re-reads the focused input field during a takeover (one accessibility query). */
     private static final long FIELD_POLL_MS=200;
@@ -406,13 +406,13 @@ public final class BrokerMain {
             if(standingFails==3)System.err.println("standing display unavailable after "+standingFails+" attempts: "+why);
             if(standingFails>=3)standingFailure=why;}
     }
-    /** Between turns: after a display rebuild, one app parked on the old display is started again per call
-     *  ({@link ParkedApps}), and the AI desktop stays in front of the parked apps. Under the tool lock, so no turn claims
-     *  the display meanwhile; a turn that already owns it is left alone. */
+    /** Between turns: the AI desktop stays in front of the parked apps (apps are started lazily, by the turns that use
+     *  them; a rebuilt display brings none back). Under the tool lock, so no turn claims the display meanwhile; a turn
+     *  that already owns it is left alone. */
     private void tendParked(){
         synchronized(toolLock){
             if(gate.owner()!=null||toolsInFlight.get()>0||takeover.active())return;
-            try{workspace.restoreParked();workspace.keepDesktopInFront();}catch(Throwable e){System.err.println("parked display upkeep failed: "+e.getClass().getSimpleName());}
+            try{workspace.keepDesktopInFront();}catch(Throwable e){System.err.println("parked display upkeep failed: "+e.getClass().getSimpleName());}
         }
     }
     /** Guard for the owned display: an empty display (nothing launched this turn) has no app window to verify yet. */
@@ -606,6 +606,7 @@ public final class BrokerMain {
             case "phone.swipe":workspace.swipe(a);break;
             case "phone.scroll":{JSONObject moved=workspace.scroll(a);workspace.guard();return observeAfter(session,performed(moved),before,false);} // scroll already waited for the fling
             case "phone.read_page":{JSONObject page=workspace.readPage(a);return performed(page);}
+            case "phone.read_chat":{JSONObject chat=workspace.readChat(a);return performed(chat);}
             case "phone.type_text":watch.typed(a.getString("text"));workspace.type(a);activity.note("输入文字");break;
             case "phone.key":workspace.key(a.getString("key"));if(a.getString("key").equals("ENTER"))activity.note("确认输入");break;
             case "phone.launch_app":workspace.launch(a.getString("packageName"));activity.launched(a.getString("packageName"),workspace.appLabel(a.getString("packageName")));break;

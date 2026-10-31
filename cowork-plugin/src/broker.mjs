@@ -217,6 +217,7 @@ export const REFUSAL_HINT = Object.freeze({
   CONTROL_INTERRUPTED: 'The user paused or stopped the workspace: call phone_status, then phone_launch_app if it is stopped.',
   PAUSED: 'The workspace is paused: the user must resume it, or start a new session.',
   LOCKED: 'The phone is locked: ask the user to unlock it.',
+  SECURE_WINDOW: 'A protected page (one that blocks screenshots, such as paid or payment content) is on the AI screen: it can be neither read nor touched, so this turn ends here. Once the turn is over the broker closes that page and puts the AI desktop back, so the next turn starts normally: no need to tell the owner. Stay away from that page next time.',
   CONTROLLER_OFFLINE: 'The Cowork controls are not connected: the user must open the app.',
   TREE_REQUIRED: 'Call phone_ui_tree for the current screen before a screenshot.',
   HIGH_IMPACT_SINGLE: 'The first step must run on its own: it sends, pays, deletes, confirms, grants, buys or publishes, or its target has no label to judge it by. Nothing was performed.',

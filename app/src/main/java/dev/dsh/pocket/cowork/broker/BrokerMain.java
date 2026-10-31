@@ -412,8 +412,16 @@ public final class BrokerMain {
     private void tendParked(){
         synchronized(toolLock){
             if(gate.owner()!=null||toolsInFlight.get()>0||takeover.active())return;
+            clearProtected(false);
             try{workspace.keepDesktopInFront();}catch(Throwable e){System.err.println("parked display upkeep failed: "+e.getClass().getSimpleName());}
         }
+    }
+    /** A protected window paused a turn and nobody can use it (not even in a takeover): its task leaves the display
+     *  ({@link ProfileWorkspace#clearProtected}), so the next turn starts on the AI desktop. Under the tool lock, with no
+     *  turn on the display and no takeover (the callers check both). Best effort, never throws. */
+    private void clearProtected(boolean anyway){
+        try{workspace.clearProtected(anyway);}
+        catch(Throwable e){System.err.println("protected window clearing failed: "+(e instanceof ActionGate.Denied?((ActionGate.Denied)e).code:e.getClass().getSimpleName()));}
     }
     /** Guard for the owned display: an empty display (nothing launched this turn) has no app window to verify yet. */
     private void guardNow(){guardNow(400);}
@@ -425,6 +433,8 @@ public final class BrokerMain {
         if(gate.owner()!=null||userApproved)return;
         if(SystemClock.elapsedRealtime()-controllerSeen>15000)ActionGate.fail("CONTROLLER_OFFLINE","Open Cowork controls before starting");
         awaitClosed();
+        // A turn never starts on a protected window: one that paused the turn before, or one a parked app opened (callers hold the tool lock).
+        if(!takeover.active())clearProtected(true);
         final String mine=UUID.randomUUID().toString();
         synchronized(this){
             if(tasks.active()&&!userApproved)tasks.requireRunning(session);

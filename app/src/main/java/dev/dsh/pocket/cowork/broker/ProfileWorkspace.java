@@ -345,10 +345,53 @@ public final class ProfileWorkspace implements AutoCloseable {
         return moved;
     }
     private final Set<Integer> unmovable=new HashSet<>();
+    /** Set when a check met a protected window on the owned display; cleared once the protection check finds none. */
+    private volatile boolean protectedSeen;
+    private final Set<Integer> unremovable=new HashSet<>();
+    /** The rule is {@link ProtectedTaskSweep}. For a caller that holds the tool lock and has made sure that no turn owns the
+     *  display and nobody takes it over. Removes the work-profile tasks that hold protected windows and parks the AI
+     *  desktop in front. Between turns it looks only after a check met such a window; before a turn takes the display
+     *  ({@code anyway}) it always looks, since an app parked behind the desktop may have opened one on its own. Returns
+     *  how many tasks were removed. */
+    public synchronized int clearProtected(boolean anyway){
+        if((!anyway&&!protectedSeen)||displayId()<=0||!displayAlive())return 0;
+        int owned=displayId();
+        Set<Integer> held=protection.secureTasks(owned);
+        if(held.isEmpty()){protectedSeen=false;return 0;}
+        ArrayList<StrayTaskSweep.Task> rows=new ArrayList<>();
+        for(ActivityManager.RunningTaskInfo t:tasks())
+            rows.add(new StrayTaskSweep.Task(t.taskId,taskInt(t,"parentTaskId"),taskInt(t,"userId"),taskInt(t,"displayId"),t.baseActivity==null?null:t.baseActivity.getPackageName()));
+        List<Integer> targets=ProtectedTaskSweep.targets(held,rows,owned,profile.userId(),DESKTOP);
+        if(targets.isEmpty()){if(unremovable.add(-1))System.err.println("protected window on the owned display outside any work-profile task");return 0;}
+        int removed=0;
+        for(int id:targets){
+            try{
+                Object atm=Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null);
+                if(Boolean.FALSE.equals(atm.getClass().getMethod("removeTask",int.class).invoke(atm,id)))throw new IllegalStateException("not removed");
+                removed++;unremovable.remove(id);
+                System.err.println("removed work-profile task "+id+": it held a protected window on the owned display");
+            }catch(Exception e){
+                Throwable cause=e instanceof InvocationTargetException&&e.getCause()!=null?e.getCause():e;
+                if(unremovable.add(id))System.err.println("work-profile task "+id+" with a protected window could not be removed: "+cause.getClass().getSimpleName()+": "+cause.getMessage());
+            }
+        }
+        if(removed==0)return 0;
+        resetContent("");
+        // A removed task's windows leave the hierarchy only after its removal finished: the turn about to start must
+        // not meet them in its first check.
+        long until=SystemClock.elapsedRealtime()+2000;
+        while(!protection.secureTasks(owned).isEmpty()){
+            if(SystemClock.elapsedRealtime()>=until)return removed;
+            SystemClock.sleep(100);
+        }
+        protectedSeen=false;
+        return removed;
+    }
 
     private void check(boolean content,boolean checkCancel){
         binding();if(checkCancel&&cancellation.cancelled())ActionGate.fail("CONTROL_INTERRUPTED","User requested pause or stop");
-        protection.requireSafe(displayId(),content);
+        try{protection.requireSafe(displayId(),content);}
+        catch(ActionGate.Denied e){if(e.code.equals("SECURE_WINDOW"))protectedSeen=true;throw e;}
         try{
             sweepForeignTasks();
             pullBackStrayTasks();

@@ -4,7 +4,18 @@
 
 ---
 
-# 性格、能量与主动性（2026-10-31，未部署）
+# 副屏不再卡在受保护的页面上（2026-10-31）
+
+- **来由**：10-30 12:00 巡视时它在知乎点进一个带 `FLAG_SECURE`（防截屏）的页面，看门狗按 `SECURE_WINDOW` 暂停了这一轮。之后 31 小时里，每一轮的第一个动作（读结构、HOME、开应用）都被拒、整轮暂停；10-31 11:46 它发通知让你关掉那个窗口，19:46 Broker 重启重建副屏才好。
+- **为什么出不来**：被暂停的回合结束时副屏不收起，回合之间盖桌面的逻辑只在正常结束后生效；HOME 和开应用之前也要过同一道检查；你接管时的输入也查它，实时画面里它是黑的；就算用桌面盖住，被盖住的窗口还在窗口层级里，检查照样拒绝。
+- **改了什么**（Broker）：碰到受保护窗口这一轮照旧暂停；之后副屏没有回合占用、也没人接管时（碰到过之后回合之间每 5 秒查一次，每一轮占用副屏之前都查一次），Broker 从窗口管理器的元数据里找出持有受保护窗口的工作资料任务，把它移出副屏（`removeTask`），再让 AI 桌面盖上。只做任务管理，不读、不截、不输入；个人资料的任务、别的屏幕上的任务和 AI 桌面不会动。新类 `ProtectedTaskSweep`，`SecureWindowSnapshot.secureTasks`，`ProfileWorkspace.clearProtected`。
+- **插件**：`SECURE_WINDOW` 有了提示：这一轮到此为止，回合结束后 Broker 会关掉那个页面、回到桌面，下一轮照常，不用通知主人，以后别再点进去。
+- **部署**：APK 和插件；装 APK 后要在 DSH 空闲时重启 Broker（重启也会重建副屏）。10-31 23:10 已部署为插件 v41 + APK。
+- **实测**（工作资料里的测试应用，“Enable protected fixture” 给窗口加 `FLAG_SECURE`）：Broker 按 `SECURE_WINDOW` 暂停；结束这次任务后桌面先盖上，被盖住的受保护窗口仍在窗口层级里，几秒内 Broker 记下 `removed work-profile task …`，副屏只剩桌面；结束后马上开新一轮，新一轮读到的是测试应用正常的首页，没有被暂停。
+
+---
+
+# 性格、能量与主动性（2026-10-31）
 
 - **来由**：你要它有确定的性格，基于荣格八维和 MBTI；不太克制；有主动性，而不是每天被便条拉起来几分钟；会像朋友一样主动找你。设计和与设计的差异见 [personality-design.md](personality-design.md)，运行时是什么样见 [cowork-internals.md](cowork-internals.md#性格能量与主动性)。
 - **插件**：新模块 `psyche.mjs`、`psyche-store.mjs`、`psyche-recorder.mjs`、`reach.mjs`、`own-time.mjs`；系统提示词多一段 `deployment:character`，每轮第一步多一条 `[STATE]`；新工具 `cowork_reach_owner`；自己的时间 `[OWN TIME]` 和 `[OWNER SILENT]`；人设允许回怼、主动找聊过天的人；自己留的便条每天 5 张改 10 张；`BrokerClient.labelsOf`（只读）；`coworkUnattended` 多 7 个方法。

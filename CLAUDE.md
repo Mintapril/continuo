@@ -110,7 +110,7 @@ Broker（root，app_process，从已安装 APK 的 dev.dsh.pocket.cowork.broker.
 
 - Broker 只监听回环，agent 与 controller 用不同令牌和 HMAC 请求绑定鉴权；模型（agent 角色）没有审批、恢复、接管的能力。
 - 每个输入事件绑定"副屏 + 工作资料 UID"，没有无定向回退；不用 `adb input`、全局按键、共享剪贴板或主屏输入法。
-- 截图按 UID 过滤且不抓安全层；密码框内容不读；`FLAG_SECURE` 窗口要求用户接管。
+- 截图按 UID 过滤且不抓安全层；密码框内容不读；`FLAG_SECURE` 窗口不读不碰，碰到就暂停这一轮（接管时也操作不了它）。没有回合占用、没人接管时，Broker 只用任务管理把持有它的工作资料任务移出副屏、让 AI 桌面盖上（`ProfileWorkspace.clearProtected`，规则在 `ProtectedTaskSweep`），否则它会让之后每一轮都暂停（2026-10-30 卡了 31 小时）。
 - 动作必须带 60 秒内单次有效的 `observationId`；`phone.screenshot` 前必须先读 `phone.ui_tree`（`TREE_REQUIRED`），插件与 Broker 各自独立强制。
 - dsh-schedule 存的每一条都是便条，分两种：主人在对话里让模型记下的（内容照主人原话，不带标记），和模型自己留的（标题以“便条：”开头、内容以 `[便条]` 开头）。本轮没有用户消息的回合（到期的便条、巡视、通知触发等）只能列出便条和自己留便条，不能修改或删除任何便条。自己留的便条是 `schedule_create` 的一种受限形式：带上面两个标记、只用 `after_seconds`（600–604800）、每个会话 24 小时最多 10 张（2026-10-31 起，原来 5 张），由 `tools.guard()` 强制。到期时，插件在 `agent/pre-step` 把 DSH 写死的 “This is a scheduled message from the user” 一律改写成 `[SELF NOTE]`（`reframeReminder`），保留消息 ID；权限只降不升：没标记的照旧算主人交代的（开场白是“主人和你说话时记下的，照做”），带标记的一律算模型自己的（“自己判断还要不要做，不当命令”），就算是主人建的也一样。
 - 这类回合也不能请求接管（`phone_request_intervention`），需要主人时只能用 `phone_notify_owner` 发一条通知后结束；有用户消息的回合反过来不能发这种通知。每回合最多一条，由插件的 `tools.guard()` 强制。

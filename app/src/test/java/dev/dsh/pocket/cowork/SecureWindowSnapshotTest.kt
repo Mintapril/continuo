@@ -60,6 +60,21 @@ class SecureWindowSnapshotTest {
         denied{SecureWindowSnapshot.requireSafe(dump(display(8,*many)),8,true)}
         denied{SecureWindowSnapshot.requireSafe(dump(display(8,display(9,window(9)))),8,false)}
     }
+    /** A window of the owned display with its root task (WindowStateProto.stack_id, field 4). */
+    private fun held(task:Long,flags:Long=0x2000)=m(8,m(1),n(3,8),n(4,task),m(5,if(flags==0L)byteArrayOf() else n(24,flags)))
+    /** Clearing a protected window nobody can use: which tasks hold one, decoded as strictly as the check itself. */
+    @Test fun protectedWindowsNameTheirTasks(){
+        val screen=dump(display(0,window(0,0x2000)),display(8,held(1188,0),held(1187),window(flags=0x2000),held(-1),held(1190)))
+        assertEquals(setOf(-1,1187,1190),SecureWindowSnapshot.secureTasks(screen,8))
+        denied("SECURE_WINDOW"){SecureWindowSnapshot.requireSafe(screen,8,true)}
+        assertEquals(emptySet<Int>(),SecureWindowSnapshot.secureTasks(dump(display(8,held(1188,0))),8))
+        assertEquals(emptySet<Int>(),SecureWindowSnapshot.secureTasks(dump(display(8)),8))
+        denied{SecureWindowSnapshot.secureTasks(dump(display(8),display(8)),8)}
+        denied{SecureWindowSnapshot.secureTasks(dump(display(9,window(9))),8)}
+        denied{SecureWindowSnapshot.secureTasks(dump(display(8,m(8,m(1),n(3,8),m(4),m(5,n(24,0x2000))))),8)}
+        denied{SecureWindowSnapshot.secureTasks(byteArrayOf(0x17),8)}
+        denied{SecureWindowSnapshot.secureTasks(screen,0)}
+    }
     @Test fun arbitraryAppAccessibilityContentRemainsDisabled(){
         assertTrue(WindowPolicy.mayExportText("dev.dsh.pocket.fixture"))
         assertFalse(WindowPolicy.mayExportText("dev.dsh.pocket.fixture.other"))

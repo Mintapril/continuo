@@ -179,6 +179,21 @@ class BrokerSourceTest {
         assertTrue("the search runs on its own thread", body(workspace, "private void searchInside(").contains("fieldSearch.execute("))
     }
 
+    /** A protected window paused every turn for 31 hours (2026-10-30): nobody could read, touch or leave it, not even in
+     *  a takeover. Once no turn and no person uses the display, the task holding it is removed and the AI desktop parked,
+     *  by task management only; meeting one still pauses the turn (RefusalPolicyTest). */
+    @Test fun aProtectedWindowNobodyUsesLeavesTheDisplay() {
+        val workspace = code("ProfileWorkspace.java")
+        assertTrue(body(workspace, "private void check(").contains("catch(ActionGate.Denied e){if(e.code.equals(\"SECURE_WINDOW\"))protectedSeen=true;throw e;}"))
+        val clear = body(workspace, "public synchronized int clearProtected(")
+        assertTrue("only the tasks the rule names", clear.contains("ProtectedTaskSweep.targets(held,rows,owned,profile.userId(),DESKTOP)"))
+        assertTrue("task management only", clear.contains("\"removeTask\"") && listOf("tree.", "OwnedDisplayCapture", "ProfileInput", "observe(").none { clear.contains(it) })
+        val broker = code("BrokerMain.java")
+        val tend = body(broker, "private void tendParked(")
+        assertTrue("between turns, never under the person's hands", tend.indexOf("||takeover.active())return;") in 0 until tend.indexOf("clearProtected(false);"))
+        assertTrue("no turn starts on one", body(broker, "private void claim(").contains("if(!takeover.active())clearProtected(true);"))
+    }
+
     /** The native tool sets and the plugin's tool tables must name the same agent tools. */
     /** phone.grant_permission and phone.uninstall_app act for the verified work profile only: the grant names the
      *  profile's UserHandle, the uninstall the profile's user id with flags 0 (never DELETE_ALL_USERS, so a copy of the

@@ -7,14 +7,25 @@ public final class SecureWindowSnapshot {
     public static final int MAX_BYTES=4*1024*1024;
     private final byte[] data;
     private final int owned;
+    /** Null: a protected window is refused at once. Otherwise its task is collected (see {@link #secureTasks}). */
+    private final Set<Integer> secure;
     private int visits,records,displays,windows;
-    private SecureWindowSnapshot(byte[] data,int owned){this.data=data;this.owned=owned;}
+    private SecureWindowSnapshot(byte[] data,int owned,Set<Integer> secure){this.data=data;this.owned=owned;this.secure=secure;}
     public static int requireSafe(byte[] data,int display,boolean requireContent){
         if(data==null||data.length==0||data.length>MAX_BYTES||display<=0)unknown();
-        SecureWindowSnapshot decoder=new SecureWindowSnapshot(data,display);
+        SecureWindowSnapshot decoder=new SecureWindowSnapshot(data,display,null);
         decoder.message(0,data.length,0,0,-1);
         if(decoder.displays!=1||(requireContent&&decoder.windows==0))unknown();
         return decoder.windows;
+    }
+    /** The root tasks (WindowStateProto.stack_id) of the protected windows on the owned display, -1 for one outside a
+     *  task; empty when there is none. The same bounded decoding as {@link #requireSafe}, malformed data still refused. */
+    public static Set<Integer> secureTasks(byte[] data,int display){
+        if(data==null||data.length==0||data.length>MAX_BYTES||display<=0)unknown();
+        SecureWindowSnapshot decoder=new SecureWindowSnapshot(data,display,new TreeSet<>());
+        decoder.message(0,data.length,0,0,-1);
+        if(decoder.displays!=1)unknown();
+        return Collections.unmodifiableSet(decoder.secure);
     }
     private static void unknown(){ActionGate.fail("SECURITY_UNAVAILABLE","Cannot verify owned-display window protection");}
     private record Field(int number,int wire,long value,int start,int end){}
@@ -64,7 +75,10 @@ public final class SecureWindowSnapshot {
                 long id=scalar(fs,3,0);if(display<0||id!=display)unknown();
                 Field attrs=one(fs,5,true,2);List<Field> values=fields(attrs.start,attrs.end);
                 long flags=scalar(values,24,0);if(flags<0||flags>0xffffffffL)unknown();
-                if(id==owned){windows++;if((flags&0x2000)!=0)ActionGate.fail("SECURE_WINDOW","Protected window requires user takeover");}
+                if(id==owned){windows++;if((flags&0x2000)!=0){
+                    if(secure==null)ActionGate.fail("SECURE_WINDOW","Protected window requires user takeover");
+                    long task=scalar(fs,4,-1);secure.add(task<=0||task>Integer.MAX_VALUE?-1:(int)task);
+                }}
                 child(one(fs,1,true,2),2,depth,display);break;
             }
             default:unknown();

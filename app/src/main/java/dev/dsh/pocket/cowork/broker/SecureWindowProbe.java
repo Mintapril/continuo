@@ -2,7 +2,9 @@ package dev.dsh.pocket.cowork.broker;
 
 import android.os.*;
 import java.io.*;
+import java.util.Set;
 import java.util.concurrent.*;
+import java.util.function.Function;
 
 /** Bounded WMS metadata only, never shell execution or main-display pixel capture. */
 final class SecureWindowProbe implements AutoCloseable {
@@ -16,7 +18,10 @@ final class SecureWindowProbe implements AutoCloseable {
         service=((IInterface)wm).asBinder();
         if(!"android.view.IWindowManager".equals(service.getInterfaceDescriptor()))throw new SecurityException("Window service unavailable");
     }
-    synchronized void requireSafe(int display,boolean content){
+    synchronized void requireSafe(int display,boolean content){read(display,bytes->SecureWindowSnapshot.requireSafe(bytes,display,content));}
+    /** The root tasks of the protected windows on the owned display ({@link SecureWindowSnapshot#secureTasks}). */
+    synchronized Set<Integer> secureTasks(int display){return read(display,bytes->SecureWindowSnapshot.secureTasks(bytes,display));}
+    private <T> T read(int display,Function<byte[],T> decode){
         // Future.cancel cannot stop a Binder transaction. Quarantine until BOTH actual workers exit.
         // A dump that is still running is a slow binder round trip, not a verdict: give it the same budget as the
         // fresh attempt below before quarantining, otherwise one sluggish call pauses the whole turn.
@@ -40,12 +45,12 @@ final class SecureWindowProbe implements AutoCloseable {
             pendingDump.get(Math.max(1,deadline-SystemClock.elapsedRealtime()),TimeUnit.MILLISECONDS);
             byte[] bytes=pendingRead.get(Math.max(1,deadline-SystemClock.elapsedRealtime()),TimeUnit.MILLISECONDS);
             if(SystemClock.elapsedRealtime()>deadline)unavailable();
-            SecureWindowSnapshot.requireSafe(bytes,display,content);
+            return decode.apply(bytes);
         }catch(ActionGate.Denied e){throw e;}
         catch(Exception e){
             System.err.println("Cowork protection transport: "+e.getClass().getName());
             if(e.getCause()!=null)System.err.println(" cause "+e.getCause().getClass().getName());
-            unavailable();
+            unavailable();return null;
         }
         finally{if(pipe!=null)for(ParcelFileDescriptor p:pipe)try{p.close();}catch(IOException ignored){}}
     }

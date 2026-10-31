@@ -18,6 +18,7 @@
 
 - **不会结束任务的拒绝**：参数、元素与转场类，如 `NODE_STALE`、`STALE_OBSERVATION`、`SCREEN_SETTLING`、`INPUT_REJECTED`、`LAUNCH_TIMEOUT`、`TREE_REQUIRED`、`TEXT_UNSUPPORTED`。模型拿到错误码和下一步建议（`phone_wait` 后再读结构、请求接管等）继续做。窗口身份或安全探测超时（`SECURITY_UNAVAILABLE: Cannot verify…`）也按转场处理。分类集中在 `RefusalPolicy.java`。
 - **会立即暂停任务的情况**：越界或身份类失败，如 AI 启动的应用跑出副屏、而且移不回来（`APP_CONFLICT`，见下文“工作资料界面不会落到主屏”）、资料身份或副屏身份变化、`SECURE_WINDOW`、`LOCKED`、控制器失联超过 15 秒（`CONTROLLER_OFFLINE`）、用户暂停或停止。
+- **受保护的页面（`SECURE_WINDOW`）**：应用给窗口加了 `FLAG_SECURE`（防截屏，付费内容、支付页常见），这个窗口谁都读不了、点不了：模型的读结构、截图、点击、HOME、开应用都被拒，你接管时的触摸和按键也一样（`guardUser` 同样查它），实时画面里它是黑的。所以碰到它这一轮照旧暂停结束，但 Broker 不再把它留在副屏上：副屏没有回合占用、也没人接管时（检查碰到过受保护窗口之后，回合之间每 5 秒查一次；每一轮占用副屏之前都查一次，因为停在桌面后面的应用也可能自己打开这种页面），Broker 从窗口管理器的元数据里找出持有受保护窗口的工作资料任务（`SecureWindowSnapshot.secureTasks`，取窗口的根任务号），把它从副屏上移除（`removeTask`，和从最近任务里划掉一样），再像 `phone_stop` 那样让 AI 桌面盖上去。只做任务管理，不读、不截、不往那个窗口里输入；个人资料的任务、别的屏幕上的任务和 AI 桌面不会被移除（`ProtectedTaskSweep`）。光用桌面盖住不行：被盖住的窗口还在窗口层级里，检查照样拒绝。（2026-10-30 12:00 它在知乎点进一个受保护的页面，之后 31 小时里每一轮的第一个动作都被拒、整轮暂停，直到 Broker 重启重建了副屏。）
 - **转场超时**：副屏连续 20 秒不可用（一直在转场、没有可验证的工作资料前台、外来任务清不掉）时，看门狗以 `SCREEN_UNRESPONSIVE` 暂停。这 20 秒按“当前占用者的一段连续转场”计时，换轮次、关闭工作区或任一次检查通过都会重新计时。
 - **排查**：每次原生暂停或停止都会在 root 私有的 `/data/local/dsh-native/cowork/broker.log` 里留一行 `task pause requested: <原因码>`（只写码，不写界面内容）。该日志在每次 Broker 启动时被覆盖。
 - **回合结束后收起前台应用**：一轮正常结束（`completed`、`stopped`、`error`）时，Broker 像 `phone_stop` 那样让 AI 桌面盖住副屏，应用退到后台继续运行。应用留在副屏上就算前台应用，之后它不再发通知（QQ 只会在应用内响一声），通知触发就收不到后面的消息。等待用户的回合（待审批、已暂停、`waiting_user`）不收起，屏幕留给你看。下一轮 `phone_launch_app` 会回到该应用原来的任务。

@@ -5,10 +5,12 @@ package dev.dsh.pocket.data
  * Everything it does lives in that session (patrols, due notes, every app's notifications), but the chat shows only
  * what the owner said, the notes it wrote down then and its last reply; the rest is 事件. Its thinking, tool calls and
  * intermediate replies stay out (设置 → 开发者 shows them). When the owner is the last to have spoken, the turn still
- * running ends with a line for what it is doing now (see Progress). Pure, so it is tested on the JVM.
+ * running ends with a line for what it is doing now (see Progress). What it said to the owner on its own (cowork_reach_owner:
+ * in Continuo, or in one of the owner's apps) shows wherever it happened, its own runs included. Pure, so it is tested on
+ * the JVM.
  */
 object ChatLog {
-    enum class Kind { OWNER, NOTE, REPLY, THINKING }
+    enum class Kind { OWNER, NOTE, REPLY, REACH, THINKING }
     data class Line(val key: String, val kind: Kind, val text: String, val label: String = "")
 
     /** A note it wrote down (schedule_create), in the owner's words, and when it runs; null for any other row. */
@@ -25,6 +27,26 @@ object ChatLog {
             else -> "到点"
         }
         return if (words.isBlank()) null else Note(words, timing)
+    }
+
+    /** It reached the owner on its own (cowork_reach_owner): what it said and where; null for any other row. */
+    data class Reach(val text: String, val channel: String) {
+        /** 来找你 in Continuo, 在 QQ 上找你 in one of the owner's apps. */
+        val label: String get() = if (channel == CONTINUO) "来找你" else "在 ${Temperament.appLabel(channel)} 上找你"
+    }
+    const val REACH_TOOL = "cowork_reach_owner"
+    const val CONTINUO = "continuo"
+    fun reachOf(row: TranscriptRow): Reach? {
+        if (row.role != "tool" || toolName(row) != REACH_TOOL || row.error || row.streaming) return null
+        val args = toolArguments(row) ?: return null
+        val text = args.text("text").trim()
+        return if (text.isBlank()) null else Reach(text, args.text("channel").ifBlank { CONTINUO })
+    }
+    /** Its latest message to the owner on its own, if it came after the owner last spoke (the 叫它 sheet shows it). */
+    fun reachAfterOwner(rows: List<TranscriptRow>): Reach? {
+        val owner = rows.indexOfLast(::ownerWords)
+        val at = rows.indexOfLast { reachOf(it) != null }
+        return if (at > owner) reachOf(rows[at]) else null
     }
 
     /** The owner's own words: a user message they sent (a due note or patrol arrives as a titled user row). */
@@ -49,9 +71,14 @@ object ChatLog {
         }
         val out = ArrayList<Line>()
         parts.forEachIndexed { index, part ->
-            val head = part.first().takeIf(::ownerWords) ?: return@forEachIndexed
+            val head = part.first().takeIf(::ownerWords)
+            // Its own runs stay out, except what it said to the owner there.
+            if (head == null) { part.forEach { row -> reachOf(row)?.let { out += Line(row.key, Kind.REACH, it.text, it.label) } }; return@forEachIndexed }
             if (head.text.isNotBlank()) out += Line(head.key, Kind.OWNER, head.text.trim())
-            part.forEach { row -> noteOf(row)?.let { out += Line(row.key, Kind.NOTE, it.words, it.timing) } }
+            part.forEach { row ->
+                noteOf(row)?.let { out += Line(row.key, Kind.NOTE, it.words, it.timing) }
+                reachOf(row)?.let { out += Line(row.key, Kind.REACH, it.text, it.label) }
+            }
             val reply = part.lastOrNull { it.role == "assistant" && !it.error && !it.streaming && it.text.isNotBlank() }
             if (reply != null) out += Line(reply.key, Kind.REPLY, reply.text.trim())
             // The turn still running says what it is doing, after anything it said so far.

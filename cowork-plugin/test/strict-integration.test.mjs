@@ -73,7 +73,7 @@ test('bundle is additive and packages only tested active implementation',async()
   const pkg=JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8'));
   const patch=await fs.readFile(new URL('../cordis.patch.yml',import.meta.url),'utf8');
   assert.equal(pkg.exports['.'],'./src/restricted.mjs');
-  assert.deepEqual(pkg.files.filter(p=>p.startsWith('src/')).sort(),['src/restricted.mjs','src/validation.mjs','src/broker.mjs','src/auth.mjs','src/task-lifecycle.mjs','src/bounded-files.mjs','src/web.mjs','src/gesture-path.mjs','src/notify.mjs','src/standing.mjs','src/screen-board.mjs','src/unattended-store.mjs','src/unattended.mjs','src/jev-board.mjs','src/jev-focus-store.mjs','src/jev-focus.mjs','src/tool-groups.mjs','src/notes-view.mjs','src/companion-store.mjs','src/diary.mjs','src/diary-writer.mjs','src/diary-view.mjs','src/context-plan.mjs','src/context.mjs','src/context-pruner.mjs'].sort());
+  assert.deepEqual(pkg.files.filter(p=>p.startsWith('src/')).sort(),['src/restricted.mjs','src/validation.mjs','src/broker.mjs','src/auth.mjs','src/task-lifecycle.mjs','src/bounded-files.mjs','src/web.mjs','src/gesture-path.mjs','src/notify.mjs','src/standing.mjs','src/screen-board.mjs','src/unattended-store.mjs','src/unattended.mjs','src/jev-board.mjs','src/jev-focus-store.mjs','src/jev-focus.mjs','src/tool-groups.mjs','src/notes-view.mjs','src/companion-store.mjs','src/diary.mjs','src/diary-writer.mjs','src/diary-view.mjs','src/context-plan.mjs','src/context.mjs','src/context-pruner.mjs','src/psyche.mjs','src/psyche-store.mjs','src/psyche-recorder.mjs','src/reach.mjs','src/own-time.mjs'].sort());
   // Every module a packaged one imports is packaged too (a missing file only shows up when DSH loads the bundle).
   for(const file of pkg.files.filter(p=>p.endsWith('.mjs'))){
     const text=await fs.readFile(new URL(`../${file}`,import.meta.url),'utf8');
@@ -271,15 +271,15 @@ test('host automation tools (dsh-schedule) are admitted for the top-level Cowork
     const r=await execute('schedule_create',agent,bad);assert.equal(r.isError,true,JSON.stringify(bad));assert.match(JSON.stringify(r),/can only leave itself a note/);}
   assert.deepEqual(ran,['schedule_list']);
   ran.length=0;
-  for(let i=0;i<5;i++){const r=await execute('schedule_create',agent,note);assert.equal(r.isError,false,JSON.stringify(r.error));}
-  {const r=await execute('schedule_create',agent,note);assert.equal(r.isError,true,'a sixth note within 24 hours');assert.match(JSON.stringify(r),/at most 5 in 24 hours/);}
+  for(let i=0;i<10;i++){const r=await execute('schedule_create',agent,note);assert.equal(r.isError,false,JSON.stringify(r.error));}
+  {const r=await execute('schedule_create',agent,note);assert.equal(r.isError,true,'an eleventh note within 24 hours');assert.match(JSON.stringify(r),/at most 10 in 24 hours/);}
   // A day later the window has moved on. The guard may be asked twice about one call: that call counts once.
   clock+=24*3_600_000+1;
   {const exec={name:'schedule_create',agent,arguments:note,callId:'asked-twice'};
     assert.equal(ctx.tools.guardReason(exec),undefined);assert.equal(ctx.tools.guardReason(exec),undefined);}
-  for(let i=0;i<4;i++){const r=await execute('schedule_create',agent,note);assert.equal(r.isError,false,'a day later the window has moved on');}
-  assert.equal((await execute('schedule_create',agent,note)).isError,true,'the call asked about twice counted once: 1 + 4 = 5');
-  assert.equal(ran.length,9);
+  for(let i=0;i<9;i++){const r=await execute('schedule_create',agent,note);assert.equal(r.isError,false,'a day later the window has moved on');}
+  assert.equal((await execute('schedule_create',agent,note)).isError,true,'the call asked about twice counted once: 1 + 9 = 10');
+  assert.equal(ran.length,19);
   // A turn a notification webhook started is just as unattended.
   ran.length=0;turn(5,'webhook','time-context');
   for(const n of ['schedule_create','schedule_update','schedule_delete'])assert.equal((await execute(n)).isError,true,n);
@@ -516,7 +516,7 @@ test('Continuo reaches the unattended-model setting through the real Typert gate
   const service=ctx.get(NAMESPACE);
   assert.ok(service,'registered under its namespace');
   assert.deepEqual({...service.typertRemote,service:undefined},{service:undefined,serviceKey:NAMESPACE,namespace:NAMESPACE});
-  assert.deepEqual(protocol.remoteMethods(service).map(m=>m.method),['models','setModel','jevFocus','clearJevFocus','identity','setIdentity','diary','events','createNote','ownerSession','setOwnerSession'],'what the gateway discovers (SRC markers)');
+  assert.deepEqual(protocol.remoteMethods(service).map(m=>m.method),['models','setModel','jevFocus','clearJevFocus','identity','setIdentity','diary','events','createNote','ownerSession','setOwnerSession','character','setCharacter','psyche','outreach','setOutreach','setDnd','ownerSeen'],'what the gateway discovers (SRC markers)');
   // The Jev focus the model keeps: Continuo lists it and can clear one; the clear stays with its time.
   const { writeFocus }=await import('../src/jev-focus-store.mjs');
   assert.deepEqual(service.jevFocus(),{},'no focus yet');
@@ -537,7 +537,7 @@ test('Continuo reaches the unattended-model setting through the real Typert gate
 });
 // Jev as the model's reflex: one tool sets the focus of an app; a run nobody watches only for the app it works in, every
 // few hours; a due patrol brings what Jev held back. Real DSH tool registry, stub lifecycle and bridge.
-async function jevHarness(sessionId,{schedule}={}){
+async function jevHarness(sessionId,{schedule,psyche,bridge}={}){
   const ctx=new Context();
   if(schedule)ctx.provide('schedule',schedule);
   ctx.provide('systemPrompt',{tools:()=>{},section:()=>{},getSectionOrder:()=>0});
@@ -555,7 +555,7 @@ async function jevHarness(sessionId,{schedule}={}){
   const { createJevBoard }=await import('../src/jev-board.mjs');
   const h={clock:Date.parse('2026-10-24T00:00:00Z'),adopted:[]};
   h.board=createJevBoard({now:()=>h.clock});
-  const api=installRestrictedCowork(preset.ctx,{},{...scope,...llm,Session},{lifecycle,bridge:{call:async()=>({}),forget:()=>{}},files:{},now:()=>h.clock,focusFile,jevBoard:h.board,unattended:()=>({patrol:null,notify:null}),adoptOwner:id=>h.adopted.push(id)});
+  const api=installRestrictedCowork(preset.ctx,{},{...scope,...llm,Session},{lifecycle,bridge:bridge??{call:async()=>({}),forget:()=>{}},files:{},now:()=>h.clock,focusFile,jevBoard:h.board,unattended:()=>({patrol:null,notify:null}),adoptOwner:id=>h.adopted.push(id),...(psyche?{psyche}:{})});
   liveAgents.set(agent.id,agent);
   ctx.emit('session/event',agent.session,{type:'agent-preset/selected',data:{agentPreset:'cowork-phone'}});
   const signal=new AbortController().signal;let serial=0;
@@ -717,4 +717,55 @@ test('the catalog of the installed dsh-schedule has the fields cowork_notes read
   for(const fields of ['id, kind, title, prompt, afterSeconds, and scheduledAt','id, kind, title, prompt, and scheduledAt','id, kind, title, prompt, everySeconds, and scheduledAt',
     'id, kind, title, prompt, time, timeZone, and scheduledAt','id, kind, title, prompt, time, timeZone, weekdays, and scheduledAt','id, kind, title, prompt, expression, timeZone, and scheduledAt'])
     assert.ok(source.includes(`must contain exactly ${fields}`),fields);
+});
+// Personality in the preset (docs/personality-design.md): the reach tool and its limits, the [STATE] notice of a turn,
+// a stretch of its own time getting tired, and the buttons that end a relation.
+test('the preset reaches the owner within limits, tells each turn how it is, and tires a stretch of its own time',async()=>{
+  const { createPsycheBoard }=await import('../src/psyche-store.mjs');
+  const { presetTraits }=await import('../src/psyche.mjs');
+  const path=await import('node:path'),os=await import('node:os');
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'cowork-psyche-'));
+  const board=createPsycheBoard({files:{character:path.join(dir,'character.json'),outreach:path.join(dir,'outreach.json'),psyche:path.join(dir,'psyche.json')}});
+  const calls=[];
+  const bridge={call:async(sid,name,args)=>{calls.push([name,args]);return {};},forget(){},labelsOf:(sid,ids)=>ids.map(id=>id==='block'?'加入黑名单':'发送')};
+  const h=await jevHarness('cowork-owner',{psyche:board,bridge});
+  h.clock=Date.parse('2026-10-31T02:00:00Z');
+  try{
+    assert.ok((await h.listed()).includes('cowork_reach_owner'),'an everyday tool');
+    h.turn(1,'user');
+    {const r=await h.call('cowork_reach_owner',{channel:'continuo',text:'在吗'});assert.equal(r.isError,true);assert.match(JSON.stringify(r),/talking with you in this chat/);}
+    h.turn(2,'webhook');await h.step(2,[h.hook]);
+    {const r=await h.call('cowork_reach_owner',{channel:'continuo',text:'刷到一只很像你的猫'});assert.equal(r.isError,false,JSON.stringify(r.error));}
+    assert.deepEqual(calls.at(-1),['phone.notify_owner',{text:'刷到一只很像你的猫'}]);
+    {const r=await h.call('cowork_reach_owner',{channel:'continuo',text:'还有一个'});assert.equal(r.isError,true);assert.match(JSON.stringify(r),/still unanswered/);}
+    // Without a character no [STATE]; a run nobody watches still learns how to reach the owner.
+    h.turn(3,'webhook');
+    {const d=await h.step(3,[h.hook]);const notice=d.messages.at(-1);assert.equal(notice.source.kind,'cowork-state');assert.match(notice.content[0].text,/^owner_contacts_json: /);}
+    board.setCharacter(presetTraits('INFP'));
+    h.turn(4,'webhook');
+    {const d=await h.step(4,[h.hook]);const text=d.messages.at(-1).content[0].text;assert.match(text,/^\[STATE\] Energy \d+\/100/);assert.match(text,/owner_contacts_json/);assert.doesNotMatch(text,/ordinary steps/);}
+    {const d=await h.step(4,[]);assert.equal(d.messages.length,0,'once per turn');}
+    // A turn of the owner: the [STATE] line only.
+    h.turn(5,'user');
+    {const d=await h.step(5,[llm.createUserMessage({content:[{type:'text',text:'今天怎么样'}],source:{kind:'user'}})]);const text=d.messages.at(-1).content[0].text;assert.match(text,/^\[STATE\]/);assert.doesNotMatch(text,/owner_contacts_json/);}
+    // Its own time: steps left at the start, [TIRED] near the floor, no phone actions once well past it.
+    const own=llm.createUserMessage({content:[{type:'text',text:'[OWN TIME]\nNobody asked you for anything.'}],source:{kind:'webhook',provider:'cowork-life',source:'continuo',deliveryId:'o1',ruleId:'cowork-own-time',form:'notice',summary:llm.boundContextSummary('它自己的时间')}});
+    h.turn(6,'webhook');
+    {const d=await h.step(6,[own]);assert.match(d.messages.at(-1).content[0].text,/This stretch leaves you about \d+ ordinary steps/);}
+    board.update(d=>({...d,state:{...d.state,energy:27,at:h.clock}}));
+    {const d=await h.step(6,[]);assert.equal(d.messages.at(-1).source.kind,'cowork-state');assert.match(d.messages.at(-1).content[0].text,/^\[TIRED\]/);}
+    {const d=await h.step(6,[]);assert.equal(d.messages.length,0,'told once');}
+    {const r=await h.call('phone_tap',{observationId:'o',elementId:'send'});assert.doesNotMatch(JSON.stringify(r),/out of energy/);}
+    board.update(d=>({...d,state:{...d.state,energy:9,at:h.clock}}));
+    await h.step(6,[]);
+    {const r=await h.call('phone_tap',{observationId:'o',elementId:'send'});assert.equal(r.isError,true);assert.match(JSON.stringify(r),/out of energy/);}
+    // The next turn is not exhausted; pressing 拉黑 itself lowers its mood.
+    h.turn(7,'webhook');await h.step(7,[h.hook]);
+    const mood=board.data().state.mood;
+    await h.call('phone_tap',{observationId:'o',elementId:'block'});
+    assert.ok(board.data().state.mood<mood,'it blocked someone');
+    const after=board.data().state.mood;
+    await h.call('phone_tap',{observationId:'o',elementId:'send'});
+    assert.equal(board.data().state.mood,after,'another button changes nothing');
+  }finally{await h.done();await fs.rm(dir,{recursive:true,force:true});}
 });

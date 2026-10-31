@@ -136,7 +136,7 @@ private fun notificationsGranted(context: android.content.Context) =
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
                     Text(identity.shown, style = MaterialTheme.typography.titleLarge)
-                    Text("名字、头像和用的模型", style = MaterialTheme.typography.bodySmall, color = Pocket.muted)
+                    Text("名字、头像、性格和用的模型", style = MaterialTheme.typography.bodySmall, color = Pocket.muted)
                 }
                 GlyphIcon(Glyph.ChevronRight, null, size = 18.dp, tint = Pocket.faint)
             }
@@ -195,14 +195,14 @@ private fun notificationsGranted(context: android.content.Context) =
 
 // ───────────────────────────── Identity ─────────────────────────────
 
-@Composable internal fun IdentitySettings(vm: PocketViewModel, back: () -> Unit) {
+@Composable internal fun IdentitySettings(vm: PocketViewModel, back: () -> Unit, open: (Screen) -> Unit) {
     val context = LocalContext.current
     val identity by IdentityStore.flow(context).collectAsState()
     var naming by remember { mutableStateOf(false) }
     val name = identity.shown
     val unattended = vm.unattended
     var modelFor by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(vm.connected) { if (vm.connected) { vm.unattendedRefresh(); if (vm.catalog.objects("groups").isEmpty()) vm.refresh() } }
+    LaunchedEffect(vm.connected) { if (vm.connected) { vm.unattendedRefresh(); vm.characterRefresh(); if (vm.catalog.objects("groups").isEmpty()) vm.refresh() } }
     SettingsPage(name, back) {
         Column(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Crossfade(identity.avatar, animationSpec = tween(260), label = "avatar") { key -> Avatar(key, StatusCard.Mood.HAPPY, identity.shown, size = 140.dp) }
@@ -213,6 +213,7 @@ private fun notificationsGranted(context: android.content.Context) =
         SectionLabel("头像")
         AvatarPicker(identity.avatar, identity.shown) { IdentityStore.setAvatar(context, it) }
         Footnote("名字会告诉它（写进给它的设定），通知里也用这个名字；它在各个应用里的昵称不变。头像只存在这台手机上。")
+        CharacterRows(vm, name, open)
 
         SectionLabel("${name}用的模型")
         InsetGroup {
@@ -223,17 +224,17 @@ private fun notificationsGranted(context: android.content.Context) =
                 GroupRow("你叫${name}时", icon = Glyph.Chat, subtitle = UnattendedModels.label(UnattendedModels.selection(unattended, UnattendedModels.OWNER), vm.catalog),
                     onClick = { modelFor = UnattendedModels.OWNER })
                 GroupDivider()
-                GroupRow("巡视", icon = Glyph.Clock, subtitle = UnattendedModels.label(UnattendedModels.selection(unattended, UnattendedModels.PATROL), vm.catalog),
+                GroupRow("自己的时间", icon = Glyph.Clock, subtitle = UnattendedModels.label(UnattendedModels.selection(unattended, UnattendedModels.PATROL), vm.catalog),
                     onClick = { modelFor = UnattendedModels.PATROL })
                 GroupDivider()
                 GroupRow("被通知叫醒", icon = Glyph.Filter, subtitle = UnattendedModels.label(UnattendedModels.selection(unattended, UnattendedModels.NOTIFY), vm.catalog),
                     onClick = { modelFor = UnattendedModels.NOTIFY })
             }
         }
-        Footnote("“你叫${name}时”管你们俩的对话里的每一轮，包括在那里到点的便条；巡视和被通知叫醒设了自己的就用自己的。没设的用会话自己的模型（新会话是 DSH 的默认模型）。改这里不动 DSH 的默认模型。")
+        Footnote("“你叫${name}时”管你们俩的对话里的每一轮，包括在那里到点的便条；自己的时间（以前的巡视也算）和被通知叫醒设了自己的就用自己的。没设的用会话自己的模型（新会话是 DSH 的默认模型）。改这里不动 DSH 的默认模型。")
     }
     modelFor?.let { kind ->
-        ModelSheet(vm.catalog, UnattendedModels.selection(unattended, kind), { modelFor = null }, title = when (kind) { UnattendedModels.PATROL -> "巡视用的模型"; UnattendedModels.OWNER -> "你叫${name}时用的模型"; else -> "被通知叫醒时用的模型" },
+        ModelSheet(vm.catalog, UnattendedModels.selection(unattended, kind), { modelFor = null }, title = when (kind) { UnattendedModels.PATROL -> "自己的时间用的模型"; UnattendedModels.OWNER -> "你叫${name}时用的模型"; else -> "被通知叫醒时用的模型" },
             clear = { vm.setUnattendedModel(kind, null, null, null); modelFor = null }) { p, m, e -> vm.setUnattendedModel(kind, p, m, e); modelFor = null }
     }
     if (naming) InputDialog("它叫什么？", "最多 ${IdentityRules.MAX_NAME} 个字，不能叫“通奏”", identity.name, { naming = false }) { value ->

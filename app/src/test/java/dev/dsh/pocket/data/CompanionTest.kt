@@ -27,7 +27,7 @@ class CompanionTest {
     }
 
     @Test fun aPatrolKeepsItsMarker() {
-        val request = Companion.noteRequest(ScheduleFormat.PATROL_SESSION, ScheduleFormat.patrolTask(false), ScheduleFormat.patrolTiming("Asia/Shanghai")).getJSONObject("request")
+        val request = Companion.noteRequest(ScheduleFormat.PATROL_SESSION, ScheduleFormat.patrolTask(false), TimingDraft("cron", cron = "0 9-21/3 * * *", zone = "Asia/Shanghai")).getJSONObject("request")
         assertTrue(request.getString("prompt").startsWith("[巡视] "))
         assertEquals("cron", request.getJSONObject("change").getString("kind"))
     }
@@ -101,20 +101,22 @@ class CompanionTest {
             {"at":5,"sessionId":"cowork-app-work-com-tencent-mobileqq","kind":"note","notified":["群里有人找你"," "],"app":{"profile":"work","package":"com.tencent.mobileqq"}},
             {"at":4,"sessionId":"cowork-app-work-com-tencent-mobileqq","kind":"owner","text":"x"},
             {"at":0,"sessionId":"cowork-app-patrol","kind":"patrol","text":"x"},
-            {"at":1,"sessionId":"cowork-app-patrol","kind":"patrol","text":"逛了一圈","apps":["tv.danmaku.bili",3]}],"more":true}"""))
+            {"at":1,"sessionId":"cowork-app-patrol","kind":"patrol","text":"逛了一圈","apps":["tv.danmaku.bili",3]},
+            {"at":2,"sessionId":"cowork-owner","kind":"own","text":"看了几个视频"}],"more":true}"""))
         assertTrue(page.more)
-        assertEquals(listOf(7L, 5L, 1L), page.entries.map { it.at })
+        assertEquals(listOf(7L, 5L, 1L, 2L), page.entries.map { it.at })
         val (wechat, qq, patrol) = page.entries
+        assertEquals("its own time is an event of its own", "自己的时间", Companion.eventTitle(page.entries.last()) { it })
         assertEquals(Companion.Event(7, "cowork-app-personal-com-tencent-mm", "notify", "回了", emptyList(), emptyList(), "com.tencent.mm", true, false), wechat)
         assertEquals(listOf("群里有人找你"), qq.notified)
         assertTrue(qq.finished)
         assertEquals(listOf("tv.danmaku.bili"), patrol.apps)
         assertNull(patrol.app)
         val label = { pkg: String -> mapOf("com.tencent.mm" to "微信", "com.tencent.mobileqq" to "QQ")[pkg] ?: pkg }
-        assertEquals(listOf("通知 · 微信（个人）", "便条 · QQ", "巡视"), page.entries.map { Companion.eventTitle(it, label) })
+        assertEquals(listOf("通知 · 微信（个人）", "便条 · QQ", "巡视", "自己的时间"), page.entries.map { Companion.eventTitle(it, label) })
         assertEquals("巡视 · QQ", Companion.eventTitle(qq.copy(kind = "patrol"), label))
         val older = patrol.copy(at = 0, sessionId = "cowork-app-patrol")
-        assertEquals(listOf(7L, 5L, 1L, 0L), Companion.mergeEvents(page.entries, listOf(older, wechat)).map { it.at })
+        assertEquals(listOf(7L, 5L, 2L, 1L, 0L), Companion.mergeEvents(page.entries, listOf(older, wechat)).map { it.at })
         assertEquals(Companion.EventPage(emptyList(), false), Companion.eventsPage(null))
         assertEquals(JSONObject("""{"request":{"before":7,"limit":30}}""").toString(), Companion.eventsRequest(before = 7).toString())
     }

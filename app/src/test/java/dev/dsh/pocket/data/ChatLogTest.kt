@@ -80,6 +80,33 @@ class ChatLogTest {
         assertEquals(listOf(Kind.OWNER, Kind.REPLY), ChatLog.of(nudged, running = false).map { it.kind })
     }
 
+    private fun reach(args: String, error: Boolean = false) = row("tool", title = "cowork_reach_owner — 完成", detail = "Arguments:\n$args", error = error)
+
+    @Test fun whatItSaysToTheOwnerOnItsOwnShowsEvenFromItsOwnRuns() {
+        val rows = listOf(
+            row("user", "晚安", source = "user"),
+            row("assistant", "晚安～"),
+            // Its own time the next day: the run stays out, what it said to the owner there shows.
+            row("notice", "[OWN TIME]", title = "它自己的时间", source = "webhook"),
+            row("tool", title = "phone_ui_tree — 完成"),
+            reach("""{"channel":"continuo","text":"刷到一个超好笑的猫视频，想给你看"}"""),
+            reach("""{"channel":"continuo","text":"refused"}""", error = true),
+            row("assistant", "逛完了"),
+            row("notice", "[OWNER SILENT]", title = "主人还没回", source = "webhook"),
+            reach("""{"channel":"com.tencent.mobileqq","text":"在忙吗？","chase":true}"""),
+        )
+        val log = ChatLog.of(rows, running = false)
+        assertEquals(listOf(Kind.OWNER, Kind.REPLY, Kind.REACH, Kind.REACH), log.map { it.kind })
+        assertEquals(listOf("刷到一个超好笑的猫视频，想给你看", "在忙吗？"), log.drop(2).map { it.text })
+        assertEquals(listOf("来找你", "在 QQ 上找你"), log.drop(2).map { it.label })
+        assertFalse("its own run going on says nothing in the chat", ChatLog.of(rows, running = true).any { it.kind == Kind.THINKING })
+        // The 叫它 sheet shows the latest one until the owner speaks again.
+        assertEquals(ChatLog.Reach("在忙吗？", "com.tencent.mobileqq"), ChatLog.reachAfterOwner(rows))
+        assertNull(ChatLog.reachAfterOwner(rows + row("user", "刚看到", source = "user")))
+        assertNull(ChatLog.reachOf(reach("""{"channel":"continuo","text":" "}""")))
+        assertEquals("no channel is Continuo", "continuo", ChatLog.reachOf(reach("""{"text":"嗨"}"""))?.channel)
+    }
+
     @Test fun aNoteIsOnlyAWrittenScheduleCreate() {
         assertNull(ChatLog.noteOf(row("tool", title = "schedule_list — 完成", detail = "Arguments:\n{}")))
         assertNull(ChatLog.noteOf(note("""{"prompt":"  "}""")))

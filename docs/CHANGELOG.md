@@ -4,6 +4,15 @@
 
 ---
 
+# 性格、能量与主动性（2026-10-31，未部署）
+
+- **来由**：你要它有确定的性格，基于荣格八维和 MBTI；不太克制；有主动性，而不是每天被便条拉起来几分钟；会像朋友一样主动找你。设计和与设计的差异见 [personality-design.md](personality-design.md)，运行时是什么样见 [cowork-internals.md](cowork-internals.md#性格能量与主动性)。
+- **插件**：新模块 `psyche.mjs`、`psyche-store.mjs`、`psyche-recorder.mjs`、`reach.mjs`、`own-time.mjs`；系统提示词多一段 `deployment:character`，每轮第一步多一条 `[STATE]`；新工具 `cowork_reach_owner`；自己的时间 `[OWN TIME]` 和 `[OWNER SILENT]`；人设允许回怼、主动找聊过天的人；自己留的便条每天 5 张改 10 张；`BrokerClient.labelsOf`（只读）；`coworkUnattended` 多 7 个方法。
+- **App**：设置“它”页的性格、能量心境、主动找我、你的联系方式、夜里别找我、别找我、自己的时间；性格页和联系方式页；聊天栏显示它主动找你的话；叫它半屏的“别找我”；新装引导的性格一步；便条页的性格卡；设了性格后巡视便条并进自己的时间；看过的回执。
+- **部署**：插件和 APK 一起装（旧插件不认 App 调的新方法，旧 App 不显示它主动找你的话）。Broker 的 Java 没改：装 APK 后正在跑的 Broker 进程照旧，不用重启。
+
+---
+
 # 新工具 phone_read_chat（2026-10-27）：往上读聊天里更早的消息
 
 - **来由**：模型自己提的建议。`phone_read_page` 只会往下翻，适合文章和动态；聊天窗口最新的消息在最下面，要看之前说了什么，只能一屏一屏地 `phone_scroll`。

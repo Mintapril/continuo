@@ -4,6 +4,9 @@ import { identityFile, readIdentity, writeIdentity, diaryFile, readDiary, activi
 import { appOfSession } from './jev-focus.mjs';
 import { createActivityRecorder } from './diary.mjs';
 import { createDiaryWriter } from './diary-writer.mjs';
+import { sharedPsyche } from './psyche-store.mjs';
+import { presetTraits, isType, energyBand, moodBand, characterPrompt } from './psyche.mjs';
+import { createPsycheRecorder } from './psyche-recorder.mjs';
 
 // Continuo reads and sets the owner's settings for Cowork over DSH's own authenticated RPC (the cookie session the app
 // logs in with), namespace `coworkUnattended`:
@@ -23,6 +26,12 @@ import { createDiaryWriter } from './diary-writer.mjs';
 // - `createNote({request: {sessionId, title, prompt, change}})`: a note the owner writes in Continuo, stored directly
 //   (dsh-schedule's own create, which DSH does not expose remotely), unmarked and in the owner's words, at the exact
 //   time they picked: no model turn is spent writing it down. `change` is the shape schedule/update takes.
+// - `character()` and `setCharacter({request: {type} | {traits}})`: its character, eight values the owner sets (a type's
+//   preset, then tuned; traits null clears it), with what follows from them (psyche.mjs derive).
+// - `psyche()`: its energy and mood now (active is false without a character).
+// - `outreach()`, `setOutreach({request: {...fields}})` and `setDnd({request: {until}})`: how it may reach the owner (the
+//   owner's accounts in its apps, topics a day, quiet hours, do not disturb, what the owner wants for its own time).
+// - `ownerSeen({request: {at}})`: the owner saw its messages in Continuo up to `at`.
 export const name = 'cowork-unattended';
 export const inject = ['llm'];
 export const NAMESPACE = 'coworkUnattended';
@@ -63,9 +72,10 @@ export function unattendedService({ Remote, TypertRemoteService }) {
       this.activityFile = config.activityFile ?? activityFile();
       this.ownerSessionFile = config.ownerSessionFile ?? ownerSessionFile();
       this.schedule = config.schedule ?? (() => undefined);
+      this.board = config.psyche ?? sharedPsyche();
       this.now = config.now ?? Date.now;
       // Plain JavaScript has no decorator syntax: mark the Remote methods exactly as @Remote would.
-      for (const method of ['models', 'setModel', 'jevFocus', 'clearJevFocus', 'identity', 'setIdentity', 'diary', 'events', 'createNote', 'ownerSession', 'setOwnerSession'])
+      for (const method of ['models', 'setModel', 'jevFocus', 'clearJevFocus', 'identity', 'setIdentity', 'diary', 'events', 'createNote', 'ownerSession', 'setOwnerSession', 'character', 'setCharacter', 'psyche', 'outreach', 'setOutreach', 'setDnd', 'ownerSeen'])
         Remote(method)(this[method], { kind: 'method', name: method, static: false, private: false, addInitializer: init => init.call(this) });
     }
     models() { return readUnattended(this.file); }
@@ -101,6 +111,37 @@ export function unattendedService({ Remote, TypertRemoteService }) {
     }
     ownerSession() { return { sessionId: readOwnerSession(this.ownerSessionFile) }; }
     setOwnerSession(request) { return { sessionId: writeOwnerSession(request?.sessionId, this.ownerSessionFile) }; }
+    character() { return { traits: this.board.character(), derived: this.board.derived() }; }
+    setCharacter(request) {
+      if (request?.type !== undefined) {
+        if (!isType(request.type)) throw new Error('type is one of the 16 MBTI types');
+        this.board.setCharacter(presetTraits(request.type));
+      } else this.board.setCharacter(request?.traits ?? null);
+      return this.character();
+    }
+    psyche() {
+      const derived = this.board.derived(), state = this.board.state();
+      return { active: !!derived, energy: state.energy, mood: state.mood, energyBand: energyBand(state.energy), moodBand: moodBand(state),
+        lastOwnerAt: state.lastOwnerAt, running: this.board.running() };
+    }
+    outreach() { return this.board.outreach(); }
+    setOutreach(request) {
+      const allowed = ['contacts', 'level', 'quietFrom', 'quietTo', 'dndUntil', 'preferences'];
+      const change = Object.fromEntries(Object.entries(request ?? {}).filter(([key]) => allowed.includes(key)));
+      return this.board.setOutreach(change);
+    }
+    setDnd(request) {
+      const until = request?.until ?? 0;
+      if (!Number.isSafeInteger(until) || until < 0) throw new Error('until is a time in milliseconds, or 0');
+      return this.board.setOutreach({ dndUntil: until > this.now() ? until : 0 });
+    }
+    ownerSeen(request) {
+      const at = request?.at;
+      if (!Number.isSafeInteger(at) || at <= 0) throw new Error('at is a time in milliseconds');
+      const seenAt = Math.min(at, this.now());
+      this.board.update(data => ({ ...data, seenAt: Math.max(data.seenAt, seenAt) }));
+      return { seenAt: this.board.data().seenAt };
+    }
     async createNote(request) {
       const schedule = this.schedule();
       if (typeof schedule?.create !== 'function') throw new Error('DSH scheduling is not running');
@@ -121,7 +162,9 @@ export async function apply(ctx, config = {}) {
   // The old per-turn diary lines are activity now (once); the daily diary takes over diary.jsonl.
   if (!config.diaryFile) try { if (migrateDiary()) ctx.logger?.info?.('cowork-diary: the per-turn diary became activity.jsonl'); } catch (error) { warn(`cowork-diary: diary.jsonl not moved (${error?.code ?? error?.name})`); }
   const observe = createActivityRecorder({ warn, ...(config.activityFile ? { append: entry => appendActivity(entry, config.activityFile) } : {}) });
-  ctx.on('session/event', (session, event) => { observe(session, event); }, { global: true });
+  // Energy and mood follow every Cowork turn (psyche-recorder.mjs).
+  const feel = createPsycheRecorder({ board: config.psyche ?? sharedPsyche() });
+  ctx.on('session/event', (session, event) => { observe(session, event); feel(session, event); }, { global: true });
   // The nightly entry: written with the owner's model (叫它), else the patrol's, else DSH's default.
   const writer = createDiaryWriter({
     llm: () => ctx.llm,
@@ -133,6 +176,7 @@ export async function apply(ctx, config = {}) {
       return { provider: routed.provider, model: routed.model, ...(routed.reasoningEffort ? { reasoningEffort: routed.reasoningEffort } : {}) };
     },
     name: () => readIdentity(config.identityFile ?? identityFile()).name,
+    character: () => characterPrompt((config.psyche ?? sharedPsyche()).character(), { brief: true }),
     files: { activity: config.activityFile ?? activityFile(), diary: config.diaryFile ?? diaryFile() },
     log: { info: message => ctx.logger?.info?.(message), warn },
   });

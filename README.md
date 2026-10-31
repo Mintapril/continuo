@@ -76,7 +76,8 @@ Continuo 是一个原生 Android 客户端（Kotlin + Jetpack Compose），连�
 | 应用与控制 | `phone_status`、`phone_apps`、`phone_start`、`phone_launch_app`、`phone_wait`、`phone_pause`、`phone_stop`、`phone_request_intervention`、`phone_notify_owner`、`phone_grant_permission`、`phone_uninstall_app` |
 
 - **一个会话**：你和它的聊天、它的巡视和便条、所有应用的通知都在同一个会话里，它记得自己在哪做过什么。聊天页只显示你们俩说的话，其余的在事件里。
-- **便条与巡视**：到点要做的事都是便条（基于 DSH 的 `dsh-schedule`）。你让它记的照做，它自己留的由它判断还做不做。巡视是一张周期便条，每次轮流照看几个应用。
+- **便条与巡视**：到点要做的事都是便条（基于 DSH 的 `dsh-schedule`）。你让它记的照做，它自己留的由它判断还做不做。巡视是一张周期便条，每次轮流照看几个应用；定了性格以后巡视并进它自己的时间。
+- **性格与主动性**：你用荣格八维给它定性格（选类型再微调 8 个值）。它有能量和心境：做什么累、靠什么回血因性格而异；歇够了会自己起来用手机，也会像朋友一样在 Continuo、QQ、微信上找你（有上限、夜里和勿扰时不找）。说话更放得开，被惹到可以回怼，但有写死的底线。
 - **通知叫醒**：Broker 读通知，判断模型 Jev 认为值得才叫醒它；它正在自己忙时直接插进去，你们在聊时等聊完。模型可以给每个应用写关注说明，但私聊和 @ 一定算、广告一定不算。
 - **自主但有边界**：像普通人一样用副屏上的账号；社交只做低侵入的，不主动私聊、加好友，敏感内容不碰。付款、账号安全、清空聊天记录要你决定。副屏同一时间只给一个回合用，你的消息优先。
 - **省上下文**：工具按需加载，旧屏幕压成一行，用插件自己的上下文压缩：用到窗口的四分之一（小于 50 万的窗口用到一半）才压，每轮最多一次。
@@ -146,6 +147,7 @@ node --test test/strict-*.test.mjs   # 插件离线测试
 - [Cowork 实现细节](docs/cowork-internals.md) · [更新日志](docs/CHANGELOG.md)
 - [Broker 协议 v1](cowork-plugin/PROTOCOL.md) · [插件说明](cowork-plugin/README.md) · [集成约定](COWORK-CONTRACT.md)
 - [创建隔离工作资料](docs/isolation-profile-setup.md)
+- [性格、能量与主动性](docs/personality-design.md)
 - 早期设计：[Cowork 与任务岛](docs/cowork-design.md) · [主屏自由使用与后台并行](docs/cowork-concurrent-design.md) · [phone_batch](docs/phone-batch-design.md)
 
 早期设计文档的细节以代码为准。文档引用的实机证据（`test-evidence/`）含个人数据，没有随仓库提交。

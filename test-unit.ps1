@@ -39,6 +39,7 @@ foreach ($entry in $classpath) { if (!(Test-Path -LiteralPath $entry)) { throw "
     dev.dsh.pocket.data.QueuedInputTest `
     dev.dsh.pocket.data.CompanionTest `
     dev.dsh.pocket.data.ChatLogTest `
+    dev.dsh.pocket.data.TemperamentTest `
     dev.dsh.pocket.data.ProgressTest `
     dev.dsh.pocket.data.IdentityRulesTest `
     dev.dsh.pocket.cowork.StatusCardTest `

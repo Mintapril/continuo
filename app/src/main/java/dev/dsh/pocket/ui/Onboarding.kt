@@ -51,12 +51,12 @@ import dev.dsh.pocket.data.text
 import dev.dsh.pocket.island.IslandRuntime
 import dev.dsh.pocket.notify.NotifyCenter
 
-private enum class Step { WELCOME, CHECK, NAME, FACE, ABILITIES, PERMISSIONS, HELLO }
+private enum class Step { WELCOME, CHECK, NAME, FACE, CHARACTER, ABILITIES, PERMISSIONS, HELLO }
 
 /**
  * First run, in the order things are actually set up: what it is; checking its phone (Root, DSH, the plugin, the
  * work profile, the executor: DSH and the plugin are installed from a computer, so these are only checked); its
- * name and face; what it may do on its own; the permissions on the owner's phone; and the first time the owner calls
+ * name and face; its character (optional); what it may do on its own; the permissions on the owner's phone; and the first time the owner calls
  * it. Every step can be changed later in the settings.
  */
 @Composable internal fun Onboarding(vm: PocketViewModel, done: () -> Unit) {
@@ -121,6 +121,7 @@ private enum class Step { WELCOME, CHECK, NAME, FACE, ABILITIES, PERMISSIONS, HE
                         }
                     }
                 }
+                Step.CHARACTER -> CharacterStep(vm, shown)
                 Step.ABILITIES -> AbilitiesStep(vm, shown)
                 Step.PERMISSIONS -> PermissionsStep(vm, shown)
                 Step.HELLO -> {
@@ -213,25 +214,37 @@ private enum class Step { WELCOME, CHECK, NAME, FACE, ABILITIES, PERMISSIONS, HE
     if (!vm.connected) { Spacer(Modifier.height(12.dp)); ConnectCard(vm) }
 }
 
+/** Its character: a type to start from (the eight values are tuned in the settings). Skipping is fine. */
+@Composable private fun CharacterStep(vm: PocketViewModel, name: String) {
+    LaunchedEffect(vm.connected) { if (vm.connected) vm.characterRefresh() }
+    val chosen = vm.character?.derived?.type
+    Title("${name}是什么性格？", "按荣格八维和 MBTI 选一个类型，它就有自己的脾气和节奏。也可以先跳过，以后在设置里定。")
+    dev.dsh.pocket.data.Temperament.GROUPS.forEach { (group, types) ->
+        Text(group, Modifier.padding(top = 10.dp, bottom = 6.dp), style = MaterialTheme.typography.labelMedium, color = Pocket.muted)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            types.forEach { type -> Pill(type, Modifier.weight(1f), trailing = null, selected = chosen == type, enabled = vm.connected) { vm.setCharacterType(type) } }
+        }
+    }
+    vm.character?.derived?.let { d -> Footnote("${d.type} · 外倾 ${d.extraverted}%。${dev.dsh.pocket.data.Temperament.easeText(d)}") }
+    if (!vm.connected) Footnote("连上本机 DSH 后才能定。")
+    Footnote("性格只管它怎么做，不管做不做：你交代的事照做，花钱和账号安全的规矩也不变。")
+}
+
 @Composable private fun AbilitiesStep(vm: PocketViewModel, name: String) {
     val context = LocalContext.current
     remember { NotifyCenter.init(context) }
     val notifyOn by NotifyCenter.enabled.collectAsState()
-    var patrol by remember { mutableStateOf<Boolean?>(null) }
-    LaunchedEffect(vm.connected) { if (vm.connected) vm.schedulesRefresh() }
-    val patrolNote = vm.schedules.tasks.firstOrNull { it.text("status") == "active" && it.text("prompt").trimStart().startsWith("[巡视]") }
-    val hasPatrol = patrolNote != null
+    LaunchedEffect(vm.connected) { if (vm.connected) vm.characterRefresh() }
+    val character = vm.character?.derived
     Title("${name}能自己做什么？", "都可以以后在设置里改。")
     InsetGroup {
         GroupRow("通知叫醒", icon = Glyph.Filter, subtitle = "有意义的通知（私聊、@它）会叫它去看；银行和验证码类应用可以在设置里排除", chevron = false, trailing = {
             Switch(notifyOn, { NotifyCenter.setEnabled(it) }, colors = SwitchDefaults.colors(checkedTrackColor = Pocket.accent))
         })
         GroupDivider()
-        GroupRow("巡视", icon = Glyph.Clock, subtitle = if (patrolNote != null) "开着：${dev.dsh.pocket.data.Companion.frequency(patrolNote)}" else "每次挑两三个应用逛逛。会花模型的钱，可以以后再开", chevron = false, trailing = {
-            if (hasPatrol) Text("已开", color = Pocket.success, style = MaterialTheme.typography.labelLarge)
-            else TextButton({ patrol = true; vm.startPatrol { patrol = null; it.onFailure { e -> vm.showError(e.message ?: "巡视没有贴上") } } }, enabled = vm.connected && patrol == null) {
-                Text(if (patrol == true) "正在贴…" else "开", color = Pocket.accent)
-            }
+        GroupRow("自己的时间", icon = Glyph.Clock, subtitle = if (character != null) "开着：精神够、闲得久了，它就自己起来逛，想你了也会来找你；夜里不起来。会花模型的钱"
+            else "要先定个性格（上一步），它才会自己安排时间", chevron = false, trailing = {
+            if (character != null) Text("已开", color = Pocket.success, style = MaterialTheme.typography.labelLarge)
         })
     }
     Footnote("判断通知要不要叫醒它，用的是 OpenRouter 上的小模型（Jev），密钥只存在本机 DSH 里，在设置的“通知叫醒”里填。")

@@ -32,7 +32,7 @@ object JevFocus {
     /** When the model changed it, in words. */
     fun byLabel(by: String): String = when (by) {
         "owner" -> "和你对话时"
-        "patrol" -> "巡视时"
+        "patrol" -> "自己逛的时候"
         "notify" -> "通知唤起时"
         "unattended" -> "无人值守时"
         else -> ""

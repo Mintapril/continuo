@@ -299,7 +299,8 @@ private fun jobStatus(value: String) = when (value) { "running" -> "运行中"; 
         dismissButton = { TextButton(dismiss) { Text("取消", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface) } })
 }
 
-@Composable internal fun InputDialog(title: String, label: String, initial: String, dismiss: () -> Unit, secret: Boolean = false, allowBlank: Boolean = false, submit: (String) -> Unit) {
+@Composable internal fun InputDialog(title: String, label: String, initial: String, dismiss: () -> Unit, secret: Boolean = false, allowBlank: Boolean = false,
+                                     singleLine: Boolean = true, submit: (String) -> Unit) {
     var value by rememberSaveable { mutableStateOf(initial) }
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
@@ -309,7 +310,7 @@ private fun jobStatus(value: String) = when (value) { "running" -> "运行中"; 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(label, style = MaterialTheme.typography.bodySmall, color = Pocket.muted)
                 Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, border = BorderStroke(1.dp, Pocket.hairline)) {
-                    BasicTextField(value, { value = it }, Modifier.fillMaxWidth().focusRequester(focus).padding(horizontal = 14.dp, vertical = 13.dp), singleLine = true,
+                    BasicTextField(value, { value = it }, Modifier.fillMaxWidth().then(if (singleLine) Modifier else Modifier.heightIn(min = 96.dp, max = 220.dp)).focusRequester(focus).padding(horizontal = 14.dp, vertical = 13.dp), singleLine = singleLine,
                         visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
                         textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface), cursorBrush = SolidColor(Pocket.accent))
                 }

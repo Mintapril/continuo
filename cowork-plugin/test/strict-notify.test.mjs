@@ -7,6 +7,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createScreenBoard } from '../src/screen-board.mjs';
 import { createJevBoard } from '../src/jev-board.mjs';
+import { createPsycheBoard } from '../src/psyche-store.mjs';
 import { notifyMac, parseNotify, framePrompt, ownerTitle, mergeBatches, createCoalescer, createNotifyHandler, installNotify, loadNotifySecret,
   createJudge, jevBody, jevProbabilities, keepItems, splitByApp, appKey, inject, createOwnerDelivery, notifiedApps, notifiedAppsOf,
   SIGNATURE_HEADER, RULE_ID, KIND, LIMITS, MAX_BODY_BYTES, MAX_ITEMS, PRESET, JEV, INSTRUCTION, WORKSPACE } from '../src/notify.mjs';
@@ -405,7 +406,10 @@ function host({ jev = 0.9, stored = [], archived: hidden = [] } = {}) {
 }
 // Each test gets its own held board (the shared one lives on globalThis) and the focus the host holds.
 const install = (h, c) => installNotify(h.ctx, { listen: false, readSecret: async () => VECTOR.secret, fetch: h.fetch, llm: h.llm,
-  jevBoard: createJevBoard({ now: c.now }), focus: () => h.focus, owner: () => OWNER, name: () => '小满', ...c });
+  jevBoard: createJevBoard({ now: c.now }), focus: () => h.focus, owner: () => OWNER, name: () => '小满',
+  psyche: createPsycheBoard({ files: psycheFiles() }), ownTime: false, ...c });
+// A psyche of its own for each install, in a fresh temporary folder (nothing is written to the real plugin folder).
+const psycheFiles = (dir = path.join(tmpdir(), `cowork-psyche-${randomUUID()}`)) => ({ character: path.join(dir, 'character.json'), outreach: path.join(dir, 'outreach.json'), psyche: path.join(dir, 'psyche.json') });
 const textsOf = message => JSON.parse(message.m.content[0].text.split('\n').at(-1).slice('notifications_untrusted_json: '.length)).map(x => x.text);
 
 test('notify needs the DSH session services and no longer goes through dsh-webhook', () => {

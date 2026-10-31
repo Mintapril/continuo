@@ -163,7 +163,7 @@ private class Voice(private val context: android.content.Context) : RecognitionL
 }
 
 /** The latest exchange of the owner's conversation: what they said last, and its newest reply after that. */
-private data class Exchange(val said: String, val reply: String, val notes: List<ChatLog.Note>)
+private data class Exchange(val said: String, val reply: String, val notes: List<ChatLog.Note>, val reach: ChatLog.Reach? = null)
 
 private fun exchange(rows: List<TranscriptRow>): Exchange {
     // Its patrols and notifications run in this conversation too: only what followed your words, until something else
@@ -173,7 +173,8 @@ private fun exchange(rows: List<TranscriptRow>): Exchange {
     val reply = after.lastOrNull { it.role == "assistant" && it.text.isNotBlank() }?.text.orEmpty()
     // A note it wrote down while you talked shows as a yellow note: that is a "later" thing, not done now.
     val notes = after.mapNotNull { ChatLog.noteOf(it) }
-    return Exchange(part.firstOrNull()?.text.orEmpty(), reply, notes)
+    // What it said to you on its own since then (its "找你" notice opens this sheet with 回它).
+    return Exchange(part.firstOrNull()?.text.orEmpty(), reply, notes, ChatLog.reachAfterOwner(rows))
 }
 
 /**
@@ -229,6 +230,10 @@ private fun exchange(rows: List<TranscriptRow>): Exchange {
     val progress = rememberProgress(if (ready) vm.rows else emptyList(), vm.running && mine, waiting && mine, sent != null, app)
     var told by remember { mutableStateOf("") }
     var confirmClear by remember { mutableStateOf(false) }
+    // 别找我: chosen inline (a window without an activity cannot show a dialog).
+    var dnd by remember { mutableStateOf(false) }
+    LaunchedEffect(vm.connected) { vm.outreachRefresh() }
+    LaunchedEffect(talk.reach, ready) { if (ready && talk.reach != null) vm.ownerSeen() }
     var clearing by remember { mutableStateOf(false) }
     val voice = remember { Voice(context) }
     DisposableEffect(Unit) { onDispose { voice.destroy() } }
@@ -243,7 +248,7 @@ private fun exchange(rows: List<TranscriptRow>): Exchange {
     LaunchedEffect(Unit) { if (startVoice) wantVoice() }
     LaunchedEffect(vm.notice) { if (vm.notice.isNotBlank()) { error = vm.notice; vm.clearNotice() } }
     val focus = remember { FocusRequester() }
-    LaunchedEffect(voiceMode, ready, confirmClear) { if (!voiceMode && ready && !confirmClear) { delay(120); runCatching { focus.requestFocus() }; keyboard?.show() } }
+    LaunchedEffect(voiceMode, ready, confirmClear, dnd) { if (!voiceMode && ready && !confirmClear && !dnd) { delay(120); runCatching { focus.requestFocus() }; keyboard?.show() } }
     val mood = when {
         card.asking -> StatusCard.Mood.CALL
         (vm.running || sent != null) && !waiting -> StatusCard.Mood.WORK
@@ -265,15 +270,35 @@ private fun exchange(rows: List<TranscriptRow>): Exchange {
                     else -> "在听"
                 }, style = MaterialTheme.typography.bodySmall, color = SheetMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            if (ready && vm.rows.isNotEmpty() && !confirmClear) CircleButton(Glyph.Archive, "清空对话", container = Color.Transparent, tint = SheetMuted) {
+            if (ready && !confirmClear && !dnd) CircleButton(Glyph.Hand, "别找我", container = Color.Transparent,
+                tint = if ((vm.outreach?.dndUntil ?: 0) > System.currentTimeMillis()) SheetText else SheetMuted) { error = ""; keyboard?.hide(); voice.cancel(); voiceMode = false; dnd = true }
+            if (ready && vm.rows.isNotEmpty() && !confirmClear && !dnd) CircleButton(Glyph.Archive, "清空对话", container = Color.Transparent, tint = SheetMuted) {
                 error = ""; told = ""
                 if (vm.running) error = "${identity.shown}正在做事，等它做完再清空"
                 else { keyboard?.hide(); voice.cancel(); voiceMode = false; vm.schedulesRefresh(); confirmClear = true }
             }
             if (linked) LivePreview(Modifier.padding(start = 6.dp).width(52.dp).pointerInput(Unit) { detectTapGestures { CoworkControllerService.show(context, CoworkControllerService.WATCH); dismiss() } })
         }
-        AnimatedContent(confirmClear, transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) using SizeTransform(clip = false) }, label = "clear") { confirming ->
-        if (confirming) {
+        AnimatedContent(confirmClear || dnd, transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) using SizeTransform(clip = false) }, label = "clear") { confirming ->
+        if (confirming && dnd) {
+            val now = System.currentTimeMillis()
+            val until = vm.outreach?.dndUntil ?: 0
+            val zone = java.time.ZoneId.systemDefault()
+            fun choose(at: Long) { vm.setDnd(at); dnd = false; told = if (at > now) Temperament.dndText(at, now, zone) else "${identity.shown}又可以找你了" }
+            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("别找我", style = MaterialTheme.typography.titleMedium, color = SheetText)
+                Text(if (until > now) Temperament.dndText(until, now, zone) + "。你找${identity.shown}照常。" else "这段时间${identity.shown}不主动找你，你找它照常。",
+                    style = MaterialTheme.typography.bodyMedium, color = SheetMuted)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SheetPill("1 小时", Modifier.weight(1f)) { choose(Temperament.inAnHour(now)) }
+                    SheetPill("到明早 8 点", Modifier.weight(1f)) { choose(Temperament.nextMorning(now, zone)) }
+                }
+                Row(Modifier.fillMaxWidth().padding(bottom = 14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SheetPill("算了", Modifier.weight(1f)) { dnd = false }
+                    if (until > now) SheetPill("现在可以找我", Modifier.weight(1f), bright = true) { choose(0) }
+                }
+            }
+        } else if (confirming) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("清空这段对话？", style = MaterialTheme.typography.titleMedium, color = SheetText)
                 Text("${identity.shown}会从头开始聊，刚才说的不再记得；记忆和日记都还在" +
@@ -307,6 +332,11 @@ private fun exchange(rows: List<TranscriptRow>): Exchange {
                 Text("${identity.shown}说", style = MaterialTheme.typography.labelSmall, color = SheetMuted)
                 Text(reply, style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp, lineHeight = 26.sp), fontWeight = FontWeight.Medium, color = SheetText)
             }
+            // What it said to you on its own after that (in Continuo, or in one of your apps).
+            talk.reach?.let { reach ->
+                Text("${identity.shown}${reach.label}", style = MaterialTheme.typography.labelSmall, color = SheetMuted)
+                Text(reach.text, style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp, lineHeight = 26.sp), fontWeight = FontWeight.Medium, color = SheetText)
+            }
             // What it is doing, below what it said so far: a status line, not its words.
             progress?.let { ProgressLine(it, SheetMuted, MaterialTheme.typography.bodyMedium, Modifier.padding(top = 2.dp)) }
             talk.notes.forEach { note ->
@@ -317,7 +347,7 @@ private fun exchange(rows: List<TranscriptRow>): Exchange {
                     }
                 }
             }
-            if (said.isBlank() && reply.isBlank() && progress == null) Text(if (ready) "有什么事，跟${identity.shown}说吧。" else "正在叫${identity.shown}…",
+            if (said.isBlank() && reply.isBlank() && progress == null && talk.reach == null) Text(if (ready) "有什么事，跟${identity.shown}说吧。" else "正在叫${identity.shown}…",
                 style = MaterialTheme.typography.bodyLarge, color = SheetMuted)
             if (told.isNotBlank()) Text(told, style = MaterialTheme.typography.bodySmall, color = SheetMuted)
             if (onPending != null && vm.pending.isNotEmpty()) Surface({ onPending() }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color = SheetField, contentColor = SheetText) {
@@ -472,5 +502,12 @@ private data class JSONNotePosted(val words: String, val next: String, val reply
     Surface(onClick, shape = CircleShape, color = fill, contentColor = text,
         border = androidx.compose.foundation.BorderStroke(1.dp, ink.copy(alpha = if (selected) 1f else 0.35f))) {
         Text(label, Modifier.padding(horizontal = 14.dp, vertical = 7.dp), style = MaterialTheme.typography.labelLarge)
+    }
+}
+
+/** A pill button of the dark sheet: [bright] is the main choice. */
+@Composable private fun SheetPill(text: String, modifier: Modifier = Modifier, bright: Boolean = false, onClick: () -> Unit) {
+    Surface(onClick, modifier.height(48.dp), shape = CircleShape, color = if (bright) Color.White else SheetField, contentColor = if (bright) Color.Black else SheetText) {
+        Box(contentAlignment = Alignment.Center) { Text(text, style = MaterialTheme.typography.titleSmall) }
     }
 }

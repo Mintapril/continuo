@@ -1,5 +1,6 @@
 import { appendActivity } from './companion-store.mjs';
 import { notifiedApps } from './notify.mjs';
+import { isOwnTimeSource } from './own-time.mjs';
 
 // What the diary is written from: when a Cowork turn ends, one activity line says what it did. What started the turn
 // (the owner, a due note, a patrol, a notification), what the owner said (their turns only), its last reply, the apps it
@@ -17,6 +18,8 @@ export function kindOf(message) {
   const source = message?.source;
   if (source?.kind === 'user') return 'owner';
   if (source?.kind === 'webhook' && source.ruleId === NOTIFY_RULE) return 'notify';
+  // Its own time, and the follow-up when the owner had not seen its message (own-time.mjs).
+  if (isOwnTimeSource(source)) return 'own';
   if (source?.kind === 'schedule') {
     const text = textOf(message);
     return /\[PATROL\]|\[巡视\]/.test(text) ? 'patrol' : 'note';
@@ -37,6 +40,8 @@ function noteCall(turn, name, args) {
   else if (name === 'phone_type_text' && typeof args.text === 'string') turn.typed.push(args.text);
   else if (name === 'phone_batch' && Array.isArray(args.steps)) { for (const step of args.steps) if (step?.tool === 'type_text' && typeof step.text === 'string') turn.typed.push(step.text); }
   else if (name === 'phone_notify_owner' && typeof args.text === 'string') turn.notified.push(args.text);
+  // What it told the owner on its own (reach.mjs): in Continuo, or in the owner's app.
+  else if (name === 'cowork_reach_owner' && typeof args.text === 'string') turn.notified.push(args.text);
 }
 
 /**

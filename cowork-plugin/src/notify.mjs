@@ -8,6 +8,9 @@ import { sharedJevBoard, heldView } from './jev-board.mjs';
 import { readFocus, activeFocus, isFocusKey } from './jev-focus-store.mjs';
 import { createStandingSessions, STANDING_INJECT, WORKSPACE as STANDING_WORKSPACE, PRESET as STANDING_PRESET } from './standing.mjs';
 import { readOwnerSession, readIdentity } from './companion-store.mjs';
+import { sharedPsyche } from './psyche-store.mjs';
+import { respond, burst, energyBand } from './psyche.mjs';
+import { createOwnTime, isOwnTimeSource, OWN } from './own-time.mjs';
 
 // Notification triggers. Continuo batches every app's notifications on the phone (excluded apps never leave it) and
 // sends each batch here, signed. This host-plane plugin asks the Jev judge model about each notification separately;
@@ -213,6 +216,17 @@ export function framePrompt(req, { focus, held } = {}) {
   ].join('\n');
 }
 
+/** A private message from the owner's own account in one of its apps: the sender is the remark it keeps for them. */
+export const fromOwner = (item, outreach) => item?.profile === 'work' && item.origin !== 'screen'
+  && (outreach?.contacts ?? []).some(c => c.package === item.package && c.remark === item.sender);
+/** Its own message to the owner, arriving in the owner's app (personal profile) under the name it shows there. */
+export const fromItself = (item, outreach) => item?.profile === 'personal'
+  && (outreach?.contacts ?? []).some(c => c.package === item.package && c.shownAs === item.sender);
+// While its energy is low (psyche.mjs, tired or spent) only the owner and what Jev judges this sure about wake it.
+export const LOW_ENERGY_P = 0.8;
+// People answering it count once per notification, at most this many per batch (its energy and mood, psyche.mjs).
+const ANSWERS_PER_BATCH = 3;
+
 /** One app, by profile and package. Package names are [A-Za-z0-9_.] only (parseItems). */
 export const appKey = item => `${item.profile}:${item.package}`;
 
@@ -399,7 +413,7 @@ export const ownerTitle = name => `你和${name || '它'}`;
  * to the session.
  */
 export function createOwnerDelivery(ctx, llm, { jevBoard = sharedJevBoard(), focus = () => ({}), owner = () => readOwnerSession(),
-  name = () => readIdentity().name, standing = createStandingSessions(ctx) } = {}) {
+  name = () => readIdentity().name, standing = createStandingSessions(ctx), psyche = sharedPsyche(), now = Date.now } = {}) {
   return Object.freeze({
     /** 'steer' into the open turn of the owner's conversation, or 'followup' as its next turn. */
     async deliver(key, batch, mode) {
@@ -410,13 +424,39 @@ export function createOwnerDelivery(ctx, llm, { jevBoard = sharedJevBoard(), foc
           summary: llm.boundContextSummary(`${KIND} webhook handled by ${RULE_ID}`) } });
       if (mode === 'steer') agent.steer(message); else agent.followup(message);
       held.commit();
+      answered(batch);
+    },
+    /** A turn of its own time, or the follow-up when the owner has not seen its message (own-time.mjs). */
+    async start(text, ruleId, summary) {
+      const agent = await standing.agentOf(owner(), ownerTitle(name()));
+      agent.followup(llm.createUserMessage({ content: [{ type: 'text', text }],
+        source: { kind: 'webhook', provider: OWN.provider, source: 'continuo', deliveryId: `${ruleId}-${now()}`, ruleId, form: 'notice',
+          summary: llm.boundContextSummary(summary) } }));
     },
   });
+  /** The owner wrote from one of their accounts (an answer), or people wrote to it (an extravert recharges). */
+  function answered(batch) {
+    const outreach = psyche.outreach();
+    const items = (batch?.items ?? []).filter(item => item.profile === 'work' && item.origin !== 'screen');
+    const owners = items.filter(item => fromOwner(item, outreach)).length;
+    const others = Math.min(ANSWERS_PER_BATCH, items.length - owners);
+    if (!owners && !(others && psyche.derived())) return;
+    const at = now(), running = psyche.running();
+    psyche.update((data, d) => {
+      let state = data.state;
+      if (d) {
+        if (owners) state = respond(state, d, { owner: true, now: at, running });
+        for (let i = 0; i < others; i++) state = respond(state, d, { now: at, running });
+      } else if (owners) state = { ...state, lastOwnerAt: at };
+      return { ...data, state, ...(owners ? { answeredAt: at } : {}) };
+    });
+  }
 }
 
 /** Wires the ingress, judge, queue and the owner's conversation into ctx. `listen: false` keeps tests off the fixed port. */
 export function installNotify(ctx, { listen = true, readSecret, now = Date.now, setTimer, clearTimer, fetch, llm, board = sharedScreenBoard(),
-  jevBoard = sharedJevBoard(), focus = () => activeFocus(readFocus()), owner = () => readOwnerSession(), name = () => readIdentity().name } = {}) {
+  jevBoard = sharedJevBoard(), focus = () => activeFocus(readFocus()), owner = () => readOwnerSession(), name = () => readIdentity().name,
+  psyche = sharedPsyche(), ownTime: ownTimeClock = true } = {}) {
   // Open Cowork turns (any session on the cowork-phone preset): each holds the AI screen, unless it is still waiting
   // in line for it (board). `joinable`: the open turns known to be runs of its own (a due note or patrol, notifications
   // started them) that no message of the owner has joined; only those take batches, the others hold them until they end.
@@ -424,7 +464,7 @@ export function installNotify(ctx, { listen = true, readSecret, now = Date.now, 
   const presetOf = session => presets.get(session.id) ?? session.header?.agentPreset;
   const busyUntil = () => { let until = 0; for (const [id, started] of open) if (!board.has(id)) until = Math.max(until, started + LIMITS.holdMs); return until; };
   const judge = createJudge({ resolveKey: () => ctx.credentials.resolve(JEV.credential), fetch, now });
-  const sessions = createOwnerDelivery(ctx, llm, { jevBoard, focus, owner, name });
+  const sessions = createOwnerDelivery(ctx, llm, { jevBoard, focus, owner, name, psyche, now });
   const coalescer = createCoalescer({ now, setTimer, clearTimer, busyUntil, target: owner, isOpen: id => joinable.has(id), isWaiting: id => board.has(id),
     deliver: (key, batch, mode) => sessions.deliver(key, batch, mode).catch(error => {
       ctx.logger?.warn?.(`cowork-notify: the owner's conversation not reached for ${key} (${error?.name ?? 'Error'})`); throw error; }) });
@@ -439,7 +479,7 @@ export function installNotify(ctx, { listen = true, readSecret, now = Date.now, 
       if (!open.has(session.id)) return;
       if (source?.kind === 'user') { owned.add(session.id); joinable.delete(session.id); }
       // A turn of its own has begun: what waits may join it.
-      else if (!owned.has(session.id) && (source?.kind === 'schedule' || (source?.kind === 'webhook' && source.ruleId === RULE_ID))) { joinable.add(session.id); coalescer.poke(); }
+      else if (!owned.has(session.id) && (source?.kind === 'schedule' || (source?.kind === 'webhook' && (source.ruleId === RULE_ID || isOwnTimeSource(source))))) { joinable.add(session.id); coalescer.poke(); }
     } else if (event?.type === 'turn/end') {
       joinable.delete(session.id); owned.delete(session.id);
       const wasOpen = open.delete(session.id);
@@ -449,9 +489,22 @@ export function installNotify(ctx, { listen = true, readSecret, now = Date.now, 
     }
   }
   ctx.on('session/event', (session, event) => { observe(session, event); }, { global: true });
-  async function accept(req) {
+  async function accept(input) {
+    const outreach = psyche.outreach();
+    // Its own message to the owner, seen in the owner's app: nothing for Jev or the model.
+    const own = input.items.filter(item => fromItself(item, outreach));
+    if (own.length) {
+      psyche.update(data => ({ ...data, reaches: data.reaches.map((r, i) => (i === data.reaches.length - 1 && own.some(item => item.package === r.channel) ? { ...r, verified: true } : r)) }));
+    }
+    const req = own.length ? { ...input, items: input.items.filter(item => !fromItself(item, outreach)), count: input.count - own.length } : input;
+    if (!req.items.length) return { queued: false, judged: false, own: own.length };
+    if (req.items.length >= 10) { const at = now(), running = psyche.running(); psyche.update((data, d) => (d ? { ...data, state: burst(data.state, d, { count: req.items.length, now: at, running }) } : data)); }
     const focusNow = focus();
-    const verdict = await judge(req, focusNow);
+    const judged = await judge(req, focusNow);
+    // The owner writing from their own account always gets through; while its energy is low, only that and what Jev
+    // is sure about (LOW_ENERGY_P) do, the rest waits on the board like anything Jev holds back.
+    const tired = psyche.derived() && ['tired', 'spent'].includes(energyBand(psyche.state().energy));
+    const verdict = judged.error ? judged : { ...judged, ps: judged.ps.map((p, i) => (fromOwner(req.items[i], outreach) ? 1 : tired && p < LOW_ENERGY_P ? Math.min(p, JEV.threshold - 0.01) : p)) };
     // What Jev holds back, or cannot judge, waits until the model next looks (screen text is left out: the app's own
     // screen shows it again when the model opens it).
     const heldOf = (item, verdictOf) => ({ key: appKey(item), app: item.app, package: item.package, profile: item.profile, sender: item.sender,
@@ -486,7 +539,12 @@ export function installNotify(ctx, { listen = true, readSecret, now = Date.now, 
     }
     return () => { unsubscribe(); server?.close(); coalescer.dispose(); };
   }, 'cowork-notify: ingress');
-  return { coalescer, handler, observe, accept, busyUntil, jevBoard };
+  // Its own time (own-time.mjs): only while no Cowork turn is open and no batch is on its way.
+  const ownTime = createOwnTime({ board: psyche, now, log: { warn: message => ctx.logger?.warn?.(message) },
+    busy: () => open.size > 0 || (() => { const snap = coalescer.snapshot(); return !!snap.inflight || Object.keys(snap.pending).length > 0; })(),
+    deliver: (text, ruleId, summary) => sessions.start(text, ruleId, summary) });
+  if (ownTimeClock) ctx.effect(() => ownTime.start(), 'cowork-life: own time');
+  return { coalescer, handler, observe, accept, busyUntil, jevBoard, ownTime };
 }
 
 export async function apply(ctx) { installNotify(ctx, { llm: await import('@deepseek-ai/dsh-llm') }); }

@@ -170,9 +170,6 @@ class ScheduleFormatTest {
         assertEquals("巡视", ScheduleFormat.patrolTitle(" "))
         assertTrue(ScheduleFormat.patrolTask(oneApp = false).startsWith("[巡视] 每次挑 2–3 个应用"))
         assertTrue(ScheduleFormat.patrolTask(oneApp = true).startsWith("[巡视] 巡视这个应用"))
-        val timing = ScheduleFormat.patrolTiming("Asia/Shanghai")
-        assertNull(timing.problem())
-        assertEquals("按 cron 表达式 0 9-21/3 * * *（时区 Asia/Shanghai）", timing.describe())
         assertFalse("no business direction or persona", listOf(true, false).any { ScheduleFormat.patrolTask(it).contains("人设") || ScheduleFormat.patrolTask(it).contains("经营") })
     }
 

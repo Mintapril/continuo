@@ -445,16 +445,69 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         notice = "批好了，它会在你们的对话里回你"
         refreshSessions()
     }
-    /** 巡视: one recurring note in the owner's conversation, a few apps each time. */
-    fun startPatrol(done: (Result<JSONObject>) -> Unit) = viewModelScope.launch {
-        val result = try {
-            check(connected) { "还没连上本机 DSH" }
-            val session = ensureOwnerSession()
-            val record = api.rpc(Companion.CREATE_NOTE, Companion.noteRequest(session, ScheduleFormat.patrolTask(false), ScheduleFormat.patrolTiming())) as? JSONObject ?: error("巡视没有贴上")
-            schedules.reload()
-            Result.success(record)
-        } catch (e: CancellationException) { throw e } catch (e: Exception) { Result.failure(e) }
-        done(result)
+    // ── 性格、精力和心境、找你（Cowork 插件的 coworkUnattended）──────────
+    // Its character (eight function values), energy and mood, and how it may reach the owner: kept and computed by the
+    // plugin. null while not read yet; [characterError] says why it could not be read (an older plugin has none of it).
+    var character by mutableStateOf<Temperament.Profile?>(null); private set
+    var psyche by mutableStateOf<Temperament.Psyche?>(null); private set
+    var outreach by mutableStateOf<Temperament.Outreach?>(null); private set
+    var characterError by mutableStateOf(""); private set
+    private val adopting = Mutex()
+    fun characterRefresh() = viewModelScope.launch {
+        if (!connected) return@launch
+        try {
+            character = Temperament.profile(api.rpc(Temperament.READ))
+            psyche = Temperament.psyche(api.rpc(Temperament.PSYCHE))
+            outreach = Temperament.outreach(api.rpc(Temperament.OUTREACH))
+            characterError = ""
+            if (character?.traits != null) adoptPatrols()
+        } catch (e: CancellationException) { throw e } catch (e: Exception) { characterError = e.message ?: "读取失败" }
+    }
+    /** Only the outreach settings (the 叫它 sheet's 别找我). */
+    fun outreachRefresh() = viewModelScope.launch {
+        if (!connected) return@launch
+        try { outreach = Temperament.outreach(api.rpc(Temperament.OUTREACH)) } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+    }
+    fun setCharacterType(type: String) = task { character = Temperament.profile(api.rpc(Temperament.WRITE, Temperament.typeRequest(type))); afterCharacter("定好了：$type") }
+    fun setCharacterTraits(traits: Map<String, Int>) = task { character = Temperament.profile(api.rpc(Temperament.WRITE, Temperament.traitsRequest(traits))); afterCharacter("已保存") }
+    fun clearCharacter() = task { character = Temperament.profile(api.rpc(Temperament.WRITE, Temperament.clearRequest())); afterCharacter("不指定了") }
+    private suspend fun afterCharacter(receipt: String) {
+        notice = receipt
+        psyche = Temperament.psyche(api.rpc(Temperament.PSYCHE))
+        if (character?.traits != null) adoptPatrols()
+    }
+    fun setOutreach(request: JSONObject, receipt: String = "已保存") = task { outreach = Temperament.outreach(api.rpc(Temperament.SET_OUTREACH, request)); notice = receipt }
+    fun setDnd(until: Long) = task {
+        outreach = Temperament.outreach(api.rpc(Temperament.SET_DND, Temperament.dndRequest(until)))
+        notice = if (until > System.currentTimeMillis()) Temperament.dndText(until, System.currentTimeMillis(), java.time.ZoneId.systemDefault()) else "它又可以找你了"
+    }
+    // The owner saw its messages: at most one receipt every 30 s, the last one sent after the wait.
+    private var seenSent = 0L
+    private var seenJob: Job? = null
+    fun ownerSeen() {
+        if (!connected || seenJob?.isActive == true) return
+        seenJob = viewModelScope.launch {
+            delay((seenSent + 30_000 - System.currentTimeMillis()).coerceAtLeast(0))
+            val at = System.currentTimeMillis()
+            try { api.rpc(Temperament.OWNER_SEEN, Temperament.seenRequest(at)); seenSent = at } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+        }
+    }
+    /**
+     * With a character set, it keeps its own time and patrols are no longer needed: what the owner wrote in each patrol
+     * note goes into the preferences for its own time, then the note is taken down. Without a character nothing moves.
+     */
+    private suspend fun adoptPatrols() = adopting.withLock {
+        if (schedules.service == null) schedules.refresh()
+        if (schedules.service != true) return@withLock
+        val patrols = schedules.tasks.filter { it.text("status") == "active" && Temperament.patrolDirection(it.text("prompt")) != null }
+        if (patrols.isEmpty()) return@withLock
+        val current = outreach ?: Temperament.outreach(api.rpc(Temperament.OUTREACH))
+        val merged = Temperament.mergePreferences(current.preferences, patrols.mapNotNull { Temperament.patrolDirection(it.text("prompt")) })
+        outreach = if (merged != current.preferences) Temperament.outreach(api.rpc(Temperament.SET_OUTREACH, Temperament.preferencesRequest(merged))) else current
+        // Only a note whose words are kept now (or that had none of the owner's) comes down: past the length limit it stays.
+        for (note in patrols) { val words = Temperament.patrolDirection(note.text("prompt")).orEmpty(); if (words.isEmpty() || merged.contains(words)) schedules.delete(note) }
+        schedules.reload()
+        notice = "巡视并进了它自己的时间"
     }
 
     // ── 通知触发的 Jev 判断 ──────────────────────────────────────────────
@@ -561,7 +614,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
                             } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
                             if (generation == connectionGeneration && clientId == eventClient) {
                                 catalog = models; permissionCatalog = permissions; presets = roster; connected = true; ready.complete(Unit)
-                                pushIdentity(); pushOwnerSession(); diaryRefresh()
+                                pushIdentity(); pushOwnerSession(); diaryRefresh(); characterRefresh()
                             }
                         }
                         "waterfall" -> {

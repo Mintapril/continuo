@@ -67,8 +67,10 @@ import org.json.JSONObject
 import java.time.LocalDate
 import java.util.Calendar
 
-/** Every screen of the app. Settings pages go back to the settings hub; the developer pages back to 开发者. */
-internal enum class Screen { TODAY, SETTINGS, IDENTITY, COWORK, NOTIFY, MEMORY, ENTRY, DSH, APPEARANCE, ABOUT, DEVELOPER, DEV_NEW, ONBOARDING }
+/** Every screen of the app. Settings pages go back to the settings hub; the developer pages back to 开发者, its 性格 and
+ *  联系方式 pages back to 它. */
+internal enum class Screen { TODAY, SETTINGS, IDENTITY, CHARACTER, CONTACTS, COWORK, NOTIFY, MEMORY, ENTRY, DSH, APPEARANCE, ABOUT, DEVELOPER, DEV_NEW, ONBOARDING }
+private val IDENTITY_PAGES = setOf(Screen.CHARACTER, Screen.CONTACTS)
 private val SETTINGS_PAGES = setOf(Screen.IDENTITY, Screen.COWORK, Screen.NOTIFY, Screen.MEMORY, Screen.ENTRY, Screen.DSH, Screen.APPEARANCE, Screen.ABOUT, Screen.DEVELOPER)
 
 /** The home page's tabs, swiped or tapped: 聊天, 事件, 便条, 日记. */
@@ -91,6 +93,7 @@ private const val NOTES_TAB = 2
         when (open) {
             "call" -> { context.startActivity(CallActivity.call(context)); consumeOpen() }
             "note" -> { context.startActivity(CallActivity.note(context)); consumeOpen() }
+            "chat" -> { if (vm.selected != null) vm.leaveChat(); screen = Screen.TODAY; tabs.requestScrollToPage(0); consumeOpen() }
             "notes" -> { if (vm.selected != null) vm.leaveChat(); screen = Screen.TODAY; tabs.requestScrollToPage(NOTES_TAB); consumeOpen() }
             null -> {}
             else -> consumeOpen()
@@ -99,7 +102,7 @@ private const val NOTES_TAB = 2
     LaunchedEffect(vm.notice) { if (vm.notice.isNotBlank()) { snackbar.showSnackbar(vm.notice, withDismissAction = true); vm.clearNotice() } }
     BackHandler(vm.selected != null) { vm.leaveChat() }
     BackHandler(vm.selected == null && screen != Screen.TODAY && screen != Screen.ONBOARDING) {
-        screen = when (screen) { Screen.DEV_NEW -> Screen.DEVELOPER; in SETTINGS_PAGES -> Screen.SETTINGS; else -> Screen.TODAY }
+        screen = when (screen) { Screen.DEV_NEW -> Screen.DEVELOPER; in IDENTITY_PAGES -> Screen.IDENTITY; in SETTINGS_PAGES -> Screen.SETTINGS; else -> Screen.TODAY }
     }
     CompositionLocalProvider(LocalHaptics provides vm.haptics) {
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -117,10 +120,12 @@ private const val NOTES_TAB = 2
                 val toSettings = { screen = Screen.SETTINGS }
                 if (chat) ChatScreen(vm) { vm.leaveChat() }
                 else when (target) {
-                    Screen.TODAY -> Today(vm, tabs) { screen = Screen.SETTINGS }
+                    Screen.TODAY -> Today(vm, tabs, { screen = Screen.CHARACTER }) { screen = Screen.SETTINGS }
                     Screen.ONBOARDING -> Onboarding(vm) { screen = Screen.TODAY }
                     Screen.SETTINGS -> Settings(vm, back = { screen = Screen.TODAY }) { screen = it }
-                    Screen.IDENTITY -> IdentitySettings(vm, toSettings)
+                    Screen.IDENTITY -> IdentitySettings(vm, toSettings) { screen = it }
+                    Screen.CHARACTER -> CharacterSettings(vm) { screen = Screen.IDENTITY }
+                    Screen.CONTACTS -> ContactSettings(vm) { screen = Screen.IDENTITY }
                     Screen.COWORK -> CoworkSettings(vm, toSettings)
                     Screen.NOTIFY -> NotifySettings(vm, toSettings)
                     Screen.APPEARANCE -> AppearanceSettings(vm, toSettings)
@@ -143,7 +148,7 @@ private fun depth(chat: Boolean, screen: Screen): Int = when {
     chat -> 3
     screen == Screen.TODAY || screen == Screen.ONBOARDING -> 0
     screen == Screen.SETTINGS -> 1
-    screen == Screen.DEV_NEW -> 3
+    screen == Screen.DEV_NEW || screen in IDENTITY_PAGES -> 3
     else -> 2
 }
 
@@ -174,11 +179,11 @@ private fun depth(chat: Boolean, screen: Screen): Int = when {
     return StatusCard.of(name, link, status, false, now.get(Calendar.HOUR_OF_DAY), now.get(Calendar.MINUTE), ErrorClock.ageMs(context, status, now.timeInMillis))
 }
 
-@Composable private fun Today(vm: PocketViewModel, tabs: PagerState, openSettings: () -> Unit) {
+@Composable private fun Today(vm: PocketViewModel, tabs: PagerState, openCharacter: () -> Unit, openSettings: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val identity by IdentityStore.flow(context).collectAsState()
-    LaunchedEffect(vm.connected) { if (vm.connected) { vm.schedulesRefresh(); vm.diaryRefresh() } }
+    LaunchedEffect(vm.connected) { if (vm.connected) { vm.schedulesRefresh(); vm.diaryRefresh(); vm.characterRefresh() } }
     // 聊天 is followed from here, not from its tab: the pager drops tabs it is not showing, and coming back reloaded it.
     val owner by OwnerConversation.flow(context).collectAsState()
     val ownerExists = vm.sessions.any { it.optString("sessionId") == owner }
@@ -203,7 +208,7 @@ private fun depth(chat: Boolean, screen: Screen): Int = when {
             position = { tabs.currentPage + tabs.currentPageOffsetFraction }) { scope.launch { tabs.animateScrollToPage(it) } }
         HorizontalPager(tabs, Modifier.weight(1f).fillMaxWidth()) { page ->
             Box(Modifier.fillMaxSize()) {
-                when (page) { 0 -> ChatPane(vm, identity); 1 -> EventsPane(vm, identity); NOTES_TAB -> NotesPane(vm, identity); else -> DiaryPane(vm, identity) }
+                when (page) { 0 -> ChatPane(vm, identity, visible = tabs.currentPage == 0 && !tabs.isScrollInProgress); 1 -> EventsPane(vm, identity); NOTES_TAB -> NotesPane(vm, identity, openCharacter); else -> DiaryPane(vm, identity) }
             }
         }
         Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {

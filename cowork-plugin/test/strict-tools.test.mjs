@@ -12,7 +12,7 @@ test('every grouped or hidden tool is a Cowork tool, in one group only; the ever
   assert.equal(new Set(grouped).size, grouped.length, 'no tool in two groups');
   for (const name of [...grouped, ...HIDDEN_TOOLS]) assert.ok(known.has(name), name);
   for (const name of HIDDEN_TOOLS) assert.equal(groupOf(name), undefined);
-  assert.deepEqual([...known].filter(name => shownWith(new Set(), name)).sort(), ['cowork_tools', 'memory_save', 'memory_search', 'phone_apps',
+  assert.deepEqual([...known].filter(name => shownWith(new Set(), name)).sort(), ['cowork_reach_owner', 'cowork_tools', 'memory_save', 'memory_search', 'phone_apps',
     'phone_batch', 'phone_key', 'phone_launch_app', 'phone_long_press', 'phone_notify_owner', 'phone_read_chat', 'phone_read_page', 'phone_request_intervention',
     'phone_screenshot', 'phone_scroll', 'phone_status', 'phone_stop', 'phone_swipe', 'phone_tap', 'phone_type_text', 'phone_ui_tree', 'phone_wait']);
 });

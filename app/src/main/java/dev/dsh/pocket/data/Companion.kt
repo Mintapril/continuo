@@ -94,7 +94,7 @@ object Companion {
     // ── Events ──────────────────────────────────────────────────────────
 
     /**
-     * 事件: one turn it ran on its own, started by a patrol, a notification or a due note (in the owner's conversation,
+     * 事件: one turn it ran on its own, started by its own time, a patrol, a notification or a due note (in the owner's conversation,
      * or before 2026-10-26 in 巡视 · 自动运营 or one app's notification session). From the plugin's activity: its last
      * reply, the apps it opened and what it told the owner, never what a notification said. [app] is the package whose
      * notifications started it, if one did.
@@ -104,7 +104,7 @@ object Companion {
         val key: String get() = "$sessionId@$at"
     }
     data class EventPage(val entries: List<Event>, val more: Boolean)
-    private val EVENT_KINDS = setOf("patrol", "notify", "note")
+    private val EVENT_KINDS = setOf("own", "patrol", "notify", "note")
 
     fun eventsRequest(before: Long? = null, limit: Int = 30) = obj("request" to obj("before" to before, "limit" to limit))
     fun eventsPage(result: Any?): EventPage {
@@ -122,9 +122,9 @@ object Companion {
     /** Older pages appended to what is shown, newest first. */
     fun mergeEvents(shown: List<Event>, page: List<Event>): List<Event> =
         (shown + page).distinctBy { it.key }.sortedByDescending { it.at }
-    /** What started it, and in which app: 巡视, 巡视 · QQ, 通知 · QQ, 便条 · QQ. [label] names an app from its package. */
+    /** What started it, and in which app: 自己的时间, 巡视, 巡视 · QQ, 通知 · QQ, 便条 · QQ. [label] names an app from its package. */
     fun eventTitle(event: Event, label: (String) -> String): String {
-        val what = when (event.kind) { "patrol" -> "巡视"; "notify" -> "通知"; else -> "便条" }
+        val what = when (event.kind) { "own" -> "自己的时间"; "patrol" -> "巡视"; "notify" -> "通知"; else -> "便条" }
         val app = event.app?.let { label(it) + if (event.personal) "（个人）" else "" }
         return if (app == null) what else "$what · $app"
     }

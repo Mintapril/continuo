@@ -23,6 +23,9 @@ import dev.dsh.pocket.data.TaskMode
 import dev.dsh.pocket.data.waitsForScreen
 import dev.dsh.pocket.cowork.CoworkConnection
 import dev.dsh.pocket.island.IslandRuntime
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.currentStateAsState
 
 /** Fewer chat lines than this, with older history left, reads older pages on its own, at most [AUTO_PAGES] of them. */
 private const val CHAT_FILL = 12
@@ -31,13 +34,18 @@ private const val AUTO_PAGES = 5
 /**
  * 聊天记录: the owner's conversation with it (叫它), as a chat. The home page keeps it followed on its own stream (the view
  * model's selected session would open the full chat screen), so this tab shows it at once. Its thinking and tool calls
- * stay in 设置 → 开发者; what it did on its own in this conversation (patrols, notes, notifications) is in 事件.
+ * stay in 设置 → 开发者; what it did on its own in this conversation (its own time, notes, notifications) is in 事件, except
+ * what it said to the owner there. While the owner looks at it ([visible], the app in front), the plugin is told they saw
+ * its messages (ownerSeen), so it does not try to reach them another way.
  */
-@Composable internal fun ChatPane(vm: PocketViewModel, identity: Identity) {
+@Composable internal fun ChatPane(vm: PocketViewModel, identity: Identity, visible: Boolean = true) {
     val context = LocalContext.current
     val owner by OwnerConversation.flow(context).collectAsState()
     val exists = vm.sessions.any { it.optString("sessionId") == owner }
     val lines = remember(vm.ownerLog, vm.ownerRunning) { ChatLog.of(vm.ownerLog, vm.ownerRunning) }
+    val lifecycle by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
+    val looking = visible && lifecycle.isAtLeast(Lifecycle.State.RESUMED) && vm.connected && vm.ownerLogReady
+    LaunchedEffect(looking, vm.ownerLog.size) { if (looking) vm.ownerSeen() }
     // What the running turn is doing, for its last line; the app only when this conversation holds its screen.
     val island by IslandRuntime.store.snapshots.collectAsState()
     val status by CoworkConnection.status.collectAsState()
@@ -61,7 +69,7 @@ private const val AUTO_PAGES = 5
             Text(when {
                 !vm.connected -> "连上本机 DSH 后显示聊天记录"
                 exists && (!vm.ownerLogReady || reading) -> "正在翻聊天记录…"
-                vm.ownerLogMore -> "最近都是${identity.shown}自己在忙（巡视、看通知），记在事件里。"
+                vm.ownerLogMore -> "最近都是${identity.shown}自己在忙（自己逛、看通知），记在事件里。"
                 else -> "还没和${identity.shown}说过话。\n点下面的“叫它”，跟它说点什么。"
             }, style = MaterialTheme.typography.bodyMedium, color = Pocket.muted, textAlign = TextAlign.Center)
             if (vm.ownerLogMore && !reading) TextButton({ vm.ownerLogOlder() }) { Text("更早的聊天", color = Pocket.accent) }
@@ -91,6 +99,16 @@ private const val AUTO_PAGES = 5
             Spacer(Modifier.width(8.dp))
             Surface(Modifier.widthIn(max = 300.dp), shape = RoundedCornerShape(4.dp, 18.dp, 18.dp, 18.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
                 Text(line.text, Modifier.padding(horizontal = 14.dp, vertical = 10.dp), style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 24.sp))
+            }
+        }
+        ChatLog.Kind.REACH -> Column(modifier.fillMaxWidth()) {
+            Text(line.label, Modifier.padding(start = 40.dp, bottom = 3.dp), style = MaterialTheme.typography.labelSmall, color = Pocket.muted)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                Avatar(identity.avatar, StatusCard.Mood.CALL, identity.shown, size = 32.dp, head = true)
+                Spacer(Modifier.width(8.dp))
+                Surface(Modifier.widthIn(max = 300.dp), shape = RoundedCornerShape(4.dp, 18.dp, 18.dp, 18.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                    Text(line.text, Modifier.padding(horizontal = 14.dp, vertical = 10.dp), style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 24.sp))
+                }
             }
         }
         ChatLog.Kind.THINKING -> Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

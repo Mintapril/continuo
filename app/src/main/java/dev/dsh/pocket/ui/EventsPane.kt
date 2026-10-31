@@ -40,7 +40,7 @@ import kotlinx.coroutines.delay
                 !vm.connected -> "连上本机 DSH 后显示事件"
                 vm.eventsError == null -> "正在翻事件…"
                 vm.eventsError!!.isNotBlank() -> if ("404" in vm.eventsError!!) "手机上的 Cowork 插件还是旧版，更新后这里会有${identity.shown}自己做的事" else "读不到事件：${vm.eventsError}"
-                else -> "还没有事件。\n${identity.shown}巡视、被通知叫醒、到点看便条时做的事会记在这里。"
+                else -> "还没有事件。\n${identity.shown}自己逛、被通知叫醒、到点看便条时做的事会记在这里。"
             }, style = MaterialTheme.typography.bodyMedium, color = Pocket.muted, textAlign = TextAlign.Center)
         }
         return

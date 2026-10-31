@@ -43,14 +43,13 @@ private fun noteWords(entry: JSONObject) = entry.text("prompt").trim().removePre
  * that will not run again folded away. A tap opens a note: 改, 撤下, its deliveries, the conversation it belongs to.
  * New notes come from 留便条 (the note sheet), stored at once and in the owner's words.
  */
-@Composable internal fun NotesPane(vm: PocketViewModel, identity: Identity) {
+@Composable internal fun NotesPane(vm: PocketViewModel, identity: Identity, openCharacter: () -> Unit = {}) {
     val center = vm.schedules
     var detail by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<JSONObject?>(null) }
     var history by remember { mutableStateOf<JSONObject?>(null) }
     var confirmDelete by remember { mutableStateOf<JSONObject?>(null) }
     var showEnded by remember { mutableStateOf(false) }
-    var patrolBusy by remember { mutableStateOf(false) }
     val readOnly = center.bundle?.text("readOnlyReason").orEmpty()
     val active = center.tasks.filter { it.text("status") == "active" }.sortedBy { it.text("scheduledAt") }
     val ended = center.tasks.filter { it.text("status") != "active" }
@@ -71,15 +70,15 @@ private fun noteWords(entry: JSONObject) = entry.text("prompt").trim().removePre
             center.service != true && center.error.isNotBlank() -> InsetGroup { GroupRow("便条读取失败", icon = Glyph.Warning, chevron = false, subtitle = center.error, onClick = { vm.schedulesRefresh() }) }
         }
         if (center.service == true) {
-            AnimatedVisibility(active.none(::patrolNote), enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+            // With a character it keeps its own time (patrols are folded into it); without one, this is how to start.
+            AnimatedVisibility(vm.character?.let { it.traits == null } == true && active.none(::patrolNote), enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
                 Surface(Modifier.fillMaxWidth().padding(bottom = 10.dp), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
                     Row(Modifier.padding(start = 14.dp, end = 8.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("让${identity.shown}自己逛逛", style = MaterialTheme.typography.titleSmall)
-                            Text("巡视：每天 9 点到 21 点每 3 小时一次，挑两三个应用逛。会花模型的钱。", style = MaterialTheme.typography.bodySmall, color = Pocket.muted)
+                            Text("给${identity.shown}定个性格，它就会自己安排时间：精神够、闲得久了就自己起来逛。会花模型的钱。", style = MaterialTheme.typography.bodySmall, color = Pocket.muted)
                         }
-                        TextButton({ patrolBusy = true; vm.startPatrol { patrolBusy = false; it.onSuccess { vm.showError("巡视贴上了，到点它就去逛") }.onFailure { e -> vm.showError(e.message ?: "巡视没有贴上") } } },
-                            enabled = !patrolBusy) { Text(if (patrolBusy) "正在贴…" else "开始巡视", color = Pocket.accent) }
+                        TextButton(openCharacter) { Text("去定", color = Pocket.accent) }
                     }
                 }
             }

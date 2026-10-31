@@ -48,7 +48,7 @@ export function adoptOwnerSession(id, file = ownerSessionFile()) {
 
 export const NAME_MAX = 12;
 export const ACTIVITY = Object.freeze({ textMax: 600, askedMax: 300, itemMax: 200, items: 10, keep: 3000,
-  kinds: Object.freeze(['owner', 'note', 'patrol', 'notify', 'other']) });
+  kinds: Object.freeze(['owner', 'note', 'patrol', 'notify', 'own', 'other']) });
 export const DIARY = Object.freeze({ textMax: 4000, keep: 400, pageMax: 60 });
 const CONTROL = new RegExp(`[${String.fromCharCode(0)}-${String.fromCharCode(31)}${String.fromCharCode(127)}]`);
 const CONTROLS = new RegExp(CONTROL.source, 'g');
@@ -179,7 +179,7 @@ export function readDiary({ before, limit } = {}, file = diaryFile()) {
 /** Continuo's 事件: the turns it ran on its own, started by a patrol, a notification or a due note: in the owner's
  *  conversation since everything lives there (2026-10-26), before that in the standing app sessions (cowork-app-*).
  *  The turns the owner's messages started are the chat, never an event. */
-export const EVENTS = Object.freeze({ kinds: Object.freeze(['patrol', 'notify', 'note']), page: 30, pageMax: 60 });
+export const EVENTS = Object.freeze({ kinds: Object.freeze(['patrol', 'notify', 'note', 'own']), page: 30, pageMax: 60 });
 
 /** Newest first: up to [limit] events that ended before [before] (ms), with whether more remain. */
 export function readEvents({ before, limit } = {}, file = activityFile()) {

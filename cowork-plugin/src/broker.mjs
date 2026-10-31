@@ -259,6 +259,13 @@ export class BrokerClient {
   // refused or failed call does not change. A new full tree replaces it.
   #base = new Map();
   forget(sessionId) { this.#observations.delete(sessionId); this.#tree.delete(sessionId); this.#treeRead.delete(sessionId); this.#incomplete.delete(sessionId); }
+  /** Read only: the text and description of elements `ids` of the screen the model last read (none once it is gone).
+   *  The wrapper asks before a tap, to know when the AI itself pressed a button such as 拉黑 (psyche.mjs). */
+  labelsOf(sessionId, ids) {
+    const nodes = this.#tree.get(sessionId)?.nodes;
+    if (!Array.isArray(nodes)) return [];
+    return ids.flatMap(id => { const n = nodes.find(x => x?.id === id); return n ? [[n.text, n.desc].filter(s => typeof s === 'string').join(' ')] : []; });
+  }
   // An input's settled screen (SCREEN_RESULT). A diff is merged onto the session's base, so element ids are checked
   // against the whole current screen; the model gets it as the broker sent it. A diff against a tree this session does
   // not hold fails like any unreadable observation (the model reads the screen again).

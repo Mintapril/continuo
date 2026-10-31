@@ -385,7 +385,5 @@ object ScheduleFormat {
     /** The patrol session's own title, or "巡视 <app>" for an app's standing session (titled "<app> · 自动运营"). */
     fun patrolTitle(session: String?): String =
         session?.takeIf { it != PATROL_TITLE }?.substringBefore(" · ")?.trim()?.takeIf { it.isNotEmpty() }?.let { "巡视 $it" } ?: "巡视"
-    /** Daily at 9, 12, 15, 18 and 21 o'clock, in this phone's zone. */
-    fun patrolTiming(zone: String = ZoneId.systemDefault().id) = TimingDraft("cron", cron = "0 9-21/3 * * *", zone = zone)
 
 }

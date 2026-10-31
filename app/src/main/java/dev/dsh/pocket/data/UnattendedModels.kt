@@ -3,7 +3,7 @@ package dev.dsh.pocket.data
 import org.json.JSONObject
 
 /**
- * The models the owner picks for Cowork runs: patrols, runs a notification trigger started and the owner's own
+ * The models the owner picks for Cowork runs: its own time (kind patrol, as patrols before it), runs a notification trigger started and the owner's own
  * conversation (叫它, every turn of it) each may name one selection of DSH's model catalog, or none (the session keeps
  * its own model). Stored by the Cowork plugin and read over DSH's RPC (namespace `coworkUnattended`,
  * cowork-plugin/src/unattended.mjs); the plugin applies it per request, so DSH's default model and the sessions' own

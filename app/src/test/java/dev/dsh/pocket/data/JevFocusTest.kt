@@ -25,7 +25,7 @@ class JevFocusTest {
 
     @Test fun clearNamesTheAppAndTheChangeReadsInWords() {
         assertEquals("""{"request":{"app":"work:com.tencent.mobileqq"}}""", JevFocus.clearRequest("work:com.tencent.mobileqq").toString())
-        assertEquals("巡视时", JevFocus.byLabel("patrol")); assertEquals("通知唤起时", JevFocus.byLabel("notify"))
+        assertEquals("自己逛的时候", JevFocus.byLabel("patrol")); assertEquals("通知唤起时", JevFocus.byLabel("notify"))
         assertEquals("和你对话时", JevFocus.byLabel("owner")); assertEquals("", JevFocus.byLabel("app"))
         assertEquals(JevFocus.READ, "coworkUnattended/jevFocus"); assertEquals(JevFocus.CLEAR, "coworkUnattended/clearJevFocus")
     }

@@ -166,7 +166,7 @@ class CoworkControllerService : Service() {
     private fun notice(n:OwnerNoticeFeed.Notice,face:android.graphics.Bitmap?):Notification =
         Notification.Builder(this,ALERT_CHANNEL).setSmallIcon(R.drawable.island_notification).apply{if(face!=null)setLargeIcon(android.graphics.drawable.Icon.createWithBitmap(face))}
             .setContentTitle("${name()}找你").setContentText(n.text).setStyle(Notification.BigTextStyle().bigText(n.text))
-            .setWhen(n.at).setShowWhen(true).setContentIntent(open(75)).setAutoCancel(true).setCategory(Notification.CATEGORY_REMINDER)
+            .setWhen(n.at).setShowWhen(true).setContentIntent(open(75,"chat")).setAutoCancel(true).setCategory(Notification.CATEGORY_REMINDER)
             .addAction(button("回它",sheet(79,false)))
             .setVisibility(Notification.VISIBILITY_PRIVATE).build()
     private fun alert(reason:String,detail:String="",face:android.graphics.Bitmap?=null):Notification {

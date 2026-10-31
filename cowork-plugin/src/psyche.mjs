@@ -63,6 +63,33 @@ export function traitsOf(value) {
   }
   return Object.freeze(out);
 }
+// Functions that exclude each other (Jung, Beebe): the same function in the other attitude (Fi and Fe: when one is
+// conscious the other is its shadow) and the opposite function in the other attitude (Fi and Te: the superior and its
+// inferior; Ne and Si). Two of them together never exceed OPPOSITION.cap, so they cannot both be high: raising one
+// lowers the other (balance). Every type's preset is within it (the dominant and its shadow make exactly 120).
+// Continuo's Temperament.kt applies the same rule as the sliders move (strict-personality reads its cap and vector).
+export const OPPOSITION = Object.freeze({ cap: 120 });
+const twin = f => f[0] + (f[1] === 'e' ? 'i' : 'e');
+/** The two functions [f] excludes: its other attitude, then the opposite function of the other attitude. */
+export const opposites = f => Object.freeze([twin(f), opposite(f)]);
+/** Every pair of excluding functions that together exceed the cap: [[a, b, sum]], each pair once. */
+export function overlaps(traits) {
+  const out = [];
+  for (const a of FUNCTIONS) for (const b of opposites(a))
+    if (FUNCTIONS.indexOf(a) < FUNCTIONS.indexOf(b) && traits[a] + traits[b] > OPPOSITION.cap) out.push([a, b, traits[a] + traits[b]]);
+  return out;
+}
+export const isBalanced = traits => !!traitsOf(traits) && overlaps(traits).length === 0;
+/** [traits] with [f] set to [value] (a whole number 0..100) and the two functions it excludes lowered as far as needed. */
+export function balance(traits, f, value) {
+  const t = traitsOf(traits);
+  if (!t || !FUNCTIONS.includes(f)) throw new TypeError('traits are eight values 0..100 and f one of them');
+  const v = Math.round(clamp(Number(value) || 0, 0, 100));
+  const out = { ...t, [f]: v };
+  for (const g of opposites(f)) out[g] = Math.min(out[g], OPPOSITION.cap - v);
+  return Object.freeze(out);
+}
+
 /** Functions from the strongest down; a tie keeps FUNCTIONS order. */
 const ranked = traits => [...FUNCTIONS].sort((a, b) => traits[b] - traits[a] || FUNCTIONS.indexOf(a) - FUNCTIONS.indexOf(b));
 /** The type closest to the values: the strongest function leads, the strongest of the other attitude and process helps. */

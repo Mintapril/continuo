@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FUNCTIONS, TYPES, PSYCHE, INITIAL, stackOf, presetTraits, traitsOf, typeOf, derive, activityOfCall, stepActivity, stepWeight,
-  remember, settle, spend, respond, ownerSpoke, burst, failure, conflict, energyBand, moodBand, ownTimeIdleMs, ownTimeDue,
+  remember, settle, spend, OPPOSITION, opposites, overlaps, isBalanced, balance, respond, ownerSpoke, burst, failure, conflict, energyBand, moodBand, ownTimeIdleMs, ownTimeDue,
   ownTimeAllowance, chaseWaitMs, stepsFor, stateLine, characterPrompt, within, isNight, stateOf, CONFLICT_LABEL, THANKS } from '../src/psyche.mjs';
 
 const near = (actual, expected, message) => assert.ok(Math.abs(actual - expected) < 0.01, `${message ?? ""} ${actual} != ${expected}`);
@@ -197,4 +197,23 @@ test('the character section is fixed for the same values and names the type only
   assert.match(text, /never insult/i);
   assert.equal(characterPrompt(null), null);
   assert.equal(characterPrompt({ Fi: 50 }), null);
+});
+
+test('functions that exclude each other cannot both be high: raising one lowers the other', () => {
+  assert.equal(OPPOSITION.cap, 120);
+  assert.deepEqual(opposites('Fi'), ['Fe', 'Te'], 'its other attitude, then the opposite function of the other attitude');
+  assert.deepEqual(opposites('Ne'), ['Ni', 'Si']);
+  assert.deepEqual(opposites('Se'), ['Si', 'Ni']);
+  assert.deepEqual(opposites('Ti'), ['Te', 'Fe']);
+  for (const t of TYPES) assert.ok(isBalanced(presetTraits(t)), `${t}'s preset is within the rule`);
+  const infp = presetTraits('INFP');
+  assert.deepEqual(balance(infp, 'Fi', 100), { ...infp, Fi: 100, Fe: 20, Te: 20 });
+  assert.deepEqual(balance(infp, 'Te', 60), { ...infp, Te: 60, Fi: 60 }, 'a stronger inferior means a weaker dominant');
+  assert.deepEqual(balance(infp, 'Fi', 40), { ...infp, Fi: 40 }, 'lowering never moves another');
+  assert.deepEqual(balance(infp, 'Se', 100.4), { ...infp, Se: 100, Si: 20, Ni: 20 });
+  assert.equal(balance(infp, 'Fe', -5).Fe, 0);
+  assert.deepEqual(overlaps({ ...infp, Fe: 80 }), [['Fe', 'Fi', 165]]);
+  assert.equal(isBalanced({ ...infp, Fe: 80 }), false);
+  for (const f of FUNCTIONS) for (const v of [0, 37, 60, 100]) assert.ok(isBalanced(balance(infp, f, v)), `${f} = ${v}`);
+  assert.throws(() => balance(infp, 'Xx', 50));
 });

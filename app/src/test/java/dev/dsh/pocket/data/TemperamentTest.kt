@@ -10,6 +10,32 @@ import java.time.ZoneId
 class TemperamentTest {
     private val zone = ZoneId.of("Asia/Shanghai")
     private fun at(text: String) = LocalDateTime.parse(text).atZone(zone).toInstant().toEpochMilli()
+    private fun traits(json: JSONObject) = Temperament.FUNCTIONS.associateWith { json.getInt(it) }
+    /** Read by the plugin's strict-personality.test.mjs: the same drags give the same values in psyche.mjs balance. */
+    private val balanceVector = """{"from":{"Se":25,"Si":50,"Ne":70,"Ni":30,"Te":30,"Ti":20,"Fe":35,"Fi":85},"drags":[["Fi",100],["Te",60],["Se",90],["Ni",10]],"to":{"Se":90,"Si":30,"Ne":70,"Ni":10,"Te":60,"Ti":20,"Fe":20,"Fi":60}}"""
+
+    @Test fun functionsThatExcludeEachOtherCannotBothBeHigh() {
+        assertEquals(120, Temperament.OPPOSITE_CAP)
+        assertEquals(listOf("Fe", "Te"), Temperament.opposites("Fi"))
+        assertEquals(listOf("Ni", "Si"), Temperament.opposites("Ne"))
+        assertEquals(listOf("Ti", "Fi"), Temperament.opposites("Te"))
+        assertEquals(listOf("Te", "Fe"), Temperament.opposites("Ti"))
+        val vector = JSONObject(balanceVector)
+        val infp = traits(vector.getJSONObject("from"))
+        assertTrue("INFP's preset is within the rule", Temperament.balanced(infp))
+        // Raising Fi lowers Fe and Te; a stronger inferior Te in turn lowers Fi; lowering never moves another.
+        assertEquals(infp + mapOf("Fi" to 100, "Fe" to 20, "Te" to 20), Temperament.adjust(infp, "Fi", 100))
+        assertEquals(infp + ("Fi" to 40), Temperament.adjust(infp, "Fi", 40))
+        assertEquals(100, Temperament.adjust(infp, "Fi", 130)["Fi"])
+        var dragged = infp
+        val drags = vector.getJSONArray("drags")
+        for (i in 0 until drags.length()) { val d = drags.getJSONArray(i); dragged = Temperament.adjust(dragged, d.getString(0), d.getInt(1)) }
+        assertEquals(traits(vector.getJSONObject("to")), dragged)
+        assertTrue(Temperament.balanced(dragged))
+        for (f in Temperament.FUNCTIONS) for (v in listOf(0, 37, 60, 100)) assertTrue("$f = $v", Temperament.balanced(Temperament.adjust(infp, f, v)))
+        assertFalse(Temperament.balanced(infp + ("Fe" to 80)))
+        assertThrows(IllegalArgumentException::class.java) { Temperament.traitsRequest(infp + ("Fe" to 80)) }
+    }
 
     @Test fun aCharacterReadsWithWhatThePluginWorkedOut() {
         // The plugin's shape (coworkUnattended/character).

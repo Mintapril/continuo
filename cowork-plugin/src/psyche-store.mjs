@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { traitsOf, derive, stateOf, settle, PSYCHE } from './psyche.mjs';
+import { traitsOf, derive, stateOf, settle, overlaps, OPPOSITION, PSYCHE } from './psyche.mjs';
 
 // Where its character, energy, mood and the owner's outreach settings live, next to the other plugin files:
 // - character.json: the eight values the owner set in Continuo ({traits}; none until they pick one);
@@ -28,6 +28,9 @@ export function readCharacter(file = characterFile()) { return traitsOf(readJson
 export function writeCharacter(traits, file = characterFile()) {
   const value = traits === null ? null : traitsOf(traits);
   if (traits !== null && !value) throw new TypeError('traits are eight whole values 0..100 (Se, Si, Ne, Ni, Te, Ti, Fe, Fi)');
+  // Functions that exclude each other cannot both be high (psyche.mjs OPPOSITION): Continuo balances them as you drag.
+  const [clash] = value ? overlaps(value) : [];
+  if (clash) throw new TypeError(`${clash[0]} and ${clash[1]} exclude each other: together at most ${OPPOSITION.cap}, not ${clash[2]}`);
   writeAtomic(file, { traits: value });
   return value;
 }

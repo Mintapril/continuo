@@ -24,6 +24,25 @@ object Temperament {
     const val OWNER_SEEN = "coworkUnattended/ownerSeen"
 
     val FUNCTIONS = listOf("Se", "Si", "Ne", "Ni", "Te", "Ti", "Fe", "Fi")
+    /**
+     * Functions that exclude each other (the plugin's psyche.mjs OPPOSITION): the same function in the other attitude (Fi
+     * and Fe) and the opposite function in the other attitude (Fi and Te, Ne and Si). Two of them together never exceed
+     * [OPPOSITE_CAP], so they cannot both be high; the plugin refuses a character that breaks it.
+     */
+    const val OPPOSITE_CAP = 120
+    private fun flip(attitude: Char) = if (attitude == 'e') "i" else "e"
+    /** The two functions [f] excludes: its other attitude, then the opposite function of the other attitude. */
+    fun opposites(f: String): List<String> =
+        listOf("${f[0]}${flip(f[1])}", "${mapOf('S' to 'N', 'N' to 'S', 'T' to 'F', 'F' to 'T').getValue(f[0])}${flip(f[1])}")
+    /** [traits] with [f] set to [value] (0..100) and the two functions it excludes lowered as far as needed (a slider moved). */
+    fun adjust(traits: Map<String, Int>, f: String, value: Int): Map<String, Int> {
+        val v = value.coerceIn(0, 100)
+        val out = traits.toMutableMap().apply { put(f, v) }
+        for (g in opposites(f)) out[g] = minOf(out[g] ?: 0, OPPOSITE_CAP - v)
+        return out
+    }
+    fun balanced(traits: Map<String, Int>): Boolean =
+        FUNCTIONS.all { a -> opposites(a).all { b -> (traits[a] ?: 0) + (traits[b] ?: 0) <= OPPOSITE_CAP } }
     val FUNCTION_NAMES = mapOf("Se" to "外倾感觉", "Si" to "内倾感觉", "Ne" to "外倾直觉", "Ni" to "内倾直觉",
         "Te" to "外倾思维", "Ti" to "内倾思维", "Fe" to "外倾情感", "Fi" to "内倾情感")
     /** What each function looks like on its phone, one line, for the slider page. */
@@ -77,6 +96,7 @@ object Temperament {
     }
     fun traitsRequest(traits: Map<String, Int>): JSONObject {
         require(traits.keys == FUNCTIONS.toSet() && traits.values.all { it in 0..100 }) { "八个值都要在 0 到 100 之间" }
+        require(balanced(traits)) { "相斥的两个功能加起来最多 $OPPOSITE_CAP" }
         return obj("request" to obj("traits" to JSONObject().apply { FUNCTIONS.forEach { put(it, traits.getValue(it)) } }))
     }
     fun clearRequest(): JSONObject = obj("request" to JSONObject().put("traits", JSONObject.NULL))

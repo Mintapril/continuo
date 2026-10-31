@@ -154,7 +154,7 @@ import java.time.ZoneId
                             Text("$value", style = MaterialTheme.typography.bodyMedium, color = Pocket.muted)
                         }
                         Text(Temperament.FUNCTION_HINTS[f].orEmpty(), style = MaterialTheme.typography.bodySmall, color = Pocket.faint)
-                        Slider(value.toFloat(), { draft = draft + (f to it.toInt().coerceIn(0, 100)) }, valueRange = 0f..100f,
+                        Slider(value.toFloat(), { draft = Temperament.adjust(draft, f, it.toInt()) }, valueRange = 0f..100f,
                             colors = SliderDefaults.colors(thumbColor = Pocket.accent, activeTrackColor = Pocket.accent, inactiveTrackColor = Pocket.hairline))
                     }
                 }
@@ -163,7 +163,7 @@ import java.time.ZoneId
                 SecondaryButton("还原", Modifier.weight(1f)) { draft = profile.traits }
                 PrimaryButton("保存", Modifier.weight(1f), enabled = vm.connected) { vm.setCharacterTraits(draft) }
             }
-            Footnote("值越高，它越常这样做，做起来也越轻松；外倾的靠和人来往回精神，内倾的靠独处。")
+            Footnote("值越高，它越常这样做，做起来也越轻松；外倾的靠和人来往回精神，内倾的靠独处。相斥的两个功能不能同时高：同一功能的内外倾（比如 Fi 和 Fe），以及对立的两个（比如 Fi 和 Te、Ne 和 Si），加起来最多 ${Temperament.OPPOSITE_CAP}。拖高一个，另一个会自动降下来。")
         }
     }
     if (clearing) ConfirmDialog("不指定性格？", "${identity.shown}不再有精力和心境，也不再自己起来逛；巡视照旧可以用。", "不指定", destructive = true, dismiss = { clearing = false }) {

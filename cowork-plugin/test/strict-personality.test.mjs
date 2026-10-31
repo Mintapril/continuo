@@ -282,8 +282,10 @@ test('Continuo sets the character, reads energy and mood, sets how it may reach 
     assert.equal(service.psyche().active, false);
     assert.equal(service.setCharacter({ type: 'ENTP' }).derived.type, 'ENTP');
     assert.throws(() => service.setCharacter({ type: 'ABCD' }), /16 MBTI types/);
-    const tuned = { ...presetTraits('ENTP'), Fe: 80 };
+    const tuned = { ...presetTraits('ENTP'), Fe: 40 };
     assert.deepEqual(service.setCharacter({ traits: tuned }).traits, tuned);
+    assert.throws(() => service.setCharacter({ traits: { ...presetTraits('ENTP'), Fe: 80 } }), /Ti and Fe exclude each other: together at most 120, not 150/);
+    assert.deepEqual(service.character().traits, tuned, 'a refused character changes nothing');
     assert.deepEqual(Object.keys(service.psyche()).sort(), ['active', 'energy', 'energyBand', 'lastOwnerAt', 'mood', 'moodBand', 'running']);
     assert.equal(service.psyche().active, true);
     assert.equal(service.setOutreach({ contacts, level: 'many', ignored: 1 }).level, 'many');
@@ -309,4 +311,17 @@ test('Continuo shows what it said to the owner by the tool name and the argument
   assert.match(kotlin, /args\.text\("text"\)/);
   assert.match(kotlin, /args\.text\("channel"\)/);
   assert.equal(activityOfCall(modelName(REACH_TOOL), {}), 'talk', 'reaching the owner is talking to someone');
+});
+
+test('Continuo balances the sliders by the same rule: the same cap, the same drags give the same values', async () => {
+  const { OPPOSITION, balance, isBalanced } = await import('../src/psyche.mjs');
+  const kotlin = await readFile(new URL('../../app/src/main/java/dev/dsh/pocket/data/Temperament.kt', import.meta.url), 'utf8');
+  assert.equal(Number(kotlin.match(/const val OPPOSITE_CAP = (\d+)/)?.[1]), OPPOSITION.cap);
+  const test = await readFile(new URL('../../app/src/test/java/dev/dsh/pocket/data/TemperamentTest.kt', import.meta.url), 'utf8');
+  const vector = JSON.parse(test.match(/private val balanceVector = """(.*)"""/)[1]);
+  assert.deepEqual(vector.from, presetTraits('INFP'));
+  let traits = vector.from;
+  for (const [f, v] of vector.drags) traits = balance(traits, f, v);
+  assert.deepEqual(traits, vector.to);
+  assert.ok(isBalanced(traits));
 });

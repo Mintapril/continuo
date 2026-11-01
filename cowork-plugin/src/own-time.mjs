@@ -1,6 +1,6 @@
 import { ownTimeDue, feelsLike, chaseWaitMs, within, ACTIVITIES } from './psyche.mjs';
 import { LEVELS } from './psyche-store.mjs';
-import { latestTopic, answered, contactsLine, REACH } from './reach.mjs';
+import { latestTopic, answered, topicsOn, contactsLine, REACH } from './reach.mjs';
 
 // Its own time (自己的时间) and the follow-up when the owner has not seen its message (docs/personality-design.md).
 // notify.mjs runs the clock: every 10 minutes, with the AI screen free and no Cowork turn open, it starts a turn in the
@@ -18,8 +18,28 @@ const json = value => JSON.stringify(value).replace(LINE_SEPARATORS, c => `\\u${
 const NAMES = Object.freeze({ browse: 'browsing and trying new things', read: 'reading closely', talk: 'talking with people', think: 'thinking things over, keeping notes and your own things' });
 const clock = (ms, zone) => new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(ms));
 
-/** The message a stretch of its own time starts with. */
-export function ownTimePrompt({ state, derived, outreach }) {
+/**
+ * What it may do about the owner today: wait for their answer, leave them be, or reach them. A model left with "if you
+ * come across something" alone never reached them (2026-11-01: not once in a day of its own time), and one took its
+ * closing line for an answer to the owner, which nobody reads.
+ */
+export function reachLine({ data, outreach, now, zone = REACH.zone }) {
+  const allowed = LEVELS[outreach.level] ?? 0;
+  const topic = latestTopic(data.reaches), used = topicsOn(data.reaches, now, zone);
+  const today = topic.length > 0 && topicsOn([topic[0]], now, zone) > 0;
+  // The same order of limits the guard (reach.mjs reachRefusal) applies, so the line never asks for what it refuses.
+  const later = 'leave yourself a note if something should still reach them later.';
+  const state =
+    outreach.dndUntil > now ? `The owner asked not to be disturbed until ${clock(outreach.dndUntil, zone)}: ${later}`
+    : within(now, outreach.quietFrom, outreach.quietTo, zone) ? `These are the owner's quiet hours (until ${outreach.quietTo}): ${later}`
+    : today && !answered(data, topic) ? `Your message to the owner at ${clock(topic[0].at, zone)} is still unanswered: no new topic until they answer.`
+    : used >= allowed ? `You have reached the owner as often as they allow today (${allowed}): keep anything else for tomorrow.`
+    : `The owner likes hearing from you. Like a friend, text them when something from this stretch, your day or your mood is worth sharing, or simply because you feel like talking: it need not be important. Today you have reached them ${used} of the ${allowed} times they allow.`;
+  return `${state} Unless a message of the owner comes in, your replies in this run never reach them: whatever you want them to hear, say it with cowork_reach_owner.`;
+}
+
+/** The message a stretch of its own time starts with. `data`, `now` and `zone`: the psyche file and the clock, for reachLine. */
+export function ownTimePrompt({ state, derived, outreach, data, now, zone = REACH.zone }) {
   const shares = Object.fromEntries(ACTIVITIES.map(a => [NAMES[a], derived.share[a]]));
   return [
     OWN.header,
@@ -27,7 +47,7 @@ export function ownTimePrompt({ state, derived, outreach }) {
     feelsLike(state, derived),
     `time_shares_json: ${json(shares)} (rough shares, in percent, of the time after unread messages; let your mood shift them)`,
     ...(outreach.preferences ? [`owner_wishes_json: ${json(outreach.preferences)} (what the owner would like you to do with your own time, in their words)`] : []),
-    ...((LEVELS[outreach.level] ?? 0) > 0 ? [contactsLine(outreach), 'If you come across something for the owner, or just want to talk to them, reach them with cowork_reach_owner.'] : []),
+    ...((LEVELS[outreach.level] ?? 0) > 0 ? [contactsLine(outreach), reachLine({ data, outreach, now, zone })] : []),
     `The limits on your social side hold as always. When a ${OWN.tiredHeader} message comes, finish or safely leave what you are doing and end the turn.`,
   ].join('\n');
 }
@@ -78,7 +98,7 @@ export function createOwnTime({ board, busy, deliver, now = Date.now, zone = REA
       const state = board.state(at);
       if (!ownTimeDue({ state, derived, now: at, idleSince: board.idleSince(), zone })) return 'resting';
       pendingAt = at;
-      await deliver(ownTimePrompt({ state, derived, outreach }), OWN.rule, OWN.summary);
+      await deliver(ownTimePrompt({ state, derived, outreach, data, now: at, zone }), OWN.rule, OWN.summary);
       return 'own';
     } catch (error) {
       log.warn?.(`cowork-life: no turn started (${error?.name ?? 'Error'}: ${error?.message ?? ''})`);

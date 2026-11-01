@@ -12,8 +12,12 @@
           # Since DSH 0.2.1 each preset declares these itself (0.2.0's schedule bundle mounted them for every session):
           # the clock reading each turn starts with, and the automation tools (schedule_*), registered in this
           # preset's scope over the host schedule service; the Cowork guard still decides who may write.
+          # Only the owner's own messages carry a browser zone. Every other turn (notes, patrols, notifications, its own
+          # time) falls back to this zone; without it, it would get the process zone, which is UTC in the phone's chroot.
           - id: cowork-time-context
             name: '@deepseek-ai/dsh-time-context'
+            config:
+              timeZone: Asia/Shanghai
           - id: cowork-tool-schedule
             name: '@deepseek-ai/dsh-tool-schedule'
           - id: cowork-policy-tools-summary

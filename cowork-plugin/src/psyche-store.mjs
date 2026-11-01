@@ -98,13 +98,15 @@ export function psycheOf(value) {
   const reaches = (Array.isArray(value?.reaches) ? value.reaches : []).map(reachOf).filter(Boolean).slice(-REACH_LOG);
   const time = x => (Number.isSafeInteger(x) && x > 0 ? x : 0);
   return Object.freeze({ state: stateOf(value?.state), models: Object.freeze(models), reaches: Object.freeze(reaches),
-    seenAt: time(value?.seenAt), answeredAt: time(value?.answeredAt), chasedTopic: Number.isSafeInteger(value?.chasedTopic) ? value.chasedTopic : 0 });
+    seenAt: time(value?.seenAt), answeredAt: time(value?.answeredAt), chasedTopic: Number.isSafeInteger(value?.chasedTopic) ? value.chasedTopic : 0,
+    idleSince: time(value?.idleSince) });
 }
 export function readPsyche(file = psycheFile()) { return psycheOf(readJson(file)); }
 
 /**
  * The shared board. `files` overrides where it reads and writes (tests). In memory only: which Cowork sessions have a
- * turn running and when the last one ended (rest counts from there), which turn is a stretch of its own time.
+ * turn running. When the last one ended (rest counts from there) is stored too, so a restart of DSH does not start the
+ * rest over; with nothing stored, rest counts from when the board was made.
  */
 export function createPsycheBoard({ files = {}, now = Date.now } = {}) {
   const paths = { character: files.character ?? characterFile(), outreach: files.outreach ?? outreachFile(), psyche: files.psyche ?? psycheFile() };
@@ -113,7 +115,7 @@ export function createPsycheBoard({ files = {}, now = Date.now } = {}) {
     if (data === undefined) { data = readPsyche(paths.psyche); traits = readCharacter(paths.character); outreach = readOutreach(paths.outreach); }
   };
   const running = new Set();
-  let idleSince = now();
+  const madeAt = now();
   const listeners = new Set();
   const save = () => { try { writeAtomic(paths.psyche, data); } catch {} for (const l of [...listeners]) { try { l(); } catch {} } };
   const board = {
@@ -135,10 +137,12 @@ export function createPsycheBoard({ files = {}, now = Date.now } = {}) {
     started(id) { if (!board.derived()) { running.add(id); return; } board.update(d => ({ ...d, state: settle(d.state, board.derived(), now(), { running: running.size > 0 }) })); running.add(id); },
     ended(id) {
       if (!running.has(id)) return;
-      if (board.derived()) board.update(d => ({ ...d, state: settle(d.state, board.derived(), now(), { running: true }) }));
-      running.delete(id); if (!running.size) idleSince = now();
+      const at = now(), last = running.size === 1;
+      if (board.derived() || last) board.update((d, derived) => ({ ...d, ...(derived ? { state: settle(d.state, derived, at, { running: true }) } : {}), ...(last ? { idleSince: at } : {}) }));
+      running.delete(id);
     },
-    idleSince: () => idleSince,
+    // A stored time later than now (the clock was set back) counts as unknown.
+    idleSince() { load(); const stored = data.idleSince; return stored > 0 && stored <= now() ? stored : madeAt; },
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     /** Drops what was read, so the next call reads the files again (after Continuo changed them through another path). */
     reload() { data = undefined; },

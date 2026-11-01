@@ -63,14 +63,30 @@ test('the board keeps the character, counts rest from the last turn and stores e
     clock += 2 * H;
     assert.equal(board.state().energy, 50, 'nothing refills while a turn runs');
     board.ended('cowork-owner');
-    assert.equal(board.idleSince(), clock);
+    const endedAt = clock;
+    assert.equal(board.idleSince(), endedAt);
     clock += H;
     assert.ok(Math.abs(board.state().energy - (50 + 8 * 0.8)) < 0.01, 'an hour of rest refills 8(1 - e/2)');
     const reread = createPsycheBoard({ files, now: () => clock });
     assert.equal(reread.data().state.energy, 50, 'the stored value, rest is applied when read');
     assert.equal(reread.derived().type, 'ESFJ');
+    assert.equal(reread.idleSince(), endedAt, 'a restart of DSH does not start the rest over');
+    // Two turns at once: rest starts when the last one ends.
+    board.started('a'); board.started('b');
+    clock += H;
+    board.ended('a');
+    assert.equal(createPsycheBoard({ files, now: () => clock }).idleSince(), endedAt, 'b still runs');
+    board.ended('b');
+    assert.equal(createPsycheBoard({ files, now: () => clock }).idleSince(), clock);
+    // A stored time after now (the clock was set back) counts as unknown: rest counts from the board.
+    assert.equal(createPsycheBoard({ files, now: () => clock - 2 * H }).idleSince(), clock - 2 * H);
     board.setCharacter(null);
     assert.equal(createPsycheBoard({ files }).character(), null);
+    // Without a character the end of a turn is still kept, for when the owner sets one.
+    board.started('cowork-owner');
+    clock += H;
+    board.ended('cowork-owner');
+    assert.equal(createPsycheBoard({ files, now: () => clock + H }).idleSince(), clock);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -130,12 +146,28 @@ test('the reach tool sends in Continuo, or clears the way and says where to send
 test('its own time: the message, when it starts, and the follow-up when the owner has not seen its message', async () => {
   const infp = derive(presetTraits('INFP'));
   const outreach = outreachOf({ contacts, preferences: '多去 B站 看看画画的视频' });
-  const text = ownTimePrompt({ state: { ...INITIAL, mood: 60 }, derived: infp, outreach });
+  const prompt = (data, now = at(10), more = {}) => ownTimePrompt({ state: { ...INITIAL, mood: 60 }, derived: infp, outreach, data, now, zone: ZONE, ...more });
+  const text = prompt(empty());
   assert.ok(text.startsWith('[OWN TIME]\nNobody asked you for anything'));
   assert.match(text, /time_shares_json: \{"browsing and trying new things":29,"reading closely":21,"talking with people":15,"thinking things over, keeping notes and your own things":35\}/);
   assert.match(text, /owner_wishes_json: "多去 B站 看看画画的视频"/);
   assert.match(text, /owner_contacts_json: /);
-  assert.doesNotMatch(ownTimePrompt({ state: INITIAL, derived: infp, outreach: outreachOf({ level: 'off' }) }), /owner_contacts_json|owner_wishes_json/);
+  assert.doesNotMatch(prompt(empty(), at(10), { outreach: outreachOf({ level: 'off' }) }), /owner_contacts_json|owner_wishes_json|cowork_reach_owner/);
+  // Reaching the owner is spelled out: how many times are left today, and that its replies here reach nobody.
+  assert.match(text, /The owner likes hearing from you\. Like a friend, text them .* Today you have reached them 0 of the 3 times they allow\./);
+  assert.match(text, /Unless a message of the owner comes in, your replies in this run never reach them: whatever you want them to hear, say it with cowork_reach_owner\./);
+  let reached = psycheOf(recordReach(empty(), { channel: 'continuo', text: '在干嘛', now: at(9) }));
+  assert.match(prompt(reached), /Your message to the owner at 09:00 is still unanswered: no new topic until they answer\./);
+  assert.doesNotMatch(prompt(reached), /likes hearing from you/);
+  assert.match(prompt({ ...reached, answeredAt: at(9, 30) }), /Today you have reached them 1 of the 3 times/);
+  assert.match(prompt(reached, at(10) + 24 * H), /Today you have reached them 0 of the 3 times/, 'unanswered since yesterday: a new day');
+  for (const h of [11, 12]) reached = { ...psycheOf(recordReach(reached, { channel: 'continuo', now: at(h) })), answeredAt: at(h, 1) };
+  assert.match(prompt(reached, at(13)), /You have reached the owner as often as they allow today \(3\): keep anything else for tomorrow\./);
+  // Its own time may start from 07:00, the owner's quiet hours last until 08:00: the line asks for nothing the guard refuses.
+  assert.match(prompt(empty(), at(7, 10)), /These are the owner's quiet hours \(until 08:00\): leave yourself a note/);
+  assert.doesNotMatch(prompt(empty(), at(7, 10)), /likes hearing from you/);
+  assert.notEqual(reachRefusal({ args: { channel: 'continuo', text: 'x' }, user: false, outreach, data: empty(), derived: infp, now: at(7, 10), zone: ZONE }), undefined);
+  assert.match(prompt(empty(), at(10), { outreach: outreachOf({ contacts, dndUntil: at(11) }) }), /not to be disturbed until 11:00: leave yourself a note/);
   assert.ok(isOwnTimeSource({ kind: 'webhook', ruleId: OWN.rule }));
   assert.ok(!isOwnTimeSource({ kind: 'webhook', ruleId: 'cowork-notify' }));
   // The follow-up: unanswered, unseen, alone in its topic, waited out (INFP: 93 minutes), another way exists.

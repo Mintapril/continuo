@@ -86,7 +86,10 @@ test('bundle is additive and packages only tested active implementation',async()
   assert.equal(pkg.exports['./context'],'./src/context.mjs');assert.equal(pkg.exports['./context-pruner'],'./src/context-pruner.mjs');
   assert.match(patch,/id: cowork-compaction\n\s+name: cordis:group\n\s+group: true\n\s+isolate:\n\s+compaction: true\n\s+toolResultPruner: true\n\s+config:\n\s+- id: cowork-context-pruner\n\s+name: '@local\/dsh-cowork-phone\/context-pruner'\n\s+- id: cowork-context\n\s+name: '@local\/dsh-cowork-phone\/context'/);
   // DSH 0.2.1 installs no dsh-webhook; a row naming it would not resolve.
-  assert.doesNotMatch(patch,/dsh-webhook/);assert.match(patch,/name: '@deepseek-ai\/dsh-tool-schedule'/);assert.match(patch,/name: '@deepseek-ai\/dsh-time-context'/);
+  assert.doesNotMatch(patch,/dsh-webhook/);assert.match(patch,/name: '@deepseek-ai\/dsh-tool-schedule'/);
+  // Turns the owner did not start carry no browser zone: the clock reading falls back to the owner's zone, not the
+  // chroot's UTC.
+  assert.match(patch,/id: cowork-time-context\n\s+name: '@deepseek-ai\/dsh-time-context'\n\s+config:\n\s+timeZone: Asia\/Shanghai/);
   assert.match(patch,/- insert:/);assert.match(patch,/id: cowork-phone/);
   assert.doesNotMatch(patch,/replace:|remove:|apiKey:|credentials:|provider:|dsh-tool-web/);
   // DSH 0.2.1 skips a bundle whose @deepseek-ai/dsh-* peers miss the running version, so every pin must name it.

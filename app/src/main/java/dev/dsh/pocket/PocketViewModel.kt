@@ -134,13 +134,15 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     @Volatile private var kickNow = true
     /** Called when the app becomes visible: skip the grace period and reconnect at once if needed. */
     fun resumeConnection() { kickNow = true }
+    // A timeout (withTimeout) is a CancellationException too: rethrowing it ended the supervisor for good, and the app
+    // never reconnected on its own again. Only this coroutine's own cancellation may end it (ensureActive).
     private suspend fun autoConnectOnce(): Boolean {
         val tried = mutableSetOf<String>()
-        try { vault.load()?.let { tried += it; connect(it); return true } } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+        try { vault.load()?.let { tried += it; connect(it); return true } } catch (e: CancellationException) { currentCoroutineContext().ensureActive() } catch (_: Exception) {}
         try {
             val token = runtime.execute(RuntimeController.Action.AUTH).trim()
             if (token.isNotEmpty() && token !in tried) { connect(token); return true }
-        } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+        } catch (e: CancellationException) { currentCoroutineContext().ensureActive() } catch (_: Exception) {}
         return false
     }
     private fun startSupervisor() {
@@ -607,14 +609,20 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
                             // The events bridge does not replay missed status/list events. Establish
                             // a fresh baseline before announcing this generation as connected.
                             refreshSessions()
-                            val models = api.rpc("session/modelCatalog") as? JSONObject ?: obj()
                             val permissions = api.rpc("permissionPresets/catalog") as? JSONObject ?: obj()
                             val roster = try {
                                 availablePresetIds(api.rpc("agentPresets/list", obj()) as? JSONObject)
                             } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
                             if (generation == connectionGeneration && clientId == eventClient) {
-                                catalog = models; permissionCatalog = permissions; presets = roster; connected = true; ready.complete(Unit)
+                                permissionCatalog = permissions; presets = roster; connected = true; ready.complete(Unit)
                                 pushIdentity(); pushOwnerSession(); diaryRefresh(); characterRefresh()
+                                // The model catalog asks every provider for its models and takes 10–20 s on the phone (a
+                                // subscription account's discovery waits out its 10 s timeout); it fills in the model
+                                // pickers when it arrives and never holds up the connection.
+                                streams += viewModelScope.launch {
+                                    val models = try { api.rpc("session/modelCatalog") as? JSONObject } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+                                    if (models != null && generation == connectionGeneration) catalog = models
+                                }
                             }
                         }
                         "waterfall" -> {
@@ -633,7 +641,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
             }
-            withTimeout(12_000) { ready.await() }
+            withTimeoutOrNull(12_000) { ready.await() } ?: error("本机 DSH 12 秒内没有就绪，稍后自动重试")
             streams += viewModelScope.launch { persistentStream("workspace/follow", obj()) { if (generation == connectionGeneration) workspaceFrame(it) } }
             streams += viewModelScope.launch { persistentStream("session/control", obj()) { if (generation == connectionGeneration) projectionFrame(it) } }
             selected?.let { openSession(it) }

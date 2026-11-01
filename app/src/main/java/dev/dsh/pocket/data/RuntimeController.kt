@@ -2,7 +2,7 @@ package dev.dsh.pocket.data
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.TimeUnit
 
 /** Only fixed operations on the dedicated DSH deployment, never user-provided shell. */
@@ -13,7 +13,8 @@ class RuntimeController {
     }
 
     suspend fun execute(action: Action): String = withContext(Dispatchers.IO) {
-        withTimeout(70_000) {
+        // A timeout must reach callers as an ordinary failure: TimeoutCancellationException passes as cancellation.
+        withTimeoutOrNull(70_000) {
             val process = ProcessBuilder("su", "-c", "/system/bin/sh /data/local/dsh-native/pocket-control.sh ${action.wire}")
                 .redirectErrorStream(true).start()
             try {
@@ -34,6 +35,6 @@ class RuntimeController {
                 }
                 output.toString().trim()
             } finally { if (process.isAlive) process.destroy() }
-        }
+        } ?: error("Root 操作超时；请在 KernelSU 中确认授权后重试。")
     }
 }
